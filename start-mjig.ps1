@@ -25,7 +25,8 @@ function Start-mJig {
 			$WShell = New-Object -com "Wscript.Shell"
 			if ($endTime -eq 2400) { $ras = Get-Random -Maximum 3 -Minimum 1; if ($ras -eq 1) { $endTime = ($DefualtEndTime - (Get-Random -Maximum $defualtEndMaxVariance)) } else { $endTime = ($DefualtEndTime + (Get-Random -Maximum $defualtEndVariance)) } }
 			$currentTime = Get-Date -Format "HHmm"; if ($EndTime -le $currentTime) { $tommorow = (Get-Date).AddDays(1); $endDate = Get-Date $tommorow -Format "MMdd" } else { $endDate = Get-Date -Format "MMdd" }; $end = "$endDate$endTime"; $time = $false
-			do {
+			:process do {
+				if ($skipUpdate -ne $true) {
 				$pos = [System.Windows.Forms.Cursor]::Position
 				if ($pos -eq $lastPos) {
 					$posUpdate = $true
@@ -35,6 +36,9 @@ function Start-mJig {
 					[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point ($x,$y)
 				} else { $posUpdate = $false }
 				$lastPos = [System.Windows.Forms.Cursor]::Position
+				} else {
+					$skipUpdate = $false
+				}
 				Clear-Host
 				if ($Output -ne "no") {
 					Write-Host "  mJig" -NoNewline -ForegroundColor Magenta; Write-Host " - " -NoNewline; Write-Host "RunningUntil/" -NoNewline -ForegroundColor yellow
@@ -46,7 +50,8 @@ function Start-mJig {
 					$logTime = Get-Date -Format "HH:mm:ss"; if ($posUpdate -eq $false) { $logOutput = "user input detected" } else { $logOutput = "cooridinates update x$x/y$y" }; $log0 = "    $logTime $logOutput"
 					$log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0 | Write-Host; Write-Host " ------------------------------------------------" }
 				if ($Output -ne "no") {
-					## Menu Options
+					## Menu Options ##
+					write-host "(" -NoNewline; write-host "t" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "oggle output  " -ForegroundColor Green -nonewline
 					write-host "(" -NoNewline; write-host "q" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "uit" -ForegroundColor Green; write-host
 				}
 				$ras = Get-Random -Maximum 3 -Minimum 1; if ($ras -eq 1) { $interval = ($intervalSeconds - (Get-Random -Maximum $intervalVariance)) } else { $interval = ($intervalSeconds + (Get-Random -Maximum $intervalVariance)) }
@@ -54,13 +59,22 @@ function Start-mJig {
 				## Menu/Hotkey Loop ##
 				$math = $interval * 2
 				$x = 0
-				do {
+				:menu do {
 					if($Host.UI.RawUI.KeyAvailable -and ("q" -eq $Host.UI.RawUI.ReadKey("IncludeKeyup,NoEcho").Character)) {
 						Write-Host "force quit" -BackgroundColor DarkRed
 						return 0;
 					}
-				$x++
-				start-sleep -m 500
+					if($Host.UI.RawUI.KeyAvailable -and ("t" -eq $Host.UI.RawUI.ReadKey("IncludeKeyup,NoEcho").Character)) {
+						if ($Output -eq "dib") {
+							$Output = "on"
+						} else {
+							$Output = "dib"
+						}
+						$skipUpdate = $true
+						continue process
+					}
+					$x++
+					start-sleep -m 500
 				} until ($x -eq $math)
 			} until ($time -eq $true)
 			if ($output -ne "no") {
