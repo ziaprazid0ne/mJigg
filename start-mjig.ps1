@@ -21,16 +21,18 @@ function Start-mJig {
 			$newsize = $pswindow.BufferSize; $newsize.width = 50; $newsize.height = 20; $pswindow.BufferSize = $newsize
 			$newsize = $pswindow.windowsize; $newsize.width = 50; $newsize.height = 20; $pswindow.windowsize = $newsize
 		}
+		$endTime = $defualtEndTime
 		if ($endTime -ge 0000 -and $endTime -le 2400 -and $endTime.Length -eq 4) {
 			Add-Type -AssemblyName System.Windows.Forms
 			$WShell = New-Object -com "Wscript.Shell"
 			if ($endTime -eq 2400) { $ras = Get-Random -Maximum 3 -Minimum 1; if ($ras -eq 1) { $endTime = ($DefualtEndTime - (Get-Random -Maximum $defualtEndMaxVariance)) } else { $endTime = ($DefualtEndTime + (Get-Random -Maximum $defualtEndVariance)) } }
-			$currentTime = Get-Date -Format "HHmm"; if ($EndTime -le $currentTime) { $tommorow = (Get-Date).AddDays(1); $endDate = Get-Date $tommorow -Format "MMdd" } else { $endDate = Get-Date -Format "MMdd" }; $end = "$endDate$endTime"; $time = $false
+			$currentTime = Get-Date -Format "HHmm"; if ($endTime -le $currentTime) { $tommorow = (Get-Date).AddDays(1); $endDate = Get-Date $tommorow -Format "MMdd" } else { $endDate = Get-Date -Format "MMdd" }; $end = "$endDate$endTime"; $time = $false
 			:process do {
+				$Outputline = 0
 				Clear-Host
 				if ($skipUpdate -eq $true) {
-					write-host " DEBUG: Update Skipped"
-					write-host " ------------------------------------------------"
+					[Console]::SetCursorPosition(0,$Outputline); write-host " DEBUG: Update Skipped"; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); write-host " ---------------------------------------------"; $Outputline++
 				}
 				if ($skipUpdate -ne $true) {
 					$pos = [System.Windows.Forms.Cursor]::Position
@@ -47,16 +49,18 @@ function Start-mJig {
 				}
 				# Clear-Host
 				if ($Output -ne "no") {
-					Write-Host "  mJig" -NoNewline -ForegroundColor Magenta; Write-Host " - " -NoNewline; Write-Host "RunningUntil/" -NoNewline -ForegroundColor yellow
-					Write-Host "$endTime" -NoNewline -ForegroundColor Green; Write-Host " - " -NoNewline; Write-Host "CurrentTime/" -NoNewline -ForegroundColor Yellow
-					Write-Host "$currentTime" -ForegroundColor Green; Write-Host " ------------------------------------------------"
+					[Console]::SetCursorPosition(0,$Outputline); Write-Host "  mJig" -NoNewline -ForegroundColor Magenta; Write-Host " - " -NoNewline; Write-Host "RunningUntil/" -NoNewline -ForegroundColor yellow; Write-Host "$endTime" -NoNewline -ForegroundColor Green; Write-Host " - " -NoNewline; Write-Host "CurrentTime/" -NoNewline -ForegroundColor Yellow; Write-Host "$currentTime" -ForegroundColor Green; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ---------------------------------------------"; $Outputline++
 				}
 				if ($Output -eq "dib") {
 					if ($skipUpdate -ne $true) {
 						$log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1 = $log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0
 						$logTime = Get-Date -Format "HH:mm:ss"; if ($posUpdate -eq $false) { $logOutput = "user input detected" } else { $logOutput = "cooridinates update x$x/y$y" }; $log0 = "    $logTime $logOutput"
 					}
-					$log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0 | Write-Host; Write-Host " ------------------------------------------------"
+					foreach ($log in $log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0) {
+						[Console]::SetCursorPosition(0,$Outputline); Write-Host "$log"; $Outputline++
+					}
+					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ---------------------------------------------"; $Outputline++
 				}	
 				if ($Output -ne "no") {
 					## Menu Options ##
@@ -70,24 +74,26 @@ function Start-mJig {
 				$x = 0
 				$skipUpdate = $false
 				:menu do {
-					if($Host.UI.RawUI.KeyAvailable -and ("q" -eq $Host.UI.RawUI.ReadKey("IncludeKeyup,NoEcho").Character)) {
-						write-host " ------------------------------------------------"
-						write-host " DEBUG: key detected"
-						write-host " ------------------------------------------------"
-						write-Host " " -nonewline
-						Write-Host "force quit" -BackgroundColor DarkRed
-						return 0;
-					}
-					if($Host.UI.RawUI.KeyAvailable -and ("t" -eq $Host.UI.RawUI.ReadKey("IncludeKeyup,NoEcho").Character)) {
-						write-host " ------------------------------------------------"
-						write-host " DEBUG: key detected"
-						if ($Output -eq "dib") {
-							$Output = "on"
-						} else {
-							$Output = "dib"
+					if ($Host.UI.RawUI.KeyAvailable) {
+						$keyPress = $Host.UI.RawUI.ReadKey("IncludeKeyup,NoEcho").Character
+						if ($keyPress -eq "q") {
+							write-host " ---------------------------------------------"
+							write-host " DEBUG: key detected"
+							write-host " ---------------------------------------------"
+							write-Host " " -nonewline
+							Write-Host "force quit" -BackgroundColor DarkRed
+							return 0;
+						} elseif ($keyPress -eq "t") {
+							write-host " ---------------------------------------------"
+							write-host " DEBUG: key detected"
+							if ($Output -eq "dib") {
+								$Output = "on"
+							} else {
+								$Output = "dib"
+							}
+							$skipUpdate = $true
+							continue process
 						}
-						$skipUpdate = $true
-						continue process
 					}
 					$x++
 					start-sleep -m 500
