@@ -1,6 +1,16 @@
 function Start-mJig {
 	param([Parameter(Mandatory = $false)] [string]$endTime = 2400,[Parameter(Mandatory = $false)] [string]$Output = "yes")
 
+
+	###########
+	## IDEAS ##
+	###########
+
+	# Need More inconography in output.
+	# propper hidden oiption
+	# stealth toggle for hiding ui (to be seperate from hidden option).
+	# Add a routine to determine the direction the cursor moved and add a corosponding arrow emoji to the log. https://unicode.org/emoji/charts/full-emoji-list.html
+
 	############
 	## CONFIG ## 
 	############
@@ -27,13 +37,10 @@ function Start-mJig {
 			$WShell = New-Object -com "Wscript.Shell"
 			if ($endTime -eq 2400) { $ras = Get-Random -Maximum 3 -Minimum 1; if ($ras -eq 1) { $endTime = ($DefualtEndTime - (Get-Random -Maximum $defualtEndMaxVariance)) } else { $endTime = ($DefualtEndTime + (Get-Random -Maximum $defualtEndVariance)) } }
 			$currentTime = Get-Date -Format "HHmm"; if ($endTime -le $currentTime) { $tommorow = (Get-Date).AddDays(1); $endDate = Get-Date $tommorow -Format "MMdd" } else { $endDate = Get-Date -Format "MMdd" }; $end = "$endDate$endTime"; $time = $false
+			Clear-Host
 			:process do {
 				$Outputline = 0
-				Clear-Host
-				if ($skipUpdate -eq $true) {
-					[Console]::SetCursorPosition(0,$Outputline); write-host " DEBUG: Update Skipped"; $Outputline++
-					[Console]::SetCursorPosition(0,$Outputline); write-host " ---------------------------------------------"; $Outputline++
-				}
+				# Clear-Host
 				if ($skipUpdate -ne $true) {
 					$pos = [System.Windows.Forms.Cursor]::Position
 					if ($pos -eq $lastPos) {
@@ -55,7 +62,12 @@ function Start-mJig {
 				if ($Output -eq "dib") {
 					if ($skipUpdate -ne $true) {
 						$log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1 = $log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0
-						$logTime = Get-Date -Format "HH:mm:ss"; if ($posUpdate -eq $false) { $logOutput = "user input detected" } else { $logOutput = "cooridinates update x$x/y$y" }; $log0 = "    $logTime $logOutput"
+						$logTime = Get-Date -Format "HH:mm:ss"
+						if ($posUpdate -eq $false) {
+							$logOutput = "user input detected"
+						} else {
+							$logOutput = "cooridinates update x$x/y$y"
+						}; $log0 = "   $logTime $logOutput"
 					}
 					foreach ($log in $log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0) {
 						[Console]::SetCursorPosition(0,$Outputline); Write-Host "$log"; $Outputline++
@@ -64,8 +76,7 @@ function Start-mJig {
 				}	
 				if ($Output -ne "no") {
 					## Menu Options ##
-					write-host " (" -NoNewline; write-host "t" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "oggle output  " -ForegroundColor Green -nonewline
-					write-host "(" -NoNewline; write-host "q" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "uit" -ForegroundColor Green
+					[Console]::SetCursorPosition(0,$Outputline); write-host " (" -NoNewline; write-host "t" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "oggle output  " -ForegroundColor Green -nonewline; write-host "(" -NoNewline; write-host "q" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "uit" -ForegroundColor Green; $Outputline++
 				}
 				$ras = Get-Random -Maximum 3 -Minimum 1; if ($ras -eq 1) { $interval = ($intervalSeconds - (Get-Random -Maximum $intervalVariance)) } else { $interval = ($intervalSeconds + (Get-Random -Maximum $intervalVariance)) }
 				$currentTime = Get-Date -Format "HHmm"; $current = Get-Date -Format "MMddHHmm"; if ($current -ge $end) { $time = $true }
@@ -77,15 +88,10 @@ function Start-mJig {
 					if ($Host.UI.RawUI.KeyAvailable) {
 						$keyPress = $Host.UI.RawUI.ReadKey("IncludeKeyup,NoEcho").Character
 						if ($keyPress -eq "q") {
-							write-host " ---------------------------------------------"
-							write-host " DEBUG: key detected"
-							write-host " ---------------------------------------------"
-							write-Host " " -nonewline
-							Write-Host "force quit" -BackgroundColor DarkRed
+							$Outputline--
+							[Console]::SetCursorPosition(0,$Outputline); Write-Host " " -nonewline; Write-Host "force quit" -BackgroundColor DarkRed; $Outputline++
 							return 0;
 						} elseif ($keyPress -eq "t") {
-							write-host " ---------------------------------------------"
-							write-host " DEBUG: key detected"
 							if ($Output -eq "dib") {
 								$Output = "on"
 							} else {
@@ -100,7 +106,10 @@ function Start-mJig {
 				} until ($x -eq $math)
 			} until ($time -eq $true)
 			if ($output -ne "no") {
-				Write-Host "       END TIME REACHED: " -NoNewline -ForegroundColor Red; Write-Host "Stopping " -NoNewline; Write-Host "mJig" -ForegroundColor Magenta; Write-Host }
-		} else { Write-Host "use 4-digit 24hour time format"; Write-Host }
+				[Console]::SetCursorPosition(0,$Outputline); Write-Host "       END TIME REACHED: " -NoNewline -ForegroundColor Red; Write-Host "Stopping " -NoNewline; Write-Host "mJig" -ForegroundColor Magenta; Write-Host; $Outputline++
+			}
+		} else {
+			Write-Host "use 4-digit 24hour time format"; Write-Host
+		}
 }
 Start-mJig -Output dib
