@@ -10,6 +10,7 @@ function Start-mJig {
 	# propper hidden oiption
 	# stealth toggle for hiding ui (to be seperate from hidden option).
 	# Add a routine to determine the direction the cursor moved and add a corosponding arrow emoji to the log. https://unicode.org/emoji/charts/full-emoji-list.html
+	# Add indecator for current output mode in top bar
 
 	############
 	## CONFIG ## 
@@ -38,6 +39,7 @@ function Start-mJig {
 			if ($endTime -eq 2400) { $ras = Get-Random -Maximum 3 -Minimum 1; if ($ras -eq 1) { $endTime = ($DefualtEndTime - (Get-Random -Maximum $defualtEndMaxVariance)) } else { $endTime = ($DefualtEndTime + (Get-Random -Maximum $defualtEndVariance)) } }
 			$currentTime = Get-Date -Format "HHmm"; if ($endTime -le $currentTime) { $tommorow = (Get-Date).AddDays(1); $endDate = Get-Date $tommorow -Format "MMdd" } else { $endDate = Get-Date -Format "MMdd" }; $end = "$endDate$endTime"; $time = $false
 			Clear-Host
+			[Console]::CursorVisible = $false
 			:process do {
 				$Outputline = 0
 				# Clear-Host
@@ -56,27 +58,37 @@ function Start-mJig {
 				}
 				# Clear-Host
 				if ($Output -ne "no") {
-					[Console]::SetCursorPosition(0,$Outputline); Write-Host "  mJig" -NoNewline -ForegroundColor Magenta; Write-Host " - " -NoNewline; Write-Host "RunningUntil/" -NoNewline -ForegroundColor yellow; Write-Host "$endTime" -NoNewline -ForegroundColor Green; Write-Host " - " -NoNewline; Write-Host "CurrentTime/" -NoNewline -ForegroundColor Yellow; Write-Host "$currentTime" -ForegroundColor Green; $Outputline++
-					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ---------------------------------------------"; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); Write-Host "  mJig(`u{1F401})" -NoNewline -ForegroundColor Magenta; Write-Host " `u{22B3} " -NoNewline; Write-Host "End`u{23F3}/" -NoNewline -ForegroundColor yellow; Write-Host "$endTime" -NoNewline -ForegroundColor Green; Write-Host " `u{22B3} " -NoNewline; Write-Host "Current`u{23F3}/" -NoNewline -ForegroundColor Yellow; Write-Host "$currentTime" -ForegroundColor Green -NoNewline; write-host " (dib)" -ForeGroundColor Magenta; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
 				}
 				if ($Output -eq "dib") {
 					if ($skipUpdate -ne $true) {
 						$log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1 = $log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0
 						$logTime = Get-Date -Format "HH:mm:ss"
 						if ($posUpdate -eq $false) {
-							$logOutput = "user input detected"
+							$logOutput = "input detected, skipping update"
 						} else {
 							$logOutput = "cooridinates update x$x/y$y"
 						}; $log0 = "   $logTime $logOutput"
 					}
 					foreach ($log in $log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0) {
-						[Console]::SetCursorPosition(0,$Outputline); Write-Host "$log"; $Outputline++
+						if ($log -notlike "*input detected*") {
+							[Console]::SetCursorPosition(0,$Outputline); Write-Host "$log" -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
+						} else {
+							[Console]::SetCursorPosition(0,$Outputline); Write-Host "$log" -ForegroundColor DarkGray -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
+						}
 					}
-					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ---------------------------------------------"; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
 				}	
 				if ($Output -ne "no") {
 					## Menu Options ##
-					[Console]::SetCursorPosition(0,$Outputline); write-host " (" -NoNewline; write-host "t" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "oggle output  " -ForegroundColor Green -nonewline; write-host "(" -NoNewline; write-host "q" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "uit" -ForegroundColor Green; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); write-host " (" -NoNewline; write-host "t" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "oggle output    " -ForegroundColor Green -nonewline; write-host "(" -NoNewline ; write-host "h" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewline; write-host "ide output       " -ForegroundColor Green -NoNewline; write-host "(" -NoNewline; write-host "q" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "uit" -ForegroundColor Green -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
+					if ($skipUpdate -eq $true) {
+						for($h = $Outputline; $h -lt 15; $h++) {
+							for($i=$Host.UI.RawUI.CursorPosition.x;$i -lt 46;$i++){write-host " " -NoNewline}; $Outputline++; write-host
+						}
+						
+					}
 				}
 				$ras = Get-Random -Maximum 3 -Minimum 1; if ($ras -eq 1) { $interval = ($intervalSeconds - (Get-Random -Maximum $intervalVariance)) } else { $interval = ($intervalSeconds + (Get-Random -Maximum $intervalVariance)) }
 				$currentTime = Get-Date -Format "HHmm"; $current = Get-Date -Format "MMddHHmm"; if ($current -ge $end) { $time = $true }
@@ -89,8 +101,8 @@ function Start-mJig {
 						$keyPress = $Host.UI.RawUI.ReadKey("IncludeKeyup,NoEcho").Character
 						if ($keyPress -eq "q") {
 							$Outputline--
-							[Console]::SetCursorPosition(0,$Outputline); Write-Host " " -nonewline; Write-Host "force quit" -BackgroundColor DarkRed; $Outputline++
-							return 0;
+							[Console]::SetCursorPosition(0,$Outputline); Write-Host " " -nonewline; Write-Host "force quit" -BackgroundColor DarkRed -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; write-host; write-host
+							return;
 						} elseif ($keyPress -eq "t") {
 							if ($Output -eq "dib") {
 								$Output = "on"
@@ -106,7 +118,7 @@ function Start-mJig {
 				} until ($x -eq $math)
 			} until ($time -eq $true)
 			if ($output -ne "no") {
-				[Console]::SetCursorPosition(0,$Outputline); Write-Host "       END TIME REACHED: " -NoNewline -ForegroundColor Red; Write-Host "Stopping " -NoNewline; Write-Host "mJig" -ForegroundColor Magenta; Write-Host; $Outputline++
+				[Console]::SetCursorPosition(0,$Outputline); Write-Host "       END TIME REACHED: " -NoNewline -ForegroundColor Red; Write-Host "Stopping " -NoNewline; Write-Host "mJig"; write-host
 			}
 		} else {
 			Write-Host "use 4-digit 24hour time format"; Write-Host
