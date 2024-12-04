@@ -1,5 +1,5 @@
 function Start-mJig {
-	param([Parameter(Mandatory = $false)] [string]$endTime = 2400,[Parameter(Mandatory = $false)] [string]$Output = "yes")
+	param([Parameter(Mandatory = $false)] [string]$endTime = 2400,[Parameter(Mandatory = $false)] [string]$Output = "full")
 
 
 	###########
@@ -26,7 +26,6 @@ function Start-mJig {
 	## SCRIPT ##
 	############ 
 
-		$skipUpdate -eq $true
 		if ($Output -eq "yes") {
 			$pshost = Get-Host; $pswindow = $pshost.UI.RawUI
 			$newsize = $pswindow.BufferSize; $newsize.width = 50; $newsize.height = 20; $pswindow.BufferSize = $newsize
@@ -58,10 +57,10 @@ function Start-mJig {
 				}
 				# Clear-Host
 				if ($Output -ne "no") {
-					[Console]::SetCursorPosition(0,$Outputline); Write-Host "  mJig(`u{1F401})" -NoNewline -ForegroundColor Magenta; Write-Host " `u{22B3} " -NoNewline; Write-Host "End`u{23F3}/" -NoNewline -ForegroundColor yellow; Write-Host "$endTime" -NoNewline -ForegroundColor Green; Write-Host " `u{22B3} " -NoNewline; Write-Host "Current`u{23F3}/" -NoNewline -ForegroundColor Yellow; Write-Host "$currentTime" -ForegroundColor Green -NoNewline; write-host " (dib)" -ForeGroundColor Magenta; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
-					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); Write-Host "  mJig(`u{1F400})" -NoNewline -ForegroundColor Magenta; Write-Host " ➢ " -NoNewline; Write-Host "End`u{23F3}/" -NoNewline -ForegroundColor yellow; Write-Host "$endTime" -NoNewline -ForegroundColor Green; Write-Host " ➣ " -NoNewline; Write-Host "Current`u{23F3}/" -NoNewline -ForegroundColor Yellow; Write-Host "$currentTime" -ForegroundColor Green -NoNewline;if($Output -eq "dib"){ write-host " (DiB)" -ForeGroundColor Magenta}elseif($Output -eq "full"){ write-host " (Ful)" -ForeGroundColor Magenta}else{ write-host " (Min)" -ForeGroundColor Magenta}for($i = $Host.UI.RawUI.CursorPosition.x;$i -lt 47;$i++){write-host " " -NoNewline}; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++){write-host " " -NoNewline}; $Outputline++
 				}
-				if ($Output -eq "dib") {
+				if ($Output -ne "no") {
 					if ($skipUpdate -ne $true) {
 						$log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1 = $log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0
 						$logTime = Get-Date -Format "HH:mm:ss"
@@ -69,23 +68,26 @@ function Start-mJig {
 							$logOutput = "input detected, skipping update"
 						} else {
 							$logOutput = "cooridinates update x$x/y$y"
-						}; $log0 = "   $logTime $logOutput"
+						}
+						$log0 = "   $logTime $logOutput"
 					}
-					foreach ($log in $log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0) {
-						if ($log -notlike "*input detected*") {
-							[Console]::SetCursorPosition(0,$Outputline); Write-Host "$log" -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
-						} else {
-							[Console]::SetCursorPosition(0,$Outputline); Write-Host "$log" -ForegroundColor DarkGray -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
+					if ($output -ne "min") {
+						foreach ($log in $log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0) {
+							if ($log -notlike "*input detected*") {
+								[Console]::SetCursorPosition(0,$Outputline); Write-Host "$log" -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++){write-host " " -NoNewline}; $Outputline++
+							} else {
+								[Console]::SetCursorPosition(0,$Outputline); Write-Host "$log" -ForegroundColor DarkGray -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++){write-host " " -NoNewline}; $Outputline++
+							}
 						}
 					}
-					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++){write-host " " -NoNewline}; $Outputline++
 				}	
 				if ($Output -ne "no") {
 					## Menu Options ##
-					[Console]::SetCursorPosition(0,$Outputline); write-host " (" -NoNewline; write-host "t" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "oggle output    " -ForegroundColor Green -nonewline; write-host "(" -NoNewline ; write-host "h" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewline; write-host "ide output       " -ForegroundColor Green -NoNewline; write-host "(" -NoNewline; write-host "q" -ForegroundColor Magenta -NoNewline; write-host ")" -NoNewLine; write-host "uit" -ForegroundColor Green -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); write-host " `u{1F6A6}❲" -NoNewline; write-host "t" -ForegroundColor Yellow -NoNewline; write-host "❳" -NoNewLine; write-host "oggle_output  " -ForegroundColor Green -nonewline; write-host "`u{1F400}❲" -NoNewline ; write-host "h" -ForegroundColor Yellow -NoNewline; write-host "❳" -NoNewline; write-host "ide_output   " -ForegroundColor Green -NoNewline; write-host "`u{1F400}❲" -NoNewline; write-host "q" -ForegroundColor Yellow -NoNewline; write-host "❳" -NoNewLine; write-host "uit" -ForegroundColor Green -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++){write-host " " -NoNewline}; $Outputline++
 					if ($skipUpdate -eq $true) {
 						for($h = $Outputline; $h -lt 15; $h++) {
-							for($i=$Host.UI.RawUI.CursorPosition.x;$i -lt 46;$i++){write-host " " -NoNewline}; $Outputline++; write-host
+							for($i=$Host.UI.RawUI.CursorPosition.x;$i -lt 47;$i++){write-host " " -NoNewline}; $Outputline++; write-host
 						}
 						
 					}
@@ -101,13 +103,13 @@ function Start-mJig {
 						$keyPress = $Host.UI.RawUI.ReadKey("IncludeKeyup,NoEcho").Character
 						if ($keyPress -eq "q") {
 							$Outputline--
-							[Console]::SetCursorPosition(0,$Outputline); Write-Host " " -nonewline; Write-Host "force quit" -BackgroundColor DarkRed -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 46; $i++){write-host " " -NoNewline}; write-host; write-host
+							[Console]::SetCursorPosition(0,$Outputline); Write-Host " " -nonewline; Write-Host "force quit" -BackgroundColor DarkRed -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++){write-host " " -NoNewline}; write-host; write-host
 							return;
 						} elseif ($keyPress -eq "t") {
-							if ($Output -eq "dib") {
-								$Output = "on"
+							if ($Output -eq "full") {
+								$Output = "min"
 							} else {
-								$Output = "dib"
+								$Output = "full"
 							}
 							$skipUpdate = $true
 							continue process
