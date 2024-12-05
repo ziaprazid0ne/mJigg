@@ -26,10 +26,19 @@ function Start-mJig {
 	## SCRIPT ##
 	############ 
 
-		if ($Output -eq "yes") {
-			$pshost = Get-Host; $pswindow = $pshost.UI.RawUI
-			$newsize = $pswindow.BufferSize; $newsize.width = 50; $newsize.height = 20; $pswindow.BufferSize = $newsize
-			$newsize = $pswindow.windowsize; $newsize.width = 50; $newsize.height = 20; $pswindow.windowsize = $newsize
+		if ($Output -ne "off") {
+			$newWidth = 48
+			$newHeight = 16
+			$pshost = Get-Host
+			$pswindow = $pshost.UI.RawUI
+			$newBufferSize = $pswindow.BufferSize
+			$newBufferSize.Width = $newWidth
+			$newBufferSize.Height = $newHeight
+			$pswindow.BufferSize = $newBufferSize
+			$newWindowSize = $pswindow.WindowSize
+			$newWindowSize.Width = $newWidth
+			$newWindowSize.Height = $newHeight
+			$pswindow.WindowSize = $newWindowSize
 		}
 		$endTime = $defualtEndTime
 		if ($endTime -ge 0000 -and $endTime -le 2400 -and $endTime.Length -eq 4) {
@@ -56,7 +65,8 @@ function Start-mJig {
 					$lastPos = [System.Windows.Forms.Cursor]::Position
 				}
 				# Clear-Host
-				if ($Output -ne "no") {
+				if ($Output -ne "hide") {
+					[Console]::SetCursorPosition(0,$Outputline); Write-Host; $Outputline++
 					[Console]::SetCursorPosition(0,$Outputline); Write-Host "  mJig(`u{1F400})" -NoNewline -ForegroundColor Magenta; Write-Host " ➢ " -NoNewline; Write-Host "End`u{23F3}/" -NoNewline -ForegroundColor yellow; Write-Host "$endTime" -NoNewline -ForegroundColor Green; Write-Host " ➣ " -NoNewline; Write-Host "Current`u{23F3}/" -NoNewline -ForegroundColor Yellow; Write-Host "$currentTime" -ForegroundColor Green -NoNewline;if($Output -eq "dib"){ write-host " (DiB)" -ForeGroundColor Magenta}elseif($Output -eq "full"){ write-host " (Ful)" -ForeGroundColor Magenta}else{ write-host " (Min)" -ForeGroundColor Magenta}for($i = $Host.UI.RawUI.CursorPosition.x;$i -lt 47;$i++){write-host " " -NoNewline}; $Outputline++
 					[Console]::SetCursorPosition(0,$Outputline); Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++){write-host " " -NoNewline}; $Outputline++
 				}
@@ -84,7 +94,7 @@ function Start-mJig {
 				}	
 				if ($Output -ne "no") {
 					## Menu Options ##
-					[Console]::SetCursorPosition(0,$Outputline); write-host " `u{1F6A6}❲" -NoNewline; write-host "t" -ForegroundColor Yellow -NoNewline; write-host "❳" -NoNewLine; write-host "oggle_output  " -ForegroundColor Green -nonewline; write-host "`u{1F400}❲" -NoNewline ; write-host "h" -ForegroundColor Yellow -NoNewline; write-host "❳" -NoNewline; write-host "ide_output   " -ForegroundColor Green -NoNewline; write-host "`u{1F400}❲" -NoNewline; write-host "q" -ForegroundColor Yellow -NoNewline; write-host "❳" -NoNewLine; write-host "uit" -ForegroundColor Green -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++){write-host " " -NoNewline}; $Outputline++
+					[Console]::SetCursorPosition(0,$Outputline); write-host "  " -NoNewLine ; write-host "`u{1F400}" -NoNewLine; write-host "❲" -NoNewline; write-host "t" -ForegroundColor Yellow -NoNewline; write-host "❳" -NoNewLine; write-host "oggle_output  " -ForegroundColor Green -nonewline; write-host "`u{1F400}❲" -NoNewline ; write-host "h" -ForegroundColor Yellow -NoNewline; write-host "❳" -NoNewline; write-host "ide_output  " -ForegroundColor Green -NoNewline; write-host "`u{1F400}❲" -NoNewline; write-host "q" -ForegroundColor Yellow -NoNewline; write-host "❳" -NoNewLine; write-host "uit" -ForegroundColor Green -NoNewline; for($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++){write-host " " -NoNewline}; $Outputline++
 					if ($skipUpdate -eq $true) {
 						for($h = $Outputline; $h -lt 15; $h++) {
 							for($i=$Host.UI.RawUI.CursorPosition.x;$i -lt 47;$i++){write-host " " -NoNewline}; $Outputline++; write-host
