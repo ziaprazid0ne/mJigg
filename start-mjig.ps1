@@ -26,21 +26,24 @@ function Start-mJig {
 	## SCRIPT ##
 	############ 
 
+		# Prep the Host Console
+		[Console]::CursorVisible = $false
+		Clear-Host
+		
 		# resize the buffer and Window for any Consoles that support window resizing.
-		if ($Output -ne "off") {
-			$newWidth = 48
-			$newHeight = 16
-			$pshost = Get-Host
-			$pswindow = $pshost.UI.RawUI
-			$newBufferSize = $pswindow.BufferSize
-			$newBufferSize.Width = $newWidth
-			$newBufferSize.Height = $newHeight
-			$pswindow.BufferSize = $newBufferSize
-			$newWindowSize = $pswindow.WindowSize
-			$newWindowSize.Width = $newWidth
-			$newWindowSize.Height = $newHeight
-			$pswindow.WindowSize = $newWindowSize
-		}
+#		if ($Output -ne "off") {
+#			$newWidth = 48
+#			$newHeight = 16
+#			$pshost = Get-Host
+#			$pswindow = $pshost.UI.RawUI
+#			$newBufferSize = $pswindow.BufferSize
+#			$newBufferSize.Width = $newWidth
+#			$newBufferSize.Height = $newHeight
+#			$pswindow.BufferSize = $newBufferSize
+#			$newWindowSize = $pswindow.WindowSize
+#			$newWindowSize.Width = $newWidth
+#			$pswindow.WindowSize = $newWindowSize
+#		}
 
 		# calculate the End Time
 		$endTime = $defualtEndTime
@@ -64,10 +67,6 @@ function Start-mJig {
 			}
 			$end = "$endDate$endTime"
 			$time = $false
-
-			# Prep the Host Console
-			Clear-Host
-			[Console]::CursorVisible = $false
 
 			# Start the Process Loop
 			:process do {
@@ -97,39 +96,52 @@ function Start-mJig {
 					$lastPos = [System.Windows.Forms.Cursor]::Position
 				}
 				# header
-				if ($Output -ne "hide") {
+				if ($Output -ne "hidden") {
 
-					# output main header
-					Write-Host; $Outputline++
-					[Console]::SetCursorPosition(0,$Outputline)
-					Write-Host "  mJig(`u{1F400})" -NoNewline -ForegroundColor Magenta
-					Write-Host " ➢ " -NoNewline
-					Write-Host "End`u{23F3}/" -NoNewline -ForegroundColor yellow
-					Write-Host "$endTime" -NoNewline -ForegroundColor Green
-					Write-Host " ➣ " -NoNewline
-					Write-Host "Current`u{23F3}/" -NoNewline -ForegroundColor Yellow
-					Write-Host "$currentTime" -ForegroundColor Green -NoNewline
-					if ($Output -eq "dib") {
-						write-host " (DiB)" -ForeGroundColor Magenta
-					} elseif ($Output -eq "full") {
-						write-host " (Ful)" -ForeGroundColor Magenta
-					} else {
-						write-host " (Min)" -ForeGroundColor Magenta
+					# output blank line
+					$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{clear-host;$t=$false}finally{
+						if($t) {
+							Write-Host
+						}
 					}
-					for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
-						write-host " " -NoNewline
+					$Outputline++
+
+					# output header
+					$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{$t=$false}finally{
+						if($t) {
+							Write-Host "  mJig(`u{1F400})" -NoNewline -ForegroundColor Magenta
+							Write-Host " ➢ " -NoNewline
+							Write-Host "End`u{23F3}/" -NoNewline -ForegroundColor yellow
+							Write-Host "$endTime" -NoNewline -ForegroundColor Green
+							Write-Host " ➣ " -NoNewline
+							Write-Host "Current`u{23F3}/" -NoNewline -ForegroundColor Yellow
+							Write-Host "$currentTime" -ForegroundColor Green -NoNewline
+							if ($Output -eq "dib") {
+								write-host " (DiB)" -ForeGroundColor Magenta
+							} elseif ($Output -eq "full") {
+								write-host " (Ful)" -ForeGroundColor Magenta
+							} else {
+								write-host " (Min)" -ForeGroundColor Magenta
+							}
+							for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
+								write-host " " -NoNewline
+							}
+						}
 					}
 					$Outputline++
 					
 					# Output Line Spacer
-					[Console]::SetCursorPosition(0,$Outputline)
-					Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline
-					for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
-						write-host " " -NoNewline
+					$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{$t=$false}finally{
+						if($t) {
+							Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline
+							for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
+								write-host " " -NoNewline
+							}
+						}
 					}
 					$Outputline++
 				}
-				if ($Output -ne "no") {
+				if ($Output -ne "hidden") {
 					if ($skipUpdate -ne $true) {
 						$log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1 = $log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0
 						$logTime = Get-Date -Format "HH:mm:ss"
@@ -143,44 +155,61 @@ function Start-mJig {
 					if ($output -ne "min") {
 						foreach ($log in $log9,$log8,$log7,$log6,$log5,$log4,$log3,$log2,$log1,$log0) {
 							if ($log -notlike "*input detected*") {
-								[Console]::SetCursorPosition(0,$Outputline)
-								Write-Host "$log" -NoNewline
-								for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
-									write-host " " -NoNewline
+								$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{$t=$false}finally{
+									if($t) {
+										Write-Host "$log" -NoNewline
+										for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
+											write-host " " -NoNewline
+										}
+									}
 								}
 								$Outputline++
 							} else {
-								[Console]::SetCursorPosition(0,$Outputline)
-								Write-Host "$log" -ForegroundColor DarkGray -NoNewline
-								for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
-									write-host " " -NoNewline}
-									$Outputline++
+								$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{$t=$false}finally{
+									if($t) {
+										Write-Host "$log" -ForegroundColor DarkGray -NoNewline
+										for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
+											write-host " " -NoNewline
+										}
+									}
+								}
+								$Outputline++
 							}
 						}
 					}
-					[Console]::SetCursorPosition(0,$Outputline)
-					Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline
-					for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
-						write-host " " -NoNewline
-					} $Outputline++
+					$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{$t=$false}finally{
+						if($t) {
+							for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
+								Write-Host " ──────────────────────────────────────────────" -ForegroundColor White -NoNewline
+								for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
+									write-host " " -NoNewline
+								}
+							}
+						}
+					}
+					$Outputline++
 				}	
 				if ($Output -ne "no") {
 					## Menu Options ##
-					[Console]::SetCursorPosition(0,$Outputline); write-host "  " -NoNewLine
-					write-host "`u{1F400}" -NoNewLine; write-host "❲" -NoNewline
-					write-host "t" -ForegroundColor Yellow -NoNewline
-					write-host "❳" -NoNewLine
-					write-host "oggle_output  " -ForegroundColor Green -nonewline
-					write-host "`u{1F400}❲" -NoNewline
-					write-host "h" -ForegroundColor Yellow -NoNewline
-					write-host "❳" -NoNewline
-					write-host "ide_output  " -ForegroundColor Green -NoNewline
-					write-host "`u{1F400}❲" -NoNewline
-					write-host "q" -ForegroundColor Yellow -NoNewline
-					write-host "❳" -NoNewLine
-					write-host "uit" -ForegroundColor Green -NoNewline
-					for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
-						write-host " " -NoNewline
+					$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{$t=$false}finally{
+						if($t) {
+							write-host "  " -NoNewLine
+							write-host "`u{1F400}" -NoNewLine; write-host "❲" -NoNewline
+							write-host "t" -ForegroundColor Yellow -NoNewline
+							write-host "❳" -NoNewLine
+							write-host "oggle_output  " -ForegroundColor Green -nonewline
+							write-host "`u{1F400}❲" -NoNewline
+							write-host "h" -ForegroundColor Yellow -NoNewline
+							write-host "❳" -NoNewline
+							write-host "ide_output  " -ForegroundColor Green -NoNewline
+							write-host "`u{1F400}❲" -NoNewline
+							write-host "q" -ForegroundColor Yellow -NoNewline
+							write-host "❳" -NoNewLine
+							write-host "uit" -ForegroundColor Green -NoNewline
+							for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt 47; $i++) {
+								write-host " " -NoNewline
+							}
+						}
 					}
 					$Outputline++
 					if ($skipUpdate -eq $true) {
