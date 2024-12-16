@@ -25,23 +25,38 @@ function Start-mJig {
 	## SCRIPT ##
 	############ 
 
-		# Prep the Host Console
+		# Prep the Host Console #
 		[Console]::CursorVisible = $false
 		Clear-Host
-		
-		# resize the buffer and Window for any Consoles that support window resizing.
 		if ($Output -ne "off") {
+
+			# Capture Initial Buffer & Window Sizes #
 			$pshost = Get-Host
 			$pswindow = $pshost.UI.RawUI
 			$newBufferSize = $pswindow.BufferSize
 			$newWindowSize = $pswindow.WindowSize
 			$hostWidth = $newBufferSize.Width
 			$hostHeight = $newBufferSize.Height
-			$rows = $hostHeight - 6
-			$outputTable = @()
+
+			# Initialize the Output Array #
+			$logArray = @()
 		}
 
-		# calculate the End Time
+		# Calculating the End Times <
+		<#⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢤⣶⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+		⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⡾⠿⢿⡀⠀⠀⠀⠀⣠⣶⣿⣷⠀⠀⠀⠀
+		⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⣦⣴⣿⡋⠀⠀⠈⢳⡄⠀⢠⣾⣿⠁⠈⣿⡆⠀⠀⠀
+		⠀⠀⠀⠀⠀⠀⠀⣰⣿⣿⠿⠛⠉⠉⠁⠀⠀⠀⠹⡄⣿⣿⣿⠀⠀⢹⡇⠀⠀⠀
+		⠀⠀⠀⠀⠀⣠⣾⡿⠋⠁⠀⠀⠀⠀⠀⠀⠀⠀⣰⣏⢻⣿⣿⡆⠀⠸⣿⠀⠀⠀
+		⠀⠀⠀⢀⣴⠟⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣾⣿⣿⣆⠹⣿⣷⠀⢘⣿⠀⠀⠀
+		⠀⠀⢀⡾⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⣿⣿⠋⠉⠛⠂⠹⠿⣲⣿⣿⣧⠀⠀
+		⠀⢠⠏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣤⣿⣿⣿⣷⣾⣿⡇⢀⠀⣼⣿⣿⣿⣧⠀
+		⠰⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⡘⢿⣿⣿⣿⠀
+		⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⣷⡈⠿⢿⣿⡆
+		⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⠛⠁⢙⠛⣿⣿⣿⣿⡟⠀⡿⠀⠀⢀⣿⡇
+		⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣶⣤⣉⣛⠻⠇⢠⣿⣾⣿⡄⢻⡇
+		⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣦⣤⣾⣿⣿⣿⣿⣆⠁ #>
+		
 		$endTime = $defualtEndTime
 		if ($endTime -ge 0000 -and $endTime -le 2400 -and $endTime.Length -eq 4) {
 			Add-Type -AssemblyName System.Windows.Forms
@@ -64,16 +79,37 @@ function Start-mJig {
 			$end = "$endDate$endTime"
 			$time = $false
 
-			# Start the Process Loop
+			# Start your engines #
+
 			:process do {
+
+				$rows = $hostHeight - 6
 				$outputline = 0
-				$oldOutputTable = $outputTable
-				$outputTable = @()
+				$oldLogArray = $logArray
+				$logArray = @()
+				if ($oldRows -ne $rows) {
+					if ($oldRows -gt $rows) {
+						for ($i = $oldRows; $i -eq $rows+1; $i--) {
+							$LogArray[0].Remove
+
+						}
+						$logArray += $row
+					} else {
+						for ($i = $oldRows; $i -eq $rows-1; $i++) {
+							$row = [PSCustomObject]@{
+								logRow = $true
+								value = $null
+							}
+							$logArray += $row
+						}
+					}
+				}
+
 				if ($skipUpdate -ne $true) {
 					$pos = [System.Windows.Forms.Cursor]::Position
 					if ($pos -eq $lastPos) {
 						$posUpdate = $true
-						$rx,$ry,$rasX,$rasy = (Get-Random -Maximum 6),(Get-Random -Maximum 6),(Get-Random -Maximum 2),(Get-Random -Maximum 2)
+						$rx,$ry,$rasX,$rasy = (Get-Random -Maximum 300),(Get-Random -Maximum 300),(Get-Random -Maximum 2),(Get-Random -Maximum 2)
 						if ($rasX -eq 1) {
 							$x = $pos.X + $rx
 						} else {
@@ -87,6 +123,7 @@ function Start-mJig {
 						$WShell.sendkeys("{SCROLLLOCK}")
 						Start-Sleep -Milliseconds 100
 						$WShell.sendkeys("{SCROLLLOCK}")
+
 						[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point ($x,$y)
 					} else {
 						$posUpdate = $false
@@ -114,18 +151,18 @@ function Start-mJig {
 							Write-Host "Current`u{23F3}/" -NoNewline -ForegroundColor Yellow
 							Write-Host "$currentTime" -ForegroundColor Green -NoNewline
 							if ($Output -eq "dib") {
-								write-host " (DiB)" -ForeGroundColor Magenta
+								write-host " (DiB)" -ForeGroundColor Magenta -NoNewline
 							} elseif ($Output -eq "full") {
-								write-host " (Ful)" -ForeGroundColor Magenta
+								write-host " (Ful)" -ForeGroundColor Magenta -NoNewline
 							} else {
-								write-host " (Min)" -ForeGroundColor Magenta
+								write-host " (Min)" -ForeGroundColor Magenta -NoNewline
 							}
 							for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt $hostWidth; $i++) {
 								write-host " " -NoNewline
 							}
+							$Outputline++
 						}
 					}
-					$Outputline++	
 					# Output Line Spacer
 					$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{$t=$false}finally{
 						if($t) {
@@ -156,22 +193,21 @@ function Start-mJig {
 								if($t) {
 									if ($i -ne 1) {
 										$row = [PSCustomObject]@{
-											logRow = "$i"
-											value = $oldOutputTable[$rows-$i+1].value
+											logRow = $true
+											value = $oldLogArray[$rows-$i+1].value
 										}
 									} else {
 										$row = [PSCustomObject]@{
-											logRow = "$i"
+											logRow = $true
 											value = $date
 										}
 									}
 								}
-								$outputTable += $row
-								write-host $outputTable[$rows-$i-1].value
+								$logArray += $row
+								write-host $logArray[$rows-$i].value
 								$outputLine++
 							}
 						}
-#						}
 					}
 					$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{$t=$false}finally{
 						if($t) {
@@ -271,12 +307,13 @@ function Start-mJig {
 						if (($newBufferSize -ne $oldBufferSize) -or ($newWindowSize -ne $oldWindowSize)) {
 							$hostWidth = $newBufferSize.Width
 							$hostHeight = $newBufferSize.Height
-							$rows = $hostHeight - 6
 							clear-host
 							continue process
+							$oldRows = $rows
 						}
 					}
 					$x++
+					$oldRows = $rows
 					start-sleep -m 500
 				} until ($x -eq $math)
 			} until ($time -eq $true)
