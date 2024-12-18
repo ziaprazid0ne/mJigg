@@ -82,29 +82,40 @@ function Start-mJig {
 			# Start your engines #
 
 			:process do {
-
-				$rows = $hostHeight - 6
 				$outputline = 0
+				$oldRows = $rows
+				$rows = $hostHeight - 6
 				$oldLogArray = $logArray
 				$logArray = @()
 				if ($oldRows -ne $rows) {
-					if ($oldRows -gt $rows) {
-						for ($i = $oldRows; $i -eq $rows+1; $i--) {
-							$LogArray[0].Remove
-
+					if ($oldRows -lt $rows) {
+						$insertArray=@()
+						$row = [PSCustomObject]@{
+							logRow = "insert"
+							value = $null
 						}
-						$logArray += $row
+						for ($i = $rows; $i -gt $oldRows-1; $i--) {
+							$insertArray += $row
+						}
+						$oldLogArray = $insertArray + $oldLogArray
 					} else {
-						for ($i = $oldRows; $i -eq $rows-1; $i++) {
-							$row = [PSCustomObject]@{
-								logRow = $true
-								value = $null
-							}
-							$logArray += $row
-						}
+						$oldLogArray = $oldLogArray[-($oldRows-($oldRows-$rows))..-1]
 					}
 				}
-
+				for ($i = $rows; $i -ge 1; $i--) {
+					if ($i -ne 1) {
+						$row = [PSCustomObject]@{
+							logRow = "$i"
+							value = $oldLogArray[$rows-$i+1].value
+						}
+					} else {
+						$row = [PSCustomObject]@{
+							logRow = "$i"
+							value = $date
+						}
+					}
+						$LogArray += $row
+				}
 				if ($skipUpdate -ne $true) {
 					$pos = [System.Windows.Forms.Cursor]::Position
 					if ($pos -eq $lastPos) {
@@ -187,7 +198,7 @@ function Start-mJig {
 						$log = "   $logOutput"
 					}
 					if ($output -ne "min") {
-						for ($i = $rows; $i -ge 1; $i--) {
+						for ($i = $rows; $i -gt 1; $i--) {
 							$date = get-date
 							$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{$t=$false}finally{
 								if($t) {
@@ -205,22 +216,11 @@ function Start-mJig {
 								}
 								$logArray += $row
 								write-host $logArray[$rows-$i].value
+								
 								$outputLine++
 							}
 						}
 					}
-					$t=$true;try{[Console]::SetCursorPosition(0,$Outputline)}catch{$t=$false}finally{
-						if($t) {
-							for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt $hostWidth; $i++) {
-								Write-Host " " -NoNewLine
-								write-host ("─" * ($hostWidth - 2)) -ForegroundColor White -NoNewline
-								for ($i = $Host.UI.RawUI.CursorPosition.x; $i -lt $hostWidth; $i++) {
-									write-host " " -NoNewline
-								}
-							}
-						}
-					}
-					$Outputline++
 				}	
 				if ($Output -ne "no") {
 					## Menu Options ##
@@ -298,23 +298,22 @@ function Start-mJig {
 							continue process
 						}
 					} elseif ($Output -ne "off") {
-						$oldBufferSize = $newBufferSize
-						$oldWindowSize = $newWindowSize
 						$pshost = Get-Host
 						$pswindow = $pshost.UI.RawUI
 						$newBufferSize = $pswindow.BufferSize
 						$newWindowSize = $pswindow.WindowSize
 						if (($newBufferSize -ne $oldBufferSize) -or ($newWindowSize -ne $oldWindowSize)) {
+							$oldBufferSize = $newBufferSize
+							$oldWindowSize = $newWindowSize
 							$hostWidth = $newBufferSize.Width
 							$hostHeight = $newBufferSize.Height
+							$skipUpdate = $true
 							clear-host
 							continue process
-							$oldRows = $rows
 						}
 					}
 					$x++
-					$oldRows = $rows
-					start-sleep -m 500
+					start-sleep -m 200
 				} until ($x -eq $math)
 			} until ($time -eq $true)
 			if ($output -ne "no") {
