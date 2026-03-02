@@ -1,4 +1,4 @@
-function Start-mJig {
+﻿function Start-mJig {
 
 	#############################################################
 	## mJig - An overly complex powershell mouse jiggling tool ##
@@ -40,7 +40,7 @@ function Start-mJig {
 
 	param(
 		[Parameter(Mandatory = $false)] 
-		[ValidateSet("min", "full", "hidden", "dib")]
+		[ValidateSet("min", "full", "hidden")]
 		[string]$Output = "min",
 		[Parameter(Mandatory = $false)]
 		[switch]$DebugMode,
@@ -80,6 +80,8 @@ function Start-mJig {
 	$script:TravelVariance = $TravelVariance
 	$script:AutoResumeDelaySeconds = $AutoResumeDelaySeconds
 	$script:EndVariance = $EndVariance
+	$script:Output = $Output
+	$script:DebugMode = [bool]$DebugMode
 
 	# Initialize Variables
 	$LastPos = $null
@@ -87,6 +89,7 @@ function Start-mJig {
 	$OldWindowSize = $null
 	$Rows = 0
 	$SkipUpdate = $false
+	$script:PendingForceRedraw = $false
 	$PreviousView = $null  # Store the view before hiding to restore it later
 	$PosUpdate = $false
 	$LogArray = @()
@@ -119,6 +122,12 @@ function Start-mJig {
 	$script:LastClickLogTime = $null  # Track when we last logged a click to prevent duplicate logs
 	$script:WindowTitle = "mJig - mJigg"  # Fixed window title (same for all instances to enable duplicate detection)
 	$script:MenuClickHotkey = $null  # Menu item hotkey triggered by mouse click
+	$script:ModeButtonBounds           = $null  # Header mode button click bounds {y, startX, endX}
+	$script:HeaderEndTimeBounds        = $null  # Header "End⏳/..." hidden click region {y, startX, endX}
+	$script:HeaderCurrentTimeBounds    = $null  # Header "Current⏳/..." hidden click region {y, startX, endX}
+	$script:HeaderLogoBounds           = $null  # Header "mJig(🐀)" logo click region {y, startX, endX}
+	$script:Version                    = "1.0.0"  # Current application version
+	$script:VersionCheckCache          = $null  # Cached result of GitHub release check {latest, url, isNewer, error}
 	$script:PressedMenuButton  = $null   # hotkey of the menu button currently held down (LMB pressed, not yet released)
 	$script:ButtonClickedAt   = $null   # timestamp of confirmed click (LMB UP over button); used to time color restoration
 	$script:PendingDialogCheck = $false  # set on confirmed click; render loop uses it to decide whether to clear pressed state
@@ -136,86 +145,237 @@ function Start-mJig {
 	$script:BoxVerticalLeft = [char]0x2524  # ┤
 	
 	# ============================================================================
-	# Theme Colors - Centralized color definitions for easy customization
+	# Theme Colors
 	# ============================================================================
-	
-	# Menu Bar (bottom of main screen)
-	$script:MenuButtonBg = "DarkBlue"
-	$script:MenuButtonText = "White"
-	$script:MenuButtonHotkey = "Green"
-	$script:MenuButtonPipe = "White"
-	# Pressed / onclick state colors (applied when the user holds LMB on a button)
-	$script:MenuButtonOnClickBg = "DarkCyan"
-	$script:MenuButtonOnClickFg = "Black"
-	$script:MenuButtonOnClickHotkey = "Black"
-	
-	# Main Display - Header
-	$script:HeaderAppName = "Magenta"
-	$script:HeaderIcon = "White"
-	$script:HeaderStatus = "Green"
-	$script:HeaderPaused = "Yellow"
-	$script:HeaderTimeLabel = "Yellow"
-	$script:HeaderTimeValue = "Green"
-	$script:HeaderViewTag = "Magenta"
-	$script:HeaderSeparator = "White"
-	
-	# Main Display - Stats Box
-	$script:StatsBoxBorder = "Cyan"
-	$script:StatsBoxTitle = "Cyan"
-	$script:StatsLabel = "White"
-	$script:StatsValue = "Yellow"
-	$script:StatsValueGood = "Green"
-	$script:StatsValueBad = "Red"
-	
-	# Quit Dialog
-	$script:QuitDialogBg = "DarkMagenta"
-	$script:QuitDialogShadow = "DarkMagenta"
-	$script:QuitDialogBorder = "White"
-	$script:QuitDialogTitle = "Yellow"
-	$script:QuitDialogText = "White"
-	$script:QuitDialogButtonBg = "Magenta"
-	$script:QuitDialogButtonText = "White"
-	$script:QuitDialogButtonHotkey = "Yellow"
-	
-	# Set Time Dialog
-	$script:TimeDialogBg = "DarkBlue"
-	$script:TimeDialogShadow = "DarkBlue"
-	$script:TimeDialogBorder = "White"
-	$script:TimeDialogTitle = "Yellow"
-	$script:TimeDialogText = "White"
-	$script:TimeDialogButtonBg = "Blue"
-	$script:TimeDialogButtonText = "White"
-	$script:TimeDialogButtonHotkey = "Yellow"
-	$script:TimeDialogFieldBg = "Blue"
-	$script:TimeDialogFieldText = "White"
-	
-	# Modify Movement Dialog
-	$script:MoveDialogBg = "DarkBlue"
-	$script:MoveDialogShadow = "DarkBlue"
-	$script:MoveDialogBorder = "White"
-	$script:MoveDialogTitle = "Yellow"
-	$script:MoveDialogSectionTitle = "Yellow"
-	$script:MoveDialogText = "White"
-	$script:MoveDialogButtonBg = "Blue"
-	$script:MoveDialogButtonText = "White"
-	$script:MoveDialogButtonHotkey = "Yellow"
-	$script:MoveDialogFieldBg = "Blue"
-	$script:MoveDialogFieldText = "White"
-	
-	# Resize Screen
-	$script:ResizeBoxBorder = "White"
-	$script:ResizeLogoName = "Magenta"
-	$script:ResizeLogoIcon = "White"
-	$script:ResizeQuoteText = "White"
-	$script:ResizeLogoLockedHeight = $null   # height locked at resize-start; ignores ±1 transient fluctuations
-	
-	# General UI
-	$script:TextDefault = "White"
-	$script:TextMuted = "DarkGray"
+	#
+	# All visual theme variables live here. When YAML theme import is implemented,
+	# each section maps to a top-level YAML key as documented below.
+	#
+	# YAML key              PS variable prefix
+	# ─────────────────     ──────────────────────────
+	# general.*             Text*
+	# mainDisplay.header.*  Header*
+	# mainDisplay.statsBox.*StatsBox*
+	# menuBar.*             MenuButton*
+	#   .onClick.*          MenuButtonOnClick*
+	#   .icon.*             MenuButtonShowIcon / MenuButtonSeparator
+	#   .brackets.*         MenuButtonShowBrackets / MenuButtonBracket* / MenuButtonOnClickBracket*
+	# dialogs.button.*      DialogButton*
+	# dialogs.quit.*        QuitDialog*
+	# dialogs.time.*        TimeDialog*
+	# dialogs.move.*        MoveDialog*
+	# resize.*              Resize*
+	#
+	# ============================================================================
+
+	# --- General ----------------------------------------------------------------
+	# Semantic text colors reused across all components. YAML: general.*
+	$script:TextDefault   = "White"
+	$script:TextMuted     = "DarkGray"
 	$script:TextHighlight = "Cyan"
-	$script:TextSuccess = "Green"
-	$script:TextWarning = "Yellow"
-	$script:TextError = "Red"
+	$script:TextSuccess   = "Green"
+	$script:TextWarning   = "Yellow"
+	$script:TextError     = "Red"
+
+	# --- Main Display: Header ---------------------------------------------------
+	# Top status/info bar. YAML: mainDisplay.header.*
+	$script:HeaderAppName    = "Magenta"
+	$script:HeaderIcon       = "White"
+	$script:HeaderStatus     = "Green"
+	$script:HeaderPaused     = "Yellow"
+	$script:HeaderTimeLabel  = "Yellow"
+	$script:HeaderTimeValue  = "Green"
+	$script:HeaderViewTag    = "Magenta"
+	$script:HeaderSeparator  = "White"
+	# Background applied to the 3-row header group (blank + header + separator).
+	# $null = terminal default (transparent). YAML: mainDisplay.header.bg
+	$script:HeaderBg         = "DarkBlue"
+	# Background applied only to the header content row (not the blank or separator).
+	# YAML: mainDisplay.header.rowBg
+	$script:HeaderRowBg      = "DarkCyan"
+	# Background applied to the 3-row footer group (separator + menu + blank).
+	# $null = terminal default (transparent). YAML: mainDisplay.footer.bg
+	$script:FooterBg         = "DarkBlue"
+	# Background applied only to the menu bar row (not the separator or blank).
+	# YAML: mainDisplay.footer.rowBg
+	$script:MenuRowBg        = "DarkCyan"
+	# Blank-line/column border around the chrome. Minimum 1.
+	# Only the innermost row/column on each side receives the Header/FooterBg; extras stay transparent.
+	# YAML: mainDisplay.borderPadV (top/bottom rows)
+	$script:BorderPadV       = 1
+	# YAML: mainDisplay.borderPadH (left/right columns)
+	$script:BorderPadH       = 1
+
+	# --- Main Display: Stats Box ------------------------------------------------
+	# Right-side stats panel. YAML: mainDisplay.statsBox.*
+	$script:StatsBoxBorder    = "Cyan"
+	$script:StatsBoxTitle     = "Cyan"
+	$script:StatsBoxLabel     = "White"
+	$script:StatsBoxValue     = "Yellow"
+	$script:StatsBoxValueGood = "Green"
+	$script:StatsBoxValueBad  = "Red"
+
+	# --- Menu Bar: Normal State -------------------------------------------------
+	# Bottom menu bar button colors. YAML: menuBar.*
+	$script:MenuButtonBg          = "DarkBlue"
+	$script:MenuButtonText        = "White"
+	$script:MenuButtonHotkey      = "Green"
+	$script:MenuButtonSeparatorFg = "White"
+
+	# --- Menu Bar: Pressed / OnClick State -------------------------------------
+	# Applied while the user holds LMB on a button. YAML: menuBar.onClick.*
+	$script:MenuButtonOnClickBg          = "DarkCyan"
+	$script:MenuButtonOnClickFg          = "Black"
+	$script:MenuButtonOnClickHotkey      = "Black"
+	$script:MenuButtonOnClickSeparatorFg = "Black"
+
+	# --- Menu Bar: Icon Prefix -------------------------------------------------
+	# The emoji + separator rendered before the button label (e.g. "👁 |").
+	# YAML: menuBar.icon.*
+	$script:MenuButtonShowIcon  = $true   # Show/hide the icon prefix
+	$script:MenuButtonSeparator = "|"     # Character between icon and label
+
+	# --- Menu Bar: Bracket Wrapping --------------------------------------------
+	# Optional [ ] wrapping around the full button (e.g. "[👁 |toggle_(v)iew]").
+	# YAML: menuBar.brackets.*
+	$script:MenuButtonShowBrackets     = $true
+	$script:MenuButtonBracketFg        = "DarkCyan"
+	$script:MenuButtonBracketBg        = "DarkBlue"
+	$script:MenuButtonOnClickBracketFg = "Black"
+	$script:MenuButtonOnClickBracketBg = "DarkCyan"
+
+	# --- Global: Hotkey Parentheses --------------------------------------------
+	# Controls whether () appear around hotkey letters. Each group is independent
+	# so a theme can hide parens on menu buttons but keep them on dialogs (or vice versa).
+	# The letter is still highlighted in its hotkey color when parens are hidden.
+	# YAML: menuBar.hotkeyParens / dialogs.hotkeyParens
+	$script:MenuButtonShowHotkeyParens   = $false   # Menu bar buttons + header mode button
+	$script:DialogButtonShowHotkeyParens = $false    # All dialog box buttons
+
+	# --- Dialogs: Shared Button Settings ---------------------------------------
+	# Icon prefix and bracket wrapping applied to action buttons in all dialogs.
+	# YAML: dialogs.button.*
+	$script:DialogButtonShowIcon     = $true
+	$script:DialogButtonSeparator    = "|"
+	$script:DialogButtonShowBrackets = $false
+	$script:DialogButtonBracketFg    = "White"
+	$script:DialogButtonBracketBg    = $null   # null = transparent (inherits dialog BG)
+
+	# --- Dialogs: Quit ---------------------------------------------------------
+	# YAML: dialogs.quit.*
+	$script:QuitDialogBg           = "DarkMagenta"
+	$script:QuitDialogShadow       = "DarkMagenta"
+	$script:QuitDialogBorder       = "White"
+	$script:QuitDialogTitle        = "Yellow"
+	$script:QuitDialogText         = "White"
+	$script:QuitDialogButtonBg     = "Magenta"
+	$script:QuitDialogButtonText   = "White"
+	$script:QuitDialogButtonHotkey = "Yellow"
+
+	# --- Menu Bar: Quit Button -------------------------------------------------
+	# Overrides the shared menu button colors specifically for the quit button.
+	# Defaults inherit from the standard MenuButton* variables.
+	# YAML: menuBar.quitButton.*
+	$script:QuitButtonBg               = $script:MenuButtonBg
+	$script:QuitButtonText             = $script:MenuButtonText
+	$script:QuitButtonHotkey           = $script:MenuButtonHotkey
+	$script:QuitButtonSeparatorFg      = $script:MenuButtonSeparatorFg
+	$script:QuitButtonBracketFg        = $script:MenuButtonBracketFg
+	$script:QuitButtonBracketBg        = $script:MenuButtonBracketBg
+	$script:QuitButtonOnClickBg        = $script:QuitDialogBg
+	$script:QuitButtonOnClickFg        = $script:QuitDialogText
+	$script:QuitButtonOnClickHotkey    = $script:QuitDialogTitle
+	$script:QuitButtonOnClickSeparatorFg  = $script:QuitDialogText
+	$script:QuitButtonOnClickBracketFg    = $script:QuitDialogBorder
+	$script:QuitButtonOnClickBracketBg    = $script:QuitDialogBg
+
+	# --- Dialogs: Settings --------------------------------------------------------
+	# Colors for the settings mini-popup that appears above the Settings menu button.
+	# OnFocus = normal/active state.  OffFocus = dimmed state while a sub-dialog is open.
+	# YAML: dialogs.settings.*
+	$script:SettingsDialogBg           = "DarkBlue"
+	$script:SettingsDialogBorder       = "White"
+	$script:SettingsDialogTitle        = "Yellow"
+	$script:SettingsDialogText         = "White"
+	$script:SettingsDialogButtonBg     = "Blue"
+	$script:SettingsDialogButtonText   = "White"
+	$script:SettingsDialogButtonHotkey = "Yellow"
+	# Off-focus: used while a sub-dialog launched from settings is open
+	# YAML: dialogs.settings.offFocus.*
+	$script:SettingsDialogOffFocusBg           = "DarkGray"
+	$script:SettingsDialogOffFocusBorder       = "Gray"
+	$script:SettingsDialogOffFocusTitle        = "DarkYellow"
+	$script:SettingsDialogOffFocusText         = "Gray"
+	$script:SettingsDialogOffFocusButtonBg     = "DarkGray"
+	$script:SettingsDialogOffFocusButtonText   = "Gray"
+	$script:SettingsDialogOffFocusButtonHotkey = "DarkYellow"
+
+	# --- Menu Bar: Settings Button ------------------------------------------------
+	# Overrides shared menu button colors for the settings button.
+	# OnClick defaults match the settings dialog so the button highlights when open.
+	# YAML: menuBar.settingsButton.*
+	$script:SettingsButtonBg                 = $script:MenuButtonBg
+	$script:SettingsButtonText               = $script:MenuButtonText
+	$script:SettingsButtonHotkey             = $script:MenuButtonHotkey
+	$script:SettingsButtonSeparatorFg        = $script:MenuButtonSeparatorFg
+	$script:SettingsButtonBracketFg          = $script:MenuButtonBracketFg
+	$script:SettingsButtonBracketBg          = $script:MenuButtonBracketBg
+	$script:SettingsButtonOnClickBg          = $script:SettingsDialogBg
+	$script:SettingsButtonOnClickFg          = $script:SettingsDialogText
+	$script:SettingsButtonOnClickHotkey      = $script:SettingsDialogTitle
+	$script:SettingsButtonOnClickSeparatorFg = $script:SettingsDialogText
+	$script:SettingsButtonOnClickBracketFg   = $script:SettingsDialogBorder
+	$script:SettingsButtonOnClickBracketBg   = $script:SettingsDialogBg
+
+	# --- Dialogs: Set End Time -------------------------------------------------
+	# YAML: dialogs.time.*
+	$script:TimeDialogBg           = "DarkBlue"
+	$script:TimeDialogShadow       = "DarkBlue"
+	$script:TimeDialogBorder       = "White"
+	$script:TimeDialogTitle        = "Yellow"
+	$script:TimeDialogText         = "White"
+	$script:TimeDialogButtonBg     = "Blue"
+	$script:TimeDialogButtonText   = "White"
+	$script:TimeDialogButtonHotkey = "Yellow"
+	$script:TimeDialogFieldBg      = "Blue"
+	$script:TimeDialogFieldText    = "White"
+
+	# --- Dialogs: Modify Movement ----------------------------------------------
+	# YAML: dialogs.move.*
+	$script:MoveDialogBg            = "DarkBlue"
+	$script:MoveDialogShadow        = "DarkBlue"
+	$script:MoveDialogBorder        = "White"
+	$script:MoveDialogTitle         = "Yellow"
+	$script:MoveDialogSectionTitle  = "Yellow"
+	$script:MoveDialogText          = "White"
+	$script:MoveDialogButtonBg      = "Blue"
+	$script:MoveDialogButtonText    = "White"
+	$script:MoveDialogButtonHotkey  = "Yellow"
+	$script:MoveDialogFieldBg       = "Blue"
+	$script:MoveDialogFieldText     = "White"
+
+	# --- Dialogs: Info / About -------------------------------------------------
+	# YAML: dialogs.info.*
+	$script:InfoDialogBg           = "DarkBlue"
+	$script:InfoDialogShadow       = "DarkBlue"
+	$script:InfoDialogBorder       = "White"
+	$script:InfoDialogTitle        = "Yellow"
+	$script:InfoDialogText         = "White"
+	$script:InfoDialogValue        = "Cyan"
+	$script:InfoDialogValueGood    = "Green"
+	$script:InfoDialogValueWarn    = "Yellow"
+	$script:InfoDialogValueMuted   = "DarkGray"
+	$script:InfoDialogSectionTitle = "Yellow"
+	$script:InfoDialogButtonBg     = "Blue"
+	$script:InfoDialogButtonText   = "White"
+	$script:InfoDialogButtonHotkey = "Yellow"
+
+	# --- Resize Screen ---------------------------------------------------------
+	# YAML: resize.*
+	$script:ResizeBoxBorder  = "White"
+	$script:ResizeLogoName   = "Magenta"
+	$script:ResizeLogoIcon   = "White"
+	$script:ResizeQuoteText  = "White"
 	
 	# ============================================================================
 	# Startup / Initializing Screen
@@ -256,26 +416,11 @@ function Start-mJig {
 		$endTimeDisplay    = if ($EndTime -and $EndTime -ne "0") { $EndTime } else { "none" }
 		$autoResumeDisplay = if ($script:AutoResumeDelaySeconds -gt 0) { "$($script:AutoResumeDelaySeconds)s" } else { "off" }
 
-		# Always-on resize diagnostic — does not require -Diag flag.
-		# Run the script, resize during the welcome screen, then read: Get-Content ".\_diag\welcome.txt"
-		$_wDiagDir  = Join-Path (Split-Path $PSScriptRoot -Parent) "_diag"
-		$_wDiagFile = Join-Path $_wDiagDir "welcome.txt"
-		try {
-			if (-not (Test-Path $_wDiagDir)) { New-Item -ItemType Directory -Path $_wDiagDir -Force | Out-Null }
-			"=== Welcome Screen Resize Diag: $(Get-Date -Format 'HH:mm:ss.fff') ===" | Out-File $_wDiagFile -Encoding utf8
-		} catch { $_wDiagFile = $null }
-		function wLog { param([string]$msg)
-			if ($null -ne $_wDiagFile) {
-				try { "$(Get-Date -Format 'HH:mm:ss.fff') $msg" | Out-File $_wDiagFile -Append -Encoding utf8 } catch {}
-			}
-		}
-
 		function drawCompleteScreen {
 			param([string]$PromptText)
 
 			$sw    = try { $Host.UI.RawUI.WindowSize.Width  } catch { 80 }
 			$sh    = try { $Host.UI.RawUI.WindowSize.Height } catch { 24 }
-			wLog "drawCompleteScreen: PShost sw=$sw sh=$sh  prompt='$PromptText'"
 			$boxW  = [Math]::Min(58, $sw - 4)
 			$pad   = " " * [Math]::Max(0, [Math]::Floor(($sw - $boxW) / 2))
 			$inner = $boxW - 2
@@ -294,6 +439,7 @@ function Start-mJig {
 			Write-Host "$pad$div"  -ForegroundColor Cyan
 			Write-Host "$pad$blank" -ForegroundColor Cyan
 			Write-Host "$pad$($script:BoxVertical)$("  Initialization complete".PadRight($inner))$($script:BoxVertical)" -ForegroundColor Green
+			Write-Host "$pad$($script:BoxVertical)$("  Version:     $($script:Version)".PadRight($inner))$($script:BoxVertical)" -ForegroundColor White
 			Write-Host "$pad$blank" -ForegroundColor Cyan
 			Write-Host "$pad$($script:BoxVertical)$("  Output:      $Output".PadRight($inner))$($script:BoxVertical)"  -ForegroundColor White
 			Write-Host "$pad$($script:BoxVertical)$("  Interval:    $($script:IntervalSeconds)s  (variance: +-$($script:IntervalVariance)s)".PadRight($inner))$($script:BoxVertical)" -ForegroundColor White
@@ -309,157 +455,159 @@ function Start-mJig {
 			Write-Host "$pad$bot"   -ForegroundColor Cyan
 		}
 
-		# Read current window size via direct Win32 GetConsoleScreenBufferInfo P/Invoke.
-		# This bypasses every PowerShell and .NET abstraction layer that might cache a stale value.
-		# srWindow is the visible console window rectangle; width = Right-Left+1, height = Bottom-Top+1.
-		function getSize {
+		function getSize { @{ W = $Host.UI.RawUI.WindowSize.Width; H = $Host.UI.RawUI.WindowSize.Height } }
+
+	# Shared helper: wait for any non-modifier key-UP via PeekConsoleInput (5ms poll).
+	# Returns when a qualifying key-up is detected; flushes all buffered events so the
+	# main loop starts with a clean input queue.  Falls back to KeyAvailable if the
+	# Win32 API is unavailable.
+	$modifierVKs = @(0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C)
+	$waitForKeyUp = {
+		$hIn = [mJiggAPI.Mouse]::GetStdHandle(-10)
+		$peekBuf  = New-Object 'mJiggAPI.INPUT_RECORD[]' 32
+		$peekEvts = [uint32]0
+		$detected = $false
+		while (-not $detected) {
+			Start-Sleep -Milliseconds 5
 			try {
-				$_csbi = New-Object mJiggAPI.CONSOLE_SCREEN_BUFFER_INFO
-				$_hOut = [mJiggAPI.Mouse]::GetStdHandle(-11)   # STD_OUTPUT_HANDLE
-				$_ok   = [mJiggAPI.Mouse]::GetConsoleScreenBufferInfo($_hOut, [ref]$_csbi)
-				wLog "getSize CSBI ok=$_ok  bufW=$($_csbi.dwSize.X) bufH=$($_csbi.dwSize.Y)  win=L$($_csbi.srWindow.Left),T$($_csbi.srWindow.Top),R$($_csbi.srWindow.Right),B$($_csbi.srWindow.Bottom)  => W=$([int]($_csbi.srWindow.Right-$_csbi.srWindow.Left+1)) H=$([int]($_csbi.srWindow.Bottom-$_csbi.srWindow.Top+1))  PShost=W=$($Host.UI.RawUI.WindowSize.Width),H=$($Host.UI.RawUI.WindowSize.Height)"
-				if ($_ok) {
-					return @{
-						W = [int]($_csbi.srWindow.Right  - $_csbi.srWindow.Left + 1)
-						H = [int]($_csbi.srWindow.Bottom - $_csbi.srWindow.Top  + 1)
+				if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 32, [ref]$peekEvts) -and $peekEvts -gt 0) {
+					for ($e = 0; $e -lt [int]$peekEvts; $e++) {
+						if ($peekBuf[$e].EventType -eq 0x0001 -and $peekBuf[$e].KeyEvent.bKeyDown -eq 0 -and
+						    $peekBuf[$e].KeyEvent.wVirtualKeyCode -notin $modifierVKs) {
+							$detected = $true; break
+						}
+					}
+					if ($detected) {
+						$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $peekEvts
+						$flushed  = [uint32]0
+						[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $peekEvts, [ref]$flushed) | Out-Null
 					}
 				}
 			} catch {
-				wLog "getSize EXCEPTION: $($_.Exception.Message)"
-			}
-			wLog "getSize FALLBACK => W=$($Host.UI.RawUI.WindowSize.Width) H=$($Host.UI.RawUI.WindowSize.Height)"
-			@{ W = $Host.UI.RawUI.WindowSize.Width; H = $Host.UI.RawUI.WindowSize.Height }
-		}
-
-		# Drain the entire input buffer and return $true if a genuine keypress was found.
-		# Rules:
-		#   - Must use IncludeKeyDown,IncludeKeyUp: IncludeKeyDown-only causes ReadKey to BLOCK
-		#     on KeyUp events (waits for the next KeyDown), freezing the polling loop.
-		#   - Must drain ALL events before returning, not stop at the first non-wake key.
-		#     Send-ResizeExitWakeKey injects VK_RMENU (165). The console input buffer reports
-		#     this as VK_MENU (18), not 165. A stale KeyUp from a previous key can cause an early
-		#     return that leaves the VK_MENU event behind; on the next tick it counts as a real
-		#     keypress and dismisses the screen without user input.
-		#   - Modifier keys (Shift/Ctrl/Alt and their L/R variants) are never "press any key".
-		$_wakeVKs = @(16, 17, 18, 160, 161, 162, 163, 164, 165)  # Shift, Ctrl, Alt + L/R variants
-		function drainWakeKeys {
-			$_real = $false
-			try {
-				while ($Host.UI.RawUI.KeyAvailable) {
-					$k = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,IncludeKeyUp,AllowCtrlC")
-					wLog "drainWakeKeys: VK=$($k.VirtualKeyCode) KeyDown=$($k.KeyDown)"
-					if ($k.KeyDown -and $k.VirtualKeyCode -notin $_wakeVKs) { $_real = $true }
-				}
-			} catch { wLog "drainWakeKeys EXCEPTION: $($_.Exception.Message)" }
-			return $_real
-		}
-
-		# Self-contained resize handler for the welcome screen.
-		# Intentionally does NOT call Invoke-ResizeHandler or Send-ResizeExitWakeKey —
-		# those are for the main loop.  Draws the logo directly, waits for stability,
-		# then redraws the welcome-screen box.
-		function handleResize {
-			param([string]$PromptText)
-			$script:CurrentResizeQuote     = $null
-			$script:ResizeLogoLockedHeight = $null
-			$_hrHOut = [mJiggAPI.Mouse]::GetStdHandle(-11)  # STD_OUTPUT_HANDLE for CSBI
-			$_hrCsbi = New-Object mJiggAPI.CONSOLE_SCREEN_BUFFER_INFO
-			$sz  = getSize
-			$rW  = $sz.W
-			$rH  = $sz.H
-			$rSz = New-Object System.Management.Automation.Host.Size($rW, $rH)
-			try { Draw-ResizeLogo -ClearFirst -WindowSize $rSz } catch { try { [Console]::Clear() } catch {} }
-			$lastChange = Get-Date
-			while ($true) {
-				Start-Sleep -Milliseconds 10
-				# Read size directly from Win32 — no PS host, no .NET caching layer.
-				$nW = $rW; $nH = $rH
-				try {
-					if ([mJiggAPI.Mouse]::GetConsoleScreenBufferInfo($_hrHOut, [ref]$_hrCsbi)) {
-						$nW = [int]($_hrCsbi.srWindow.Right  - $_hrCsbi.srWindow.Left + 1)
-						$nH = [int]($_hrCsbi.srWindow.Bottom - $_hrCsbi.srWindow.Top  + 1)
-					}
-				} catch {}
-				if ($nW -ne $rW -or $nH -ne $rH) {
-					$rW = $nW; $rH = $nH
-					$rSz = New-Object System.Management.Automation.Host.Size($rW, $rH)
-					$lastChange = Get-Date
-					try { Draw-ResizeLogo -ClearFirst -WindowSize $rSz } catch {}
-				}
-				$elapsed = ((Get-Date) - $lastChange).TotalMilliseconds
-				if ($elapsed -ge 1500) {
-					$lmb = $false
-					try { $lmb = ([mJiggAPI.Mouse]::GetAsyncKeyState(0x01) -band 0x8000) -ne 0 } catch {}
-					if (-not $lmb) { break }
+				# Fallback: accept any buffered key
+				if ($Host.UI.RawUI.KeyAvailable) {
+					try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,IncludeKeyUp,AllowCtrlC") } catch {}
+					$detected = $true
 				}
 			}
-			wLog "handleResize: resize loop exited, clearing screen and redrawing welcome"
-			try { [Console]::Clear() } catch { wLog "handleResize: Clear EXCEPTION: $($_.Exception.Message)" }
-			try { Restore-ConsoleInputMode } catch { wLog "handleResize: RestoreInputMode EXCEPTION: $($_.Exception.Message)" }
-			wLog "handleResize: calling drainWakeKeys before redraw"
-			$null = drainWakeKeys
-			wLog "handleResize: calling drawCompleteScreen '$PromptText'"
-			drawCompleteScreen $PromptText
-			wLog "handleResize: drawCompleteScreen returned, handleResize exiting"
 		}
+	}
 
-		if (-not $HasParams) {
-			# Wait for a real keypress; call handleResize when window size changes.
-			drawCompleteScreen "Press any key to continue..."
-			# Prime Windows Terminal's input routing before polling begins.
-			try { Restore-ConsoleInputMode } catch {}
-			try { Send-ResizeExitWakeKey   } catch {}
-			wLog "--- POLL START (no-params branch) ---"
-			$lastSize   = getSize
-			wLog "baseline lastSize W=$($lastSize.W) H=$($lastSize.H)"
-			$null = drainWakeKeys   # consume the synthetic wake key before real keypress detection
-			$keyPressed = $false
-			$_pollTick  = 0
-			while (-not $keyPressed) {
-				Start-Sleep -Milliseconds 50
-				$_pollTick++
+	if (-not $HasParams) {
+		# Wait for key-up; check for resize every 50ms while polling
+		drawCompleteScreen "Press any key to continue..."
+		$lastSize   = getSize
+		$hIn        = [mJiggAPI.Mouse]::GetStdHandle(-10)
+		$peekBuf    = New-Object 'mJiggAPI.INPUT_RECORD[]' 32
+		$peekEvts   = [uint32]0
+		# Drain events buffered before the prompt appeared (e.g. Enter key-up from launch)
+		try { $Host.UI.RawUI.FlushInputBuffer() } catch {}
+		$detected   = $false
+		$resizeTick = 0
+		while (-not $detected) {
+			Start-Sleep -Milliseconds 5
+			$resizeTick++
+			if ($resizeTick -ge 10) {
+				$resizeTick = 0
 				$curSize = getSize
 				if ($curSize.W -ne $lastSize.W -or $curSize.H -ne $lastSize.H) {
-					wLog "RESIZE DETECTED tick=$_pollTick  last=W$($lastSize.W)xH$($lastSize.H)  cur=W$($curSize.W)xH$($curSize.H) -- calling handleResize"
-					handleResize "Press any key to continue..."
-					wLog "outer loop: handleResize returned, updating lastSize"
+					$null = Invoke-ResizeHandler
+					drawCompleteScreen "Press any key to continue..."
 					$lastSize = getSize
-					wLog "outer loop: post-handleResize lastSize W=$($lastSize.W) H=$($lastSize.H) -- resuming poll"
-				} elseif ($_pollTick % 20 -eq 0) {
-					wLog "tick=$_pollTick no-change W=$($curSize.W) H=$($curSize.H)"
-				}
-				$_ka = $Host.UI.RawUI.KeyAvailable
-				if ($_pollTick % 20 -eq 0) { wLog "tick=$_pollTick KeyAvailable=$_ka" }
-				if ($_ka) {
-					wLog "KeyAvailable=true at tick=$_pollTick -- calling drainWakeKeys"
-					if (drainWakeKeys) { $keyPressed = $true }
 				}
 			}
-			wLog "--- POLL END (keyPressed=$keyPressed) ---"
-		} else {
-			# Countdown; call handleResize on resize, redraw each second.
-			# Prime input routing before the countdown polling loop starts.
-			try { Restore-ConsoleInputMode } catch {}
-			try { Send-ResizeExitWakeKey   } catch {}
-			$null = drainWakeKeys
-			$lastSize = getSize
-			for ($i = 7; $i -gt 0; $i--) {
-				$secs = if ($i -eq 1) { "second" } else { "seconds" }
-				drawCompleteScreen "Starting in $i $secs...  (any key to skip)"
-				$lastSize = getSize
-				for ($ms = 0; $ms -lt 10; $ms++) {
-					Start-Sleep -Milliseconds 100
+			try {
+				if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 32, [ref]$peekEvts) -and $peekEvts -gt 0) {
+					for ($e = 0; $e -lt [int]$peekEvts; $e++) {
+						if ($peekBuf[$e].EventType -eq 0x0001 -and $peekBuf[$e].KeyEvent.bKeyDown -eq 0 -and
+						    $peekBuf[$e].KeyEvent.wVirtualKeyCode -notin $modifierVKs) {
+							$detected = $true; break
+						}
+					}
+					if ($detected) {
+						$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $peekEvts
+						$flushed  = [uint32]0
+						[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $peekEvts, [ref]$flushed) | Out-Null
+					}
+				}
+			} catch {
+				if ($Host.UI.RawUI.KeyAvailable) {
+					try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,IncludeKeyUp,AllowCtrlC") } catch {}
+					$detected = $true
+				}
+			}
+		}
+	} else {
+		# Countdown: 7 seconds, 1s per tick, key-up skips immediately
+		$lastSize = getSize
+		$hIn      = [mJiggAPI.Mouse]::GetStdHandle(-10)
+		$peekBuf  = New-Object 'mJiggAPI.INPUT_RECORD[]' 32
+		$peekEvts = [uint32]0
+		# Drain events buffered before the prompt appeared (e.g. Enter key-up from launch)
+		try { $Host.UI.RawUI.FlushInputBuffer() } catch {}
+		$detected = $false
+		for ($i = 7; $i -gt 0 -and -not $detected; $i--) {
+			$secs = if ($i -eq 1) { "second" } else { "seconds" }
+			drawCompleteScreen "Starting in $i $secs...  (any key to skip)"
+			$lastSize  = getSize
+			$secStart  = [DateTime]::UtcNow
+			$resizeTick = 0
+			while (-not $detected -and ([DateTime]::UtcNow - $secStart).TotalMilliseconds -lt 1000) {
+				Start-Sleep -Milliseconds 5
+				$resizeTick++
+				if ($resizeTick -ge 10) {
+					$resizeTick = 0
 					$curSize = getSize
 					if ($curSize.W -ne $lastSize.W -or $curSize.H -ne $lastSize.H) {
-						handleResize "Starting in $i $secs...  (any key to skip)"
+						$null = Invoke-ResizeHandler
+						drawCompleteScreen "Starting in $i $secs...  (any key to skip)"
 						$lastSize = getSize
 					}
+				}
+				try {
+					if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 32, [ref]$peekEvts) -and $peekEvts -gt 0) {
+						for ($e = 0; $e -lt [int]$peekEvts; $e++) {
+							if ($peekBuf[$e].EventType -eq 0x0001 -and $peekBuf[$e].KeyEvent.bKeyDown -eq 0 -and
+							    $peekBuf[$e].KeyEvent.wVirtualKeyCode -notin $modifierVKs) {
+								$detected = $true; break
+							}
+						}
+						if ($detected) {
+							$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $peekEvts
+							$flushed  = [uint32]0
+							[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $peekEvts, [ref]$flushed) | Out-Null
+						}
+					}
+				} catch {
 					if ($Host.UI.RawUI.KeyAvailable) {
-						if (drainWakeKeys) { return }
+						try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,IncludeKeyUp,AllowCtrlC") } catch {}
+						$detected = $true
 					}
 				}
 			}
 		}
+	}
+	}
+
+	# Fetches the latest release info from GitHub. Returns a hashtable with
+	# {latest, url, isNewer, error}. Result is cached in $script:VersionCheckCache
+	# so subsequent calls are instant. Pass -Force to bypass the cache.
+	function Get-LatestVersionInfo {
+		param([switch]$Force)
+		if (-not $Force -and $null -ne $script:VersionCheckCache) {
+			return $script:VersionCheckCache
+		}
+		try {
+			$response   = Invoke-RestMethod -Uri "https://api.github.com/repos/ziaprazid0ne/mJig/releases/latest" -TimeoutSec 5 -UseBasicParsing
+			$latestTag  = $response.tag_name -replace '^v', ''
+			$isNewer    = $false
+			try { $isNewer = ([version]$latestTag -gt [version]$script:Version) } catch {}
+			$result = @{ latest = $latestTag; url = $response.html_url; isNewer = $isNewer; error = $null }
+		} catch {
+			$result = @{ latest = $null; url = $null; isNewer = $false; error = "Could not connect" }
+		}
+		$script:VersionCheckCache = $result
+		return $result
 	}
 
 	# Unified resize handler — blocks until the window is stable and LMB is released.
@@ -938,7 +1086,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 		# Diagnostics - initialize folder and file paths
 		$script:DiagEnabled = $Diag
 		if ($script:DiagEnabled) {
-			$script:DiagFolder = Join-Path (Split-Path $PSScriptRoot -Parent) "_diag"
+			$script:DiagFolder = Join-Path $PSScriptRoot "_diag"
 			if (-not (Test-Path $script:DiagFolder)) {
 				New-Item -ItemType Directory -Path $script:DiagFolder -Force | Out-Null
 			}
@@ -1788,17 +1936,18 @@ namespace mJiggAPI {
 			[ConsoleColor]::Red = 101; [ConsoleColor]::Magenta = 105; [ConsoleColor]::Yellow = 103; [ConsoleColor]::White = 107
 		}
 
-		function Write-Buffer {
-			param(
-				[int]$X = -1,
-				[int]$Y = -1,
-				[string]$Text,
-				[object]$FG = $null,
-				[object]$BG = $null,
-				[switch]$Wide
-			)
-			if ($Wide -and $null -ne $BG) { $Text = $Text + " " }
-			$script:RenderQueue.Add(@{ X = $X; Y = $Y; Text = $Text; FG = $FG; BG = $BG })
+	function Write-Buffer {
+		param(
+			[int]$X = -1,
+			[int]$Y = -1,
+			[string]$Text,
+			[object]$FG = $null,
+			[object]$BG = $null,
+			[switch]$Wide,
+			[switch]$NoWrap  # Disable auto-wrap for this segment (use for last row to avoid scroll)
+		)
+		if ($Wide -and $null -ne $BG) { $Text = $Text + " " }
+		$script:RenderQueue.Add(@{ X = $X; Y = $Y; Text = $Text; FG = $FG; BG = $BG; NoWrap = $NoWrap.IsPresent })
 		}
 
 		function Flush-Buffer {
@@ -1810,19 +1959,21 @@ namespace mJiggAPI {
 			if ($ClearFirst) { [void]$sb.Append("${csi}2J") }
 			$lastFGCode = -1
 			$lastBGCode = -1
-			foreach ($seg in $script:RenderQueue) {
-				$fgCode = if ($null -ne $seg.FG) { $script:AnsiFG[[ConsoleColor]$seg.FG] } else { 39 }
-				$bgCode = if ($null -ne $seg.BG) { $script:AnsiBG[[ConsoleColor]$seg.BG] } else { 49 }
-				if ($seg.X -ge 0 -and $seg.Y -ge 0) {
-					[void]$sb.Append("${csi}$($seg.Y + 1);$($seg.X + 1)H")
-				}
-				if ($fgCode -ne $lastFGCode -or $bgCode -ne $lastBGCode) {
-					[void]$sb.Append("${csi}${fgCode};${bgCode}m")
-					$lastFGCode = $fgCode
-					$lastBGCode = $bgCode
-				}
-				[void]$sb.Append($seg.Text)
+		foreach ($seg in $script:RenderQueue) {
+			$fgCode = if ($null -ne $seg.FG) { $script:AnsiFG[[ConsoleColor]$seg.FG] } else { 39 }
+			$bgCode = if ($null -ne $seg.BG) { $script:AnsiBG[[ConsoleColor]$seg.BG] } else { 49 }
+			if ($seg.NoWrap) { [void]$sb.Append("${csi}?7l") }  # disable auto-wrap
+			if ($seg.X -ge 0 -and $seg.Y -ge 0) {
+				[void]$sb.Append("${csi}$($seg.Y + 1);$($seg.X + 1)H")
 			}
+			if ($fgCode -ne $lastFGCode -or $bgCode -ne $lastBGCode) {
+				[void]$sb.Append("${csi}${fgCode};${bgCode}m")
+				$lastFGCode = $fgCode
+				$lastBGCode = $bgCode
+			}
+			[void]$sb.Append($seg.Text)
+			if ($seg.NoWrap) { [void]$sb.Append("${csi}?7h") }  # re-enable auto-wrap
+		}
 			[void]$sb.Append("${csi}0m")
 			if ($script:CursorVisible) { [void]$sb.Append("${csi}?25h") }
 			[Console]::Write($sb.ToString())
@@ -1837,46 +1988,75 @@ namespace mJiggAPI {
 		# Used for instant press/release visual feedback without waiting for the next full frame.
 		# Requires the bounds entry to include displayText (string) and format (int: 0=emoji, 1/2=text).
 		function Write-ButtonImmediate {
-			param($btn, $fg, $bg, $hotkeyFg)
+			param($btn, $fg, $bg, $hotkeyFg, $pipeFg = $null, $bracketFg = $null, $bracketBg = $null)
 			$text   = $btn.displayText
 			$startX = $btn.startX
 			$y      = $btn.y
+			$rPipeFg    = if ($null -ne $pipeFg)    { $pipeFg }    else { $script:MenuButtonSeparatorFg }
+			$rBracketFg = if ($null -ne $bracketFg) { $bracketFg } else { $script:MenuButtonBracketFg }
+			$rBracketBg = if ($null -ne $bracketBg) { $bracketBg } else { $script:MenuButtonBracketBg }
+			# ? help button: single character rendered entirely in hotkey color, with optional brackets
+			if ($btn.isHelpButton -eq $true) {
+				$hContentX = $startX
+				if ($script:MenuButtonShowBrackets) {
+					Write-Buffer -X $hContentX -Y $y -Text "[" -FG $rBracketFg -BG $rBracketBg
+					$hContentX += 1
+				}
+				Write-Buffer -X $hContentX -Y $y -Text "?" -FG $hotkeyFg -BG $bg
+				if ($script:MenuButtonShowBrackets) {
+					Write-Buffer -Text "]" -FG $rBracketFg -BG $rBracketBg
+				}
+				Flush-Buffer
+				return
+			}
 			if ($btn.format -eq 0) {
 				# Emoji format: "emoji|label (k) text"
 				$parts = $text -split "\|", 2
 				if ($parts.Count -eq 2) {
-					Write-Buffer -X $startX -Y $y -Text $parts[0] -BG $bg -Wide
-					$pipeX = $startX + 2
-					Write-Buffer -X $pipeX -Y $y -Text "|" -FG $fg -BG $bg
-					$textParts = $parts[1] -split "([()])"
-					for ($j = 0; $j -lt $textParts.Count; $j++) {
-						$part = $textParts[$j]
-						if ($part -eq "(" -and $j+2 -lt $textParts.Count -and $textParts[$j+1] -match '^[a-z]$' -and $textParts[$j+2] -eq ")") {
-							Write-Buffer -Text "(" -FG $fg -BG $bg
-							Write-Buffer -Text $textParts[$j+1] -FG $hotkeyFg -BG $bg
-							Write-Buffer -Text ")" -FG $fg -BG $bg
-							$j += 2
-						} elseif ($part -ne "") {
-							Write-Buffer -Text $part -FG $fg -BG $bg
-						}
+					$contentX = $startX
+					if ($script:MenuButtonShowBrackets) {
+						Write-Buffer -X $contentX -Y $y -Text "[" -FG $rBracketFg -BG $rBracketBg
+						$contentX += 1
 					}
-				}
-			} else {
-				# Text-only formats (noIcons / short)
-				Write-Buffer -X $startX -Y $y -Text "" -BG $bg
-				$textParts = $text -split "([()])"
+					if ($script:MenuButtonShowIcon) {
+						Write-Buffer -X $contentX -Y $y -Text $parts[0] -BG $bg -Wide
+						$sepX = $contentX + 2
+						Write-Buffer -X $sepX -Y $y -Text $script:MenuButtonSeparator -FG $rPipeFg -BG $bg
+					} else {
+						Write-Buffer -X $contentX -Y $y -Text "" -BG $bg
+					}
+				$textParts = $parts[1] -split "([()])"
 				for ($j = 0; $j -lt $textParts.Count; $j++) {
 					$part = $textParts[$j]
 					if ($part -eq "(" -and $j+2 -lt $textParts.Count -and $textParts[$j+1] -match '^[a-z]$' -and $textParts[$j+2] -eq ")") {
-						Write-Buffer -Text "(" -FG $fg -BG $bg
+						if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $fg -BG $bg }
 						Write-Buffer -Text $textParts[$j+1] -FG $hotkeyFg -BG $bg
-						Write-Buffer -Text ")" -FG $fg -BG $bg
+						if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $fg -BG $bg }
 						$j += 2
 					} elseif ($part -ne "") {
 						Write-Buffer -Text $part -FG $fg -BG $bg
 					}
 				}
+				if ($script:MenuButtonShowBrackets) {
+					Write-Buffer -Text "]" -FG $rBracketFg -BG $rBracketBg
+				}
 			}
+		} else {
+			# Text-only formats (noIcons / short)
+			Write-Buffer -X $startX -Y $y -Text "" -BG $bg
+			$textParts = $text -split "([()])"
+			for ($j = 0; $j -lt $textParts.Count; $j++) {
+				$part = $textParts[$j]
+				if ($part -eq "(" -and $j+2 -lt $textParts.Count -and $textParts[$j+1] -match '^[a-z]$' -and $textParts[$j+2] -eq ")") {
+					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $fg -BG $bg }
+					Write-Buffer -Text $textParts[$j+1] -FG $hotkeyFg -BG $bg
+					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $fg -BG $bg }
+					$j += 2
+				} elseif ($part -ne "") {
+					Write-Buffer -Text $part -FG $fg -BG $bg
+				}
+			}
+		}
 			Flush-Buffer
 		}
 
@@ -1941,12 +2121,13 @@ namespace mJiggAPI {
 			$script:CursorVisible = $true
 			[Console]::Write("$($script:ESC)[?25h")
 			
-			$checkmark = [char]::ConvertFromUtf32(0x2705)  # ✅ green checkmark
-			$redX = [char]::ConvertFromUtf32(0x274C)  # ❌ red X
-			# Button line display width calculation:
-			# "$($script:BoxVertical) " (2) + checkmark (2) + "|" (1) + "(u)pdate" (8) + "  " (2) + redX (2) + "|" (1) + "(c)ancel" (8) = 26
-			# So we need: 35 - 26 - 1 = 8 spaces before closing $($script:BoxVertical)
-			$bottomLinePadding = 8
+		$checkmark = [char]::ConvertFromUtf32(0x2705)  # ✅ green checkmark
+		$redX = [char]::ConvertFromUtf32(0x274C)  # ❌ red X
+$dlgIconWidth    = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
+$dlgBracketWidth = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
+$dlgParenAdj     = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+# Button line: border+space(2) + btn1(bracketW+iconW+"(a)pply"=7) + gap(2) + btn2(bracketW+iconW+"(c)ancel"=8) = 19 + 2*iconWidth + 2*bracketWidth
+$bottomLinePadding = $dialogWidth - (19 + 2 * $dlgParenAdj + 2 * $dlgIconWidth + 2 * $dlgBracketWidth) - 1
 			
 			# Build all lines to be exactly 35 characters using Get-Padding helper
 			$line0 = "$($script:BoxTopLeft)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxTopRight)"  # 35 chars
@@ -2009,49 +2190,68 @@ namespace mJiggAPI {
 					$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
 					Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
-				} elseif ($i -eq 6) {
-					$checkmarkX = $dialogX + 2
-					$redXX = $dialogX + 15
-					Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical) " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
-					Write-Buffer -X $checkmarkX -Y ($dialogY + $i) -Text "$checkmark" -FG $script:TextSuccess -BG $script:TimeDialogButtonBg -Wide
-				Write-Buffer -X ($checkmarkX + 2) -Y ($dialogY + $i) -Text "|(u)pdate" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-				Write-Buffer -X ($checkmarkX + 4) -Y ($dialogY + $i) -Text "u" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-				Write-Buffer -X ($checkmarkX + 5) -Y ($dialogY + $i) -Text ")pdate" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-				Write-Buffer -Text "  " -BG $script:TimeDialogBg
-				Write-Buffer -X $redXX -Y ($dialogY + $i) -Text "$redX" -FG $script:TextError -BG $script:TimeDialogButtonBg -Wide
-				Write-Buffer -X ($redXX + 2) -Y ($dialogY + $i) -Text "|" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-				Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-				Write-Buffer -Text "c" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-				Write-Buffer -Text ")ancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-					Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:TimeDialogBg
-					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
-				} else {
-					Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text $dialogLines[$i] -FG $script:TimeDialogText -BG $script:TimeDialogBg
-				}
-			}
-			
-			# Draw drop shadow
-			Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:TimeDialogShadow
-			Flush-Buffer
-			
-			# Calculate button bounds for click detection (visible characters only)
-			# Button row is at dialogY + 6 (line 6)
-			$buttonRowY = $dialogY + 6
-			# Rendered: +0:border +1:space +2-3:✅(2cells) +4:| +5-12:(u)pdate +13-14:spaces +15-16:❌(2cells) +17:| +18-25:(c)ancel +26-33:padding +34:border
-			$updateButtonStartX = $dialogX + 2
-			$updateButtonEndX = $dialogX + 12
-			$cancelButtonStartX = $dialogX + 15
-			$cancelButtonEndX = $dialogX + 25
-			
-			# Store button bounds in script scope for main loop click detection
-			$script:DialogButtonBounds = @{
-				buttonRowY = $buttonRowY
-				updateStartX = $updateButtonStartX
-				updateEndX = $updateButtonEndX
-				cancelStartX = $cancelButtonStartX
-				cancelEndX = $cancelButtonEndX
-			}
-			$script:DialogButtonClick = $null  # Clear any previous click  # 20 + 2 (emoji) + 1 (pipe) + 8 (text) - 1 (inclusive)
+			} elseif ($i -eq 6) {
+			$btn1X = $dialogX + 2
+		$btn2X = $btn1X + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj + 2  # bracket + icon + "(a)pply"(7) + gap(2)
+		Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical) " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
+		if ($script:DialogButtonShowBrackets) {
+			Write-Buffer -X $btn1X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+		}
+		$btn1ContentX = $btn1X + [int]$script:DialogButtonShowBrackets
+		if ($script:DialogButtonShowIcon) {
+			Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text $checkmark -FG $script:TextSuccess -BG $script:TimeDialogButtonBg -Wide
+			Write-Buffer -X ($btn1ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+		} else {
+			Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
+		}
+		$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
+	Write-Buffer -Text "a" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
+	Write-Buffer -Text "${_rp}pply" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+		if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+		Write-Buffer -Text "  " -BG $script:TimeDialogBg
+		if ($script:DialogButtonShowBrackets) {
+			Write-Buffer -X $btn2X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+		}
+		$btn2ContentX = $btn2X + [int]$script:DialogButtonShowBrackets
+		if ($script:DialogButtonShowIcon) {
+			Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text $redX -FG $script:TextError -BG $script:TimeDialogButtonBg -Wide
+			Write-Buffer -X ($btn2ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+		} else {
+			Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
+		}
+		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
+		Write-Buffer -Text "c" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
+		Write-Buffer -Text "${_rp}ancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+		if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+		Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:TimeDialogBg
+		Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
+	} else {
+		Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text $dialogLines[$i] -FG $script:TimeDialogText -BG $script:TimeDialogBg
+	}
+}
+
+# Draw drop shadow
+Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:TimeDialogShadow
+	Flush-Buffer
+	
+	# Calculate button bounds for click detection (visible characters only)
+	# Button row is at dialogY + 6 (line 6)
+	$buttonRowY = $dialogY + 6
+$updateButtonStartX = $dialogX + 2
+$updateButtonEndX   = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj - 1   # bracket + icon + "(a)pply"(7) - 1 inclusive
+$cancelButtonStartX = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj + 2   # after btn1 + gap(2)
+$cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8 + $dlgParenAdj - 1  # bracket + icon + "(c)ancel"(8) - 1 inclusive
+		
+		# Store button bounds in script scope for main loop click detection
+		$script:DialogButtonBounds = @{
+			buttonRowY = $buttonRowY
+			updateStartX = $updateButtonStartX
+			updateEndX = $updateButtonEndX
+			cancelStartX = $cancelButtonStartX
+			cancelEndX = $cancelButtonEndX
+		}
+		$script:DialogButtonClick = $null  # Clear any previous click  # 20 + 2 (emoji) + 1 (pipe) + 8 (text) - 1 (inclusive)
 			
 			# Position cursor in input field (inside the brackets, after "$($script:BoxVertical)  [")
 			# Line 4 is "$($script:BoxVertical)  [" + 4 spaces + "]", so input starts at position 4
@@ -2118,61 +2318,80 @@ namespace mJiggAPI {
 					$inputX = $dialogX + 4
 					$inputY = $dialogY + 4
 					
-					# Recalculate button bounds after repositioning
-					$buttonRowY = $dialogY + 6
-					$updateButtonStartX = $dialogX + 2
-					$updateButtonEndX = $dialogX + 12
-					$cancelButtonStartX = $dialogX + 15
-					$cancelButtonEndX = $dialogX + 25
-					
-					# Update button bounds in script scope
-					$script:DialogButtonBounds = @{
-						buttonRowY = $buttonRowY
-						updateStartX = $updateButtonStartX
-						updateEndX = $updateButtonEndX
-						cancelStartX = $cancelButtonStartX
-						cancelEndX = $cancelButtonEndX
-					}
-					
-					for ($i = 0; $i -lt $dialogLines.Count; $i++) {
-						if ($i -eq 1) {
-							Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
-							Write-Buffer -Text "Change End Time" -FG $script:TimeDialogTitle -BG $script:TimeDialogBg
-							$titleUsedWidth = 3 + "Change End Time".Length
-							$titlePadding = Get-Padding -usedWidth ($titleUsedWidth + 1) -totalWidth $dialogWidth
-							Write-Buffer -Text (" " * $titlePadding) -BG $script:TimeDialogBg
-							Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
-						} elseif ($i -eq 4) {
-							$fieldDisplay = $timeInput.PadRight(4)
-							Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
-							Write-Buffer -Text "[" -FG $script:TimeDialogText -BG $script:TimeDialogBg
-							Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
-							Write-Buffer -Text "]" -FG $script:TimeDialogText -BG $script:TimeDialogBg
-							$fieldUsedWidth = 3 + 6
-							$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
-							Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
-							Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
-						} elseif ($i -eq 6) {
-							$checkmarkX = $dialogX + 2
-							$redXX = $dialogX + 15
-							Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical) " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
-							Write-Buffer -X $checkmarkX -Y ($dialogY + $i) -Text "$checkmark" -FG $script:TextSuccess -BG $script:TimeDialogButtonBg -Wide
-						Write-Buffer -X ($checkmarkX + 2) -Y ($dialogY + $i) -Text "|" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-						Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-						Write-Buffer -Text "u" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-						Write-Buffer -Text ")pdate" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-						Write-Buffer -Text "  " -BG $script:TimeDialogBg
-						Write-Buffer -X $redXX -Y ($dialogY + $i) -Text "$redX" -FG $script:TextError -BG $script:TimeDialogButtonBg -Wide
-						Write-Buffer -X ($redXX + 2) -Y ($dialogY + $i) -Text "|" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-						Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-						Write-Buffer -Text "c" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-						Write-Buffer -Text ")ancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
-							Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:TimeDialogBg
-							Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
-						} else {
-							Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text $dialogLines[$i] -FG $script:TimeDialogText -BG $script:TimeDialogBg
-						}
-					}
+				# Recalculate button bounds after repositioning
+			$buttonRowY = $dialogY + 6
+		$updateButtonStartX = $dialogX + 2
+		$updateButtonEndX   = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 7 - 1
+		$cancelButtonStartX = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 7 + 2
+		$cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8 - 1
+		
+		# Update button bounds in script scope
+		$script:DialogButtonBounds = @{
+			buttonRowY = $buttonRowY
+			updateStartX = $updateButtonStartX
+			updateEndX = $updateButtonEndX
+			cancelStartX = $cancelButtonStartX
+			cancelEndX = $cancelButtonEndX
+		}
+		
+		for ($i = 0; $i -lt $dialogLines.Count; $i++) {
+			if ($i -eq 1) {
+				Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
+				Write-Buffer -Text "Change End Time" -FG $script:TimeDialogTitle -BG $script:TimeDialogBg
+					$titleUsedWidth = 3 + "Change End Time".Length
+					$titlePadding = Get-Padding -usedWidth ($titleUsedWidth + 1) -totalWidth $dialogWidth
+					Write-Buffer -Text (" " * $titlePadding) -BG $script:TimeDialogBg
+					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
+				} elseif ($i -eq 4) {
+					$fieldDisplay = $timeInput.PadRight(4)
+					Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
+					Write-Buffer -Text "[" -FG $script:TimeDialogText -BG $script:TimeDialogBg
+					Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
+					Write-Buffer -Text "]" -FG $script:TimeDialogText -BG $script:TimeDialogBg
+					$fieldUsedWidth = 3 + 6
+					$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+					Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
+					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
+				} elseif ($i -eq 6) {
+				$btn1X = $dialogX + 2
+				$btn2X = $btn1X + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj + 2
+				Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical) " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
+				if ($script:DialogButtonShowBrackets) {
+					Write-Buffer -X $btn1X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+				}
+				$btn1ContentX = $btn1X + [int]$script:DialogButtonShowBrackets
+				if ($script:DialogButtonShowIcon) {
+					Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text $checkmark -FG $script:TextSuccess -BG $script:TimeDialogButtonBg -Wide
+					Write-Buffer -X ($btn1ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+				} else {
+					Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
+				}
+				$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+				if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
+	Write-Buffer -Text "a" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
+	Write-Buffer -Text "${_rp}pply" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+				if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+				Write-Buffer -Text "  " -BG $script:TimeDialogBg
+				if ($script:DialogButtonShowBrackets) {
+					Write-Buffer -X $btn2X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+				}
+				$btn2ContentX = $btn2X + [int]$script:DialogButtonShowBrackets
+				if ($script:DialogButtonShowIcon) {
+					Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text $redX -FG $script:TextError -BG $script:TimeDialogButtonBg -Wide
+					Write-Buffer -X ($btn2ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+				} else {
+					Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
+				}
+				if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
+				Write-Buffer -Text "c" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
+				Write-Buffer -Text "${_rp}ancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+				if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+				Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:TimeDialogBg
+				Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
+			} else {
+				Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text $dialogLines[$i] -FG $script:TimeDialogText -BG $script:TimeDialogBg
+			}
+		}
 					
 					Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:TimeDialogShadow
 					
@@ -2227,22 +2446,25 @@ namespace mJiggAPI {
 							$flushed = [uint32]0
 							[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $consumeCount, [ref]$flushed) | Out-Null
 							
-							if ($clickY -eq $buttonRowY -and $clickX -ge $updateButtonStartX -and $clickX -le $updateButtonEndX) {
-								$char = "u"; $keyProcessed = $true
-							} elseif ($clickY -eq $buttonRowY -and $clickX -ge $cancelButtonStartX -and $clickX -le $cancelButtonEndX) {
-								$char = "c"; $keyProcessed = $true
-							}
-							if ($DebugMode) {
-								$clickTarget = if ($keyProcessed) { "button:$char" } else { "none" }
-								if ($null -eq $LogArray -or -not ($LogArray -is [Array])) { $LogArray = @() }
-								$LogArray += [PSCustomObject]@{
-									logRow = $true
-									components = @(
-										@{ priority = 1; text = (Get-Date).ToString("HH:mm:ss"); shortText = (Get-Date).ToString("HH:mm:ss") },
-										@{ priority = 2; text = " - [DEBUG] Time dialog click at ($clickX,$clickY), target: $clickTarget"; shortText = " - [DEBUG] Click ($clickX,$clickY) -> $clickTarget" }
-									)
-								}
-							}
+					# Click outside dialog bounds → cancel
+					if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
+						$char = "c"; $keyProcessed = $true
+					} elseif ($clickY -eq $buttonRowY -and $clickX -ge $updateButtonStartX -and $clickX -le $updateButtonEndX) {
+						$char = "a"; $keyProcessed = $true
+					} elseif ($clickY -eq $buttonRowY -and $clickX -ge $cancelButtonStartX -and $clickX -le $cancelButtonEndX) {
+						$char = "c"; $keyProcessed = $true
+					}
+					if ($DebugMode) {
+						$clickTarget = if ($keyProcessed) { "button:$char" } else { "none" }
+						if ($null -eq $LogArray -or -not ($LogArray -is [Array])) { $LogArray = @() }
+						$LogArray += [PSCustomObject]@{
+							logRow = $true
+							components = @(
+								@{ priority = 1; text = (Get-Date).ToString("HH:mm:ss"); shortText = (Get-Date).ToString("HH:mm:ss") },
+								@{ priority = 2; text = " - [DEBUG] Time dialog click at ($clickX,$clickY), target: $clickTarget"; shortText = " - [DEBUG] Click ($clickX,$clickY) -> $clickTarget" }
+							)
+						}
+					}
 						}
 					}
 				} catch { }
@@ -2251,14 +2473,14 @@ namespace mJiggAPI {
 				if (-not $keyProcessed -and $null -ne $script:DialogButtonClick) {
 					$buttonClick = $script:DialogButtonClick
 					$script:DialogButtonClick = $null
-					if ($buttonClick -eq "Update") { $char = "u"; $keyProcessed = $true }
-					elseif ($buttonClick -eq "Cancel") { $char = "c"; $keyProcessed = $true }
-				}
-				
-				# Wait for key input (non-blocking check)
-				if (-not $keyProcessed) {
-					while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
-						$keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyup,AllowCtrlC")
+				if ($buttonClick -eq "Apply") { $char = "a"; $keyProcessed = $true }
+				elseif ($buttonClick -eq "Cancel") { $char = "c"; $keyProcessed = $true }
+			}
+			
+			# Wait for key input (non-blocking check)
+			if (-not $keyProcessed) {
+				while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
+					$keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyup,AllowCtrlC")
 						$isKeyDown = $false
 						if ($null -ne $keyInfo.KeyDown) {
 							$isKeyDown = $keyInfo.KeyDown
@@ -2279,8 +2501,8 @@ namespace mJiggAPI {
 					continue
 				}
 				
-				if ($char -eq "u" -or $char -eq "U" -or $key -eq "Enter" -or $char -eq [char]13 -or $char -eq [char]10) {
-					# Update - allow blank input to clear end time (Enter key also works as hidden function)
+			if ($char -eq "a" -or $char -eq "A" -or $key -eq "Enter" -or $char -eq [char]13 -or $char -eq [char]10) {
+				# Apply - allow blank input to clear end time (Enter key also works as hidden function)
 					# Debug: Log time dialog update
 					if ($DebugMode) {
 						if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
@@ -3035,30 +3257,50 @@ namespace mJiggAPI {
 					Write-SimpleDialogRow -x $x -y ($y + 15) -width $width -backgroundColor $script:MoveDialogBg
 				}
 				
-			# Bottom line with buttons (row 16)
-			$checkmark = [char]::ConvertFromUtf32(0x2705)
-			$redX = [char]::ConvertFromUtf32(0x274C)
-			$checkmarkX = $x + 2
-			$redXX = $x + 15
-			Write-Buffer -X $x -Y ($y + 16) -Text "$($script:BoxVertical)" -FG $script:MoveDialogBorder -BG $script:MoveDialogBg
-			Write-Buffer -Text " " -BG $script:MoveDialogBg
-			Write-Buffer -X $checkmarkX -Y ($y + 16) -Text $checkmark -FG $script:TextSuccess -BG $script:MoveDialogButtonBg -Wide
-			Write-Buffer -X ($checkmarkX + 2) -Y ($y + 16) -Text "|" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
-			Write-Buffer -Text "(" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
-			Write-Buffer -Text "u" -FG $script:MoveDialogButtonHotkey -BG $script:MoveDialogButtonBg
-			Write-Buffer -Text ")pdate" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
-			Write-Buffer -Text "  " -BG $script:MoveDialogBg
-			Write-Buffer -X $redXX -Y ($y + 16) -Text $redX -FG $script:TextError -BG $script:MoveDialogButtonBg -Wide
-			Write-Buffer -X ($redXX + 2) -Y ($y + 16) -Text "|" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
-			Write-Buffer -Text "(" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
-			Write-Buffer -Text "c" -FG $script:MoveDialogButtonHotkey -BG $script:MoveDialogButtonBg
-			Write-Buffer -Text ")ancel" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
-			# Button line display width calculation:
-			# "$($script:BoxVertical) " (2) + checkmark (2) + "|" (1) + "(u)pdate" (8) + "  " (2) + redX (2) + "|" (1) + "(c)ancel" (8) = 26
-			# So we need: 30 - 26 - 1 = 3 spaces before closing $($script:BoxVertical)
-			$buttonPadding = 3
-			Write-Buffer -Text (" " * $buttonPadding) -BG $script:MoveDialogBg
-			Write-Buffer -Text "$($script:BoxVertical)" -FG $script:MoveDialogBorder -BG $script:MoveDialogBg
+	# Bottom line with buttons (row 16)
+	$checkmark = [char]::ConvertFromUtf32(0x2705)
+	$redX = [char]::ConvertFromUtf32(0x274C)
+$_dlgIW = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
+$_dlgBW = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
+$_dlgPA = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+$btn1X = $x + 2
+$btn2X = $btn1X + $_dlgBW + $_dlgIW + 7 + $_dlgPA + 2  # bracket + icon + "(a)pply"(7) + gap(2)
+# Button line: border+space(2) + btn1(bracketW+iconW+7) + gap(2) + btn2(bracketW+iconW+8) = 19 + 2*iconWidth + 2*bracketWidth
+$buttonPadding = $width - (19 + 2 * $_dlgPA + 2 * $_dlgIW + 2 * $_dlgBW) - 1
+Write-Buffer -X $x -Y ($y + 16) -Text "$($script:BoxVertical)" -FG $script:MoveDialogBorder -BG $script:MoveDialogBg
+Write-Buffer -Text " " -BG $script:MoveDialogBg
+if ($script:DialogButtonShowBrackets) {
+	Write-Buffer -X $btn1X -Y ($y + 16) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+}
+$btn1ContentX = $btn1X + [int]$script:DialogButtonShowBrackets
+if ($script:DialogButtonShowIcon) {
+	Write-Buffer -X $btn1ContentX -Y ($y + 16) -Text $checkmark -FG $script:TextSuccess -BG $script:MoveDialogButtonBg -Wide
+	Write-Buffer -X ($btn1ContentX + 2) -Y ($y + 16) -Text $script:DialogButtonSeparator -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
+} else {
+	Write-Buffer -X $btn1ContentX -Y ($y + 16) -Text "" -BG $script:MoveDialogButtonBg
+}
+$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg }
+Write-Buffer -Text "a" -FG $script:MoveDialogButtonHotkey -BG $script:MoveDialogButtonBg
+Write-Buffer -Text "${_rp}pply" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
+if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+Write-Buffer -Text "  " -BG $script:MoveDialogBg
+if ($script:DialogButtonShowBrackets) {
+	Write-Buffer -X $btn2X -Y ($y + 16) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+}
+$btn2ContentX = $btn2X + [int]$script:DialogButtonShowBrackets
+if ($script:DialogButtonShowIcon) {
+	Write-Buffer -X $btn2ContentX -Y ($y + 16) -Text $redX -FG $script:TextError -BG $script:MoveDialogButtonBg -Wide
+	Write-Buffer -X ($btn2ContentX + 2) -Y ($y + 16) -Text $script:DialogButtonSeparator -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
+} else {
+	Write-Buffer -X $btn2ContentX -Y ($y + 16) -Text "" -BG $script:MoveDialogButtonBg
+}
+if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg }
+Write-Buffer -Text "c" -FG $script:MoveDialogButtonHotkey -BG $script:MoveDialogButtonBg
+Write-Buffer -Text "${_rp}ancel" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
+	if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+	Write-Buffer -Text (" " * $buttonPadding) -BG $script:MoveDialogBg
+	Write-Buffer -Text "$($script:BoxVertical)" -FG $script:MoveDialogBorder -BG $script:MoveDialogBg
 				
 			# Bottom border (spans full width)
 			Write-Buffer -X $x -Y ($y + 17) -Text "$($script:BoxBottomLeft)" -FG $script:MoveDialogBorder -BG $script:MoveDialogBg
@@ -3073,14 +3315,16 @@ namespace mJiggAPI {
 		& $drawDialog $dialogX $dialogY $dialogWidth $dialogHeight $currentField $errorMessage $inputBoxStartX $fieldWidth $intervalSecondsInput $intervalVarianceInput $moveSpeedInput $moveVarianceInput $travelDistanceInput $travelVarianceInput $autoResumeDelaySecondsInput
 		Flush-Buffer
 		
-		# Calculate button bounds for click detection
-			# Button row is at dialogY + 16 (row 16)
-			$buttonRowY = $dialogY + 16
-			# Rendered: +0:border +1:space +2-3:✅(2cells) +4:| +5-12:(u)pdate +13-14:spaces +15-16:❌(2cells) +17:| +18-25:(c)ancel +26-28:padding +29:border
-			$updateButtonStartX = $dialogX + 2
-			$updateButtonEndX = $dialogX + 12
-			$cancelButtonStartX = $dialogX + 15
-			$cancelButtonEndX = $dialogX + 25
+	# Calculate button bounds for click detection
+	# Button row is at dialogY + 16 (row 16)
+	$buttonRowY = $dialogY + 16
+$_moveDlgIW = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
+$_moveDlgBW = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
+$_moveDlgPA = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+$updateButtonStartX = $dialogX + 2
+$updateButtonEndX   = $dialogX + 2 + $_moveDlgBW + $_moveDlgIW + 7 + $_moveDlgPA - 1   # bracket + icon + "(a)pply"(7) - 1 inclusive
+$cancelButtonStartX = $dialogX + 2 + $_moveDlgBW + $_moveDlgIW + 7 + $_moveDlgPA + 2   # after btn1 + gap(2)
+$cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_moveDlgPA - 1  # bracket + icon + "(c)ancel"(8) - 1 inclusive
 			
 			# Store button bounds in script scope for main loop click detection
 			$script:DialogButtonBounds = @{
@@ -3147,12 +3391,14 @@ namespace mJiggAPI {
 					$dialogX = [math]::Max(0, [math]::Floor(($currentHostWidth - $dialogWidth) / 2))
 					$dialogY = [math]::Max(0, [math]::Floor(($currentHostHeight - $dialogHeight) / 2))
 					
-					# Recalculate button bounds after repositioning
-					$buttonRowY = $dialogY + 16
-					$updateButtonStartX = $dialogX + 2
-					$updateButtonEndX = $dialogX + 12
-					$cancelButtonStartX = $dialogX + 15
-					$cancelButtonEndX = $dialogX + 25
+			# Recalculate button bounds after repositioning
+			$buttonRowY = $dialogY + 16
+			$_moveDlgIW = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
+			$_moveDlgBW = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
+		$updateButtonStartX = $dialogX + 2
+		$updateButtonEndX   = $dialogX + 2 + $_moveDlgBW + $_moveDlgIW + 7 - 1
+		$cancelButtonStartX = $dialogX + 2 + $_moveDlgBW + $_moveDlgIW + 7 + 2
+		$cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 - 1
 					
 					# Update button bounds in script scope
 					$script:DialogButtonBounds = @{
@@ -3207,13 +3453,16 @@ namespace mJiggAPI {
 							$flushed = [uint32]0
 							[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $consumeCount, [ref]$flushed) | Out-Null
 							
-							$clickedField = -1
-							if ($clickY -eq $buttonRowY -and $clickX -ge $updateButtonStartX -and $clickX -le $updateButtonEndX) {
-								$char = "u"; $keyProcessed = $true
-							} elseif ($clickY -eq $buttonRowY -and $clickX -ge $cancelButtonStartX -and $clickX -le $cancelButtonEndX) {
-								$char = "c"; $keyProcessed = $true
-							}
-							if (-not $keyProcessed -and $clickX -ge $dialogX -and $clickX -lt ($dialogX + $dialogWidth)) {
+						$clickedField = -1
+					# Click outside dialog bounds → cancel
+					if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
+						$char = "c"; $keyProcessed = $true
+					} elseif ($clickY -eq $buttonRowY -and $clickX -ge $updateButtonStartX -and $clickX -le $updateButtonEndX) {
+						$char = "a"; $keyProcessed = $true
+					} elseif ($clickY -eq $buttonRowY -and $clickX -ge $cancelButtonStartX -and $clickX -le $cancelButtonEndX) {
+						$char = "c"; $keyProcessed = $true
+					}
+					if (-not $keyProcessed -and $clickX -ge $dialogX -and $clickX -lt ($dialogX + $dialogWidth)) {
 								$clickFieldYOffsets = @(4, 5, 7, 8, 10, 11, 13)
 								for ($fi = 0; $fi -lt $clickFieldYOffsets.Count; $fi++) {
 									$fy = $dialogY + $clickFieldYOffsets[$fi]
@@ -3276,14 +3525,14 @@ namespace mJiggAPI {
 				if (-not $keyProcessed -and $null -ne $script:DialogButtonClick) {
 					$buttonClick = $script:DialogButtonClick
 					$script:DialogButtonClick = $null
-					if ($buttonClick -eq "Update") { $char = "u"; $keyProcessed = $true }
-					elseif ($buttonClick -eq "Cancel") { $char = "c"; $keyProcessed = $true }
-				}
-				
-				# Wait for key input (non-blocking check)
-				if (-not $keyProcessed) {
-					while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
-						$keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyUp,AllowCtrlC")
+				if ($buttonClick -eq "Apply") { $char = "a"; $keyProcessed = $true }
+				elseif ($buttonClick -eq "Cancel") { $char = "c"; $keyProcessed = $true }
+			}
+			
+			# Wait for key input (non-blocking check)
+			if (-not $keyProcessed) {
+				while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
+					$keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyUp,AllowCtrlC")
 						$isKeyDown = $false
 						if ($null -ne $keyInfo.KeyDown) {
 							$isKeyDown = $keyInfo.KeyDown
@@ -3313,8 +3562,8 @@ namespace mJiggAPI {
 					6 { [ref]$autoResumeDelaySecondsInput }  # Auto-Resume Delay
 				}
 				
-				if ($char -eq "u" -or $char -eq "U" -or $key -eq "Enter" -or $char -eq [char]13 -or $char -eq [char]10) {
-					# Update - validate and save all values
+			if ($char -eq "a" -or $char -eq "A" -or $key -eq "Enter" -or $char -eq [char]13 -or $char -eq [char]10) {
+				# Apply - validate and save all values
 					# Debug: Log movement dialog update
 					if ($DebugMode) {
 						if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
@@ -3666,23 +3915,26 @@ namespace mJiggAPI {
 			# Dialog dimensions (same as time change dialog)
 			$dialogWidth = 35
 			$dialogHeight = 7
-			$dialogX = [math]::Max(0, [math]::Floor(($currentHostWidth - $dialogWidth) / 2))
-			$dialogY = [math]::Max(0, [math]::Floor(($currentHostHeight - $dialogHeight) / 2))
+			# Right-aligned, 2 chars from right edge; bottom border sits one row above the separator line
+			$dialogX = [math]::Max(0, $currentHostWidth - $dialogWidth - 2)
+			$menuBarY = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $currentHostHeight - 2 }
+			$dialogY = [math]::Max(0, $menuBarY - 2 - $dialogHeight)
 			
 			$savedCursorVisible = $script:CursorVisible
 			$script:CursorVisible = $false
 			[Console]::Write("$($script:ESC)[?25l")
 			
 			# Draw dialog box (exactly 35 characters per line)
-			$checkmark = [char]::ConvertFromUtf32(0x2705)  # ✅ green checkmark
-			$redX = [char]::ConvertFromUtf32(0x274C)  # ❌ red X
-			# Button line display width calculation:
-			# "$($script:BoxVertical) " (2) + checkmark (2) + "|" (1) + "(y)es" (5) + "  " (2) + redX (2) + "|" (1) + "(n)o" (4) = 19
-			# So we need: 35 - 19 - 1 = 15 spaces before closing $($script:BoxVertical)
-			$bottomLinePadding = 15
-			
-			# Build all lines to be exactly 35 characters using Get-Padding helper
-			$line0 = "$($script:BoxTopLeft)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxTopRight)"  # 35 chars
+	$checkmark = [char]::ConvertFromUtf32(0x2705)  # ✅ green checkmark
+	$redX = [char]::ConvertFromUtf32(0x274C)  # ❌ red X
+$dlgIconWidth    = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
+$dlgBracketWidth = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
+$dlgParenAdj     = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+# Button line: border+space(2) + btn1(bracketW+iconW+"(y)es"=5) + gap(2) + btn2(bracketW+iconW+"(n)o"=4) = 13 + 2*iconWidth + 2*bracketWidth
+$bottomLinePadding = $dialogWidth - (13 + 2 * $dlgParenAdj + 2 * $dlgIconWidth + 2 * $dlgBracketWidth) - 1
+		
+		# Build all lines to be exactly 35 characters using Get-Padding helper
+		$line0 = "$($script:BoxTopLeft)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxTopRight)"  # 35 chars
 			$line1Text = "$($script:BoxVertical)  Confirm Quit"
 			$line1Padding = Get-Padding -usedWidth ($line1Text.Length + 1) -totalWidth $dialogWidth
 			$line1 = $line1Text + (" " * $line1Padding) + "$($script:BoxVertical)"
@@ -3707,6 +3959,62 @@ namespace mJiggAPI {
 				"$($script:BoxBottomLeft)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxBottomRight)"  # 35 chars
 			)
 			
+		# Slide-up-from-behind animation: the box rises from behind the separator/menu bar.
+		# Each step moves the box 2 rows up and draws only the rows above the separator,
+		# so the menu bar acts as a mask and the box appears to emerge from behind it.
+		$clipY        = $menuBarY - 1   # separator row — nothing drawn at or below this Y
+		$animSteps    = $dialogHeight + 1  # steps to fully reveal the box
+		$frameDelayMs = 15  # 15ms per frame — at the Windows timer floor for consistency
+		for ($step = 2; $step -le ($animSteps + 1); $step += 2) {
+			$s     = [math]::Min($step, $animSteps)
+			$animY = $menuBarY - 1 - $s  # top of box this step (rises 2 rows each step)
+			for ($r = 0; $r -lt $s -and $r -le $dialogHeight; $r++) {
+					$absY = $animY + $r
+					if ($absY -ge $clipY) { continue }  # safety: never draw over separator
+					# Side padding (terminal default background)
+					if ($dialogX -gt 0) {
+						Write-Buffer -X ($dialogX - 1) -Y $absY -Text " "
+					}
+					if (($dialogX + $dialogWidth) -lt $currentHostWidth) {
+						Write-Buffer -X ($dialogX + $dialogWidth) -Y $absY -Text " "
+					}
+					# Background fill
+					Write-Buffer -X $dialogX -Y $absY -Text (" " * $dialogWidth) -BG $script:QuitDialogBg
+					# Row content
+					if ($r -eq 0) {
+						Write-Buffer -X $dialogX -Y $absY -Text $line0 -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
+					} elseif ($r -eq $dialogHeight) {
+						Write-Buffer -X $dialogX -Y $absY -Text $dialogLines[$dialogLines.Count - 1] -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
+					} else {
+						Write-Buffer -X $dialogX                      -Y $absY -Text $script:BoxVertical -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
+						Write-Buffer -X ($dialogX + $dialogWidth - 1) -Y $absY -Text $script:BoxVertical -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
+					}
+				}
+			# On the last step the box is fully revealed; draw the blank top-padding row
+			if ($s -eq $animSteps -and $animY -gt 0) {
+				$aPadLeft  = [math]::Max(0, $dialogX - 1)
+				$aPadWidth = $dialogWidth + ($dialogX - $aPadLeft) + 1
+				Write-Buffer -X $aPadLeft -Y ($animY - 1) -Text (" " * $aPadWidth)
+			}
+			Flush-Buffer
+			if ($frameDelayMs -gt 0) { Start-Sleep -Milliseconds $frameDelayMs }
+		}
+
+		# Draw blank padding (terminal default background) — top, left, right; no bottom
+			if ($dialogY -gt 0) {
+				$padLeft  = [math]::Max(0, $dialogX - 1)
+				$padWidth = $dialogWidth + ($dialogX - $padLeft) + 1
+				Write-Buffer -X $padLeft -Y ($dialogY - 1) -Text (" " * $padWidth)
+			}
+			for ($i = 0; $i -le $dialogHeight; $i++) {
+				if ($dialogX -gt 0) {
+					Write-Buffer -X ($dialogX - 1) -Y ($dialogY + $i) -Text " "
+				}
+				if (($dialogX + $dialogWidth) -lt $currentHostWidth) {
+					Write-Buffer -X ($dialogX + $dialogWidth) -Y ($dialogY + $i) -Text " "
+				}
+			}
+
 			# Draw dialog background (clear area) with magenta background
 			for ($i = 0; $i -lt $dialogHeight; $i++) {
 				Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text (" " * $dialogWidth) -BG DarkMagenta
@@ -3722,43 +4030,57 @@ namespace mJiggAPI {
 					$titlePadding = Get-Padding -usedWidth ($titleUsedWidth + 1) -totalWidth $dialogWidth
 					Write-Buffer -Text (" " * $titlePadding) -BG $script:QuitDialogBg
 					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
-				} elseif ($i -eq 6) {
-					# Bottom line - write with colored icons and hotkey letters
-					Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical) " -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
-					$checkmarkX = $dialogX + 2
-					Write-Buffer -X $checkmarkX -Y ($dialogY + $i) -Text $checkmark -FG $script:TextSuccess -BG $script:QuitDialogButtonBg -Wide
-					Write-Buffer -X ($checkmarkX + 2) -Y ($dialogY + $i) -Text "|" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-					# Parse "(y)es" - parentheses white, letter yellow, text white
-					Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-					Write-Buffer -Text "y" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
-					Write-Buffer -Text ")es" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-					Write-Buffer -Text "  " -BG $script:QuitDialogBg
-					$redXX = $dialogX + 12
-					Write-Buffer -X $redXX -Y ($dialogY + $i) -Text $redX -FG $script:TextError -BG $script:QuitDialogButtonBg -Wide
-					Write-Buffer -X ($redXX + 2) -Y ($dialogY + $i) -Text "|" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-					# Parse "(n)o" - parentheses white, letter yellow, text white
-					Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-					Write-Buffer -Text "n" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
-					Write-Buffer -Text ")o" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-					Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:QuitDialogBg
-					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
-				} else {
-					Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text $dialogLines[$i] -FG $script:QuitDialogText -BG $script:QuitDialogBg
-				}
-			}
-			
-			# Draw drop shadow
-			Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:QuitDialogShadow
-			Flush-Buffer
-			
-			# Calculate button bounds for click detection (visible characters only)
-			# Button row is at dialogY + 6
-			# Rendered: +0:border +1:space +2-3:✅(2cells) +4:| +5-9:(y)es +10-11:spaces +12-13:❌(2cells) +14:| +15-18:(n)o +19-33:padding +34:border
-			$buttonRowY = $dialogY + 6
-			$yesButtonStartX = $dialogX + 2
-			$yesButtonEndX = $dialogX + 9
-			$noButtonStartX = $dialogX + 12
-			$noButtonEndX = $dialogX + 18
+			} elseif ($i -eq 6) {
+			# Bottom line - write with colored icons and hotkey letters
+		$btn1X = $dialogX + 2
+		$btn2X = $btn1X + $dlgBracketWidth + $dlgIconWidth + 5 + $dlgParenAdj + 2  # bracket + icon + "(y)es"(5) + gap(2)
+		Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical) " -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
+		if ($script:DialogButtonShowBrackets) {
+			Write-Buffer -X $btn1X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+		}
+		$btn1ContentX = $btn1X + [int]$script:DialogButtonShowBrackets
+		if ($script:DialogButtonShowIcon) {
+			Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text $checkmark -FG $script:TextSuccess -BG $script:QuitDialogButtonBg -Wide
+			Write-Buffer -X ($btn1ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+		} else {
+			Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text "" -BG $script:QuitDialogButtonBg
+		}
+		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg }
+		Write-Buffer -Text "y" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
+		$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+		Write-Buffer -Text "${_rp}es" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+		if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+		Write-Buffer -Text "  " -BG $script:QuitDialogBg
+		if ($script:DialogButtonShowBrackets) {
+			Write-Buffer -X $btn2X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+		}
+		$btn2ContentX = $btn2X + [int]$script:DialogButtonShowBrackets
+		if ($script:DialogButtonShowIcon) {
+			Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text $redX -FG $script:TextError -BG $script:QuitDialogButtonBg -Wide
+			Write-Buffer -X ($btn2ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+		} else {
+			Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text "" -BG $script:QuitDialogButtonBg
+		}
+		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg }
+		Write-Buffer -Text "n" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
+		Write-Buffer -Text "${_rp}o" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+		if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+		Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:QuitDialogBg
+		Write-Buffer -Text "$($script:BoxVertical)" -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
+	} else {
+		Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text $dialogLines[$i] -FG $script:QuitDialogText -BG $script:QuitDialogBg
+	}
+}
+
+Flush-Buffer
+
+# Calculate button bounds for click detection (visible characters only)
+# Button row is at dialogY + 6
+$buttonRowY = $dialogY + 6
+$yesButtonStartX = $dialogX + 2
+$yesButtonEndX   = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 5 + $dlgParenAdj - 1   # bracket + icon + "(y)es"(5) - 1 inclusive
+$noButtonStartX  = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 5 + $dlgParenAdj + 2   # after btn1 + gap(2)
+$noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlgParenAdj - 1 # bracket + icon + "(n)o"(4) - 1 inclusive
 			
 			$script:DialogButtonBounds = @{
 				buttonRowY = $buttonRowY
@@ -3787,11 +4109,27 @@ namespace mJiggAPI {
 					$currentHostHeight = $newWindowSize.Height
 					$needsRedraw = $true
 					
-					# Reposition dialog
-					$dialogX = [math]::Max(0, [math]::Floor(($currentHostWidth - $dialogWidth) / 2))
-					$dialogY = [math]::Max(0, [math]::Floor(($currentHostHeight - $dialogHeight) / 2))
-					
-					for ($i = 0; $i -lt $dialogLines.Count; $i++) {
+				# Reposition dialog: right-aligned, one row above the separator
+				$dialogX = [math]::Max(0, $currentHostWidth - $dialogWidth - 2)
+				$menuBarY = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $currentHostHeight - 2 }
+				$dialogY = [math]::Max(0, $menuBarY - 2 - $dialogHeight)
+
+				# Redraw blank padding (terminal default background) — top, left, right; no bottom
+				if ($dialogY -gt 0) {
+					$padLeft  = [math]::Max(0, $dialogX - 1)
+					$padWidth = $dialogWidth + ($dialogX - $padLeft) + 1
+					Write-Buffer -X $padLeft -Y ($dialogY - 1) -Text (" " * $padWidth)
+				}
+				for ($i = 0; $i -le $dialogHeight; $i++) {
+					if ($dialogX -gt 0) {
+						Write-Buffer -X ($dialogX - 1) -Y ($dialogY + $i) -Text " "
+					}
+					if (($dialogX + $dialogWidth) -lt $currentHostWidth) {
+						Write-Buffer -X ($dialogX + $dialogWidth) -Y ($dialogY + $i) -Text " "
+					}
+				}
+
+				for ($i = 0; $i -lt $dialogLines.Count; $i++) {
 						if ($i -eq 1) {
 							# Title line
 							Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical)  " -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
@@ -3800,40 +4138,55 @@ namespace mJiggAPI {
 							$titlePadding = Get-Padding -usedWidth ($titleUsedWidth + 1) -totalWidth $dialogWidth
 							Write-Buffer -Text (" " * $titlePadding) -BG $script:QuitDialogBg
 							Write-Buffer -Text "$($script:BoxVertical)" -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
-						} elseif ($i -eq 6) {
-							# Bottom line - write with colored icons and hotkey letters
-							Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical) " -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
-							$checkmarkX = $dialogX + 2
-							Write-Buffer -X $checkmarkX -Y ($dialogY + $i) -Text $checkmark -FG $script:TextSuccess -BG $script:QuitDialogButtonBg -Wide
-							Write-Buffer -X ($checkmarkX + 2) -Y ($dialogY + $i) -Text "|" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-							# Parse "(y)es" - parentheses white, letter yellow, text white
-							Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-							Write-Buffer -Text "y" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
-							Write-Buffer -Text ")es" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-							Write-Buffer -Text "  " -BG $script:QuitDialogBg
-							$redXX = $dialogX + 12
-							Write-Buffer -X $redXX -Y ($dialogY + $i) -Text $redX -FG $script:TextError -BG $script:QuitDialogButtonBg -Wide
-							Write-Buffer -X ($redXX + 2) -Y ($dialogY + $i) -Text "|" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-							# Parse "(n)o" - parentheses white, letter yellow, text white
-							Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-							Write-Buffer -Text "n" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
-							Write-Buffer -Text ")o" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
-							Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:QuitDialogBg
-							Write-Buffer -Text "$($script:BoxVertical)" -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
-						} else {
-							Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text $dialogLines[$i] -FG $script:QuitDialogText -BG $script:QuitDialogBg
-						}
-					}
-					
-					# Draw drop shadow
-					Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:QuitDialogShadow
-					Flush-Buffer -ClearFirst
-					
-					$buttonRowY = $dialogY + 6
-					$yesButtonStartX = $dialogX + 2
-					$yesButtonEndX = $dialogX + 9
-					$noButtonStartX = $dialogX + 12
-					$noButtonEndX = $dialogX + 18
+					} elseif ($i -eq 6) {
+					# Bottom line - write with colored icons and hotkey letters
+				$btn1X = $dialogX + 2
+				$btn2X = $btn1X + $dlgBracketWidth + $dlgIconWidth + 5 + $dlgParenAdj + 2  # bracket + icon + "(y)es"(5) + gap(2)
+				Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical) " -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
+				if ($script:DialogButtonShowBrackets) {
+					Write-Buffer -X $btn1X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+				}
+				$btn1ContentX = $btn1X + [int]$script:DialogButtonShowBrackets
+				if ($script:DialogButtonShowIcon) {
+					Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text $checkmark -FG $script:TextSuccess -BG $script:QuitDialogButtonBg -Wide
+					Write-Buffer -X ($btn1ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+				} else {
+					Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text "" -BG $script:QuitDialogButtonBg
+				}
+				if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg }
+				Write-Buffer -Text "y" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
+				$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+				Write-Buffer -Text "${_rp}es" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+				if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+				Write-Buffer -Text "  " -BG $script:QuitDialogBg
+				if ($script:DialogButtonShowBrackets) {
+					Write-Buffer -X $btn2X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+				}
+				$btn2ContentX = $btn2X + [int]$script:DialogButtonShowBrackets
+				if ($script:DialogButtonShowIcon) {
+					Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text $redX -FG $script:TextError -BG $script:QuitDialogButtonBg -Wide
+					Write-Buffer -X ($btn2ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+				} else {
+					Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text "" -BG $script:QuitDialogButtonBg
+				}
+				if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg }
+				Write-Buffer -Text "n" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
+				Write-Buffer -Text "${_rp}o" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+				if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+				Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:QuitDialogBg
+				Write-Buffer -Text "$($script:BoxVertical)" -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
+			} else {
+				Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text $dialogLines[$i] -FG $script:QuitDialogText -BG $script:QuitDialogBg
+			}
+		}
+		
+		Flush-Buffer -ClearFirst
+		
+		$buttonRowY = $dialogY + 6
+		$yesButtonStartX = $dialogX + 2
+		$yesButtonEndX   = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 5 + $dlgParenAdj - 1
+		$noButtonStartX  = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 5 + $dlgParenAdj + 2
+		$noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlgParenAdj - 1
 					
 					$script:DialogButtonBounds = @{
 						buttonRowY = $buttonRowY
@@ -3870,12 +4223,15 @@ namespace mJiggAPI {
 							$flushed = [uint32]0
 							[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $consumeCount, [ref]$flushed) | Out-Null
 							
-							if ($clickY -eq $buttonRowY -and $clickX -ge $yesButtonStartX -and $clickX -le $yesButtonEndX) {
-								$char = "y"; $keyProcessed = $true
-							} elseif ($clickY -eq $buttonRowY -and $clickX -ge $noButtonStartX -and $clickX -le $noButtonEndX) {
-								$char = "n"; $keyProcessed = $true
-							}
-							if ($DebugMode) {
+						# Click outside dialog bounds → cancel
+						if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
+							$char = "n"; $keyProcessed = $true
+						} elseif ($clickY -eq $buttonRowY -and $clickX -ge $yesButtonStartX -and $clickX -le $yesButtonEndX) {
+							$char = "y"; $keyProcessed = $true
+						} elseif ($clickY -eq $buttonRowY -and $clickX -ge $noButtonStartX -and $clickX -le $noButtonEndX) {
+							$char = "n"; $keyProcessed = $true
+						}
+						if ($DebugMode) {
 								$clickTarget = if ($keyProcessed) { "button:$char" } else { "none" }
 								if ($null -eq $LogArray -or -not ($LogArray -is [Array])) { $LogArray = @() }
 								$LogArray += [PSCustomObject]@{
@@ -4007,6 +4363,770 @@ namespace mJiggAPI {
 			}
 		}
 
+	# Settings mini-dialog — slides up above the Settings menu button.
+	# Handles sub-dialogs internally so it stays visible while they are open,
+	# shifting to offfocus colors while the sub-dialog is active and back to
+	# onfocus once it closes.  Clicking the settings button while open closes it.
+	# Returns @{NeedsRedraw = $bool}.
+	function Show-SettingsDialog {
+		param(
+			[ref]$HostWidthRef,
+			[ref]$HostHeightRef,
+			[ref]$EndTimeIntRef,    # $endTimeInt in the main loop
+			[ref]$EndTimeStrRef,    # $endTimeStr
+			[ref]$EndRef,           # $end
+			[ref]$LogArrayRef,      # $LogArray
+			[bool]$SkipAnimation = $false
+		)
+
+		$currentHostWidth  = $HostWidthRef.Value
+		$currentHostHeight = $HostHeightRef.Value
+
+	$dialogWidth  = 26
+	# Layout (13 rows, indices 0-12):
+	#  0: top border   1: title   2: divider   3: blank
+	#  4: [⏳|end_(t)ime]  5: blank   6: [🖱|(m)ouse_movement]  7: blank
+	#  8: [💻|(o)utput: Full/Min] (inline toggle)   9: blank
+	#  10: [🐛|(d)ebug: On/Off]  (inline checkbox)  11: blank  12: bottom border
+	$dialogHeight = 12
+
+		# Left-aligned above the settings button; clamp so dialog fits on screen
+		$settingsBtnX = if ($null -ne $script:SettingsButtonStartX) { $script:SettingsButtonStartX } else { 0 }
+		$dialogX      = [math]::Max(0, [math]::Min($settingsBtnX, $currentHostWidth - $dialogWidth))
+		$menuBarY     = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $currentHostHeight - 2 }
+		$dialogY      = [math]::Max(0, $menuBarY - 2 - $dialogHeight)
+
+		$savedCursorVisible = $script:CursorVisible
+		$script:CursorVisible = $false
+		[Console]::Write("$($script:ESC)[?25l")
+
+		# Icon emojis used in buttons
+	$emojiHourglass = [char]::ConvertFromUtf32(0x23F3)  # ⏳
+	$emojiMouse     = [char]::ConvertFromUtf32(0x1F5B1) # 🖱
+		$emojiScreen    = [char]::ConvertFromUtf32(0x1F4BB) # 💻
+		$emojiDebug     = [char]::ConvertFromUtf32(0x1F50D) # 🔍
+
+		# Button width / position helper — dot-source to populate current scope
+		$calcButtonVars = {
+			$dlgIconWidth    = if ($script:DialogButtonShowIcon)         { 2 + $script:DialogButtonSeparator.Length } else { 0 }
+			$dlgBracketWidth = if ($script:DialogButtonShowBrackets)     { 2 } else { 0 }
+			$dlgParenAdj     = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+		# Per-button right padding: dialogWidth - border(1) - space(1) - btnChars - border(1)
+		# "end_(t)ime"=10, "(m)ouse_movement"=16; output/debug pads are computed dynamically in render
+		$timePad  = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 10 + $dlgParenAdj + 1)
+		$movePad  = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 16 + $dlgParenAdj + 1)
+		$timeButtonStartX  = $dialogX + 2
+		$timeButtonEndX    = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 10 + $dlgParenAdj - 1
+		$moveButtonStartX  = $dialogX + 2
+		$moveButtonEndX    = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 16 + $dlgParenAdj - 1
+			# Output/debug rows: full inner-row clickable area
+			$outputButtonStartX = $dialogX + 1
+			$outputButtonEndX   = $dialogX + $dialogWidth - 2
+			$debugButtonStartX  = $dialogX + 1
+			$debugButtonEndX    = $dialogX + $dialogWidth - 2
+		}
+		. $calcButtonVars
+
+		# Build static line strings (used by animation + full render)
+		$hLine      = [string]$script:BoxHorizontal
+		$inner      = $dialogWidth - 2  # 33
+		$line0      = $script:BoxTopLeft    + ($hLine * $inner) + $script:BoxTopRight
+		$line2      = $script:BoxVerticalRight + ($hLine * $inner) + $script:BoxVerticalLeft
+		$lineBlank  = $script:BoxVertical   + (" "   * $inner) + $script:BoxVertical
+		$lineBottom = $script:BoxBottomLeft + ($hLine * $inner) + $script:BoxBottomRight
+		# indices 0-12; rows 4, 6, 8, 10 are $null — drawn as inline toggle rows
+		$dialogLines = @($line0, $null, $line2, $lineBlank, $null, $lineBlank, $null, $lineBlank, $null, $lineBlank, $null, $lineBlank, $lineBottom)
+
+	# ── Slide-up-from-behind animation (skipped on reopen after sub-dialog) ──
+	if (-not $SkipAnimation) {
+		$clipY        = $menuBarY - 1
+		$animSteps    = $dialogHeight + 1
+		$frameDelayMs = 15
+		for ($step = 2; $step -le ($animSteps + 1); $step += 2) {
+			$s     = [math]::Min($step, $animSteps)
+			$animY = $menuBarY - 1 - $s
+			for ($r = 0; $r -lt $s -and $r -le $dialogHeight; $r++) {
+				$absY = $animY + $r
+				if ($absY -ge $clipY) { continue }
+				if ($dialogX -gt 0) { Write-Buffer -X ($dialogX - 1) -Y $absY -Text " " }
+				if (($dialogX + $dialogWidth) -lt $currentHostWidth) { Write-Buffer -X ($dialogX + $dialogWidth) -Y $absY -Text " " }
+				Write-Buffer -X $dialogX -Y $absY -Text (" " * $dialogWidth) -BG $script:SettingsDialogBg
+				if ($r -eq 0) {
+					Write-Buffer -X $dialogX -Y $absY -Text $line0 -FG $script:SettingsDialogBorder -BG $script:SettingsDialogBg
+				} elseif ($r -eq $dialogHeight) {
+					Write-Buffer -X $dialogX -Y $absY -Text $lineBottom -FG $script:SettingsDialogBorder -BG $script:SettingsDialogBg
+				} else {
+					Write-Buffer -X $dialogX                      -Y $absY -Text $script:BoxVertical -FG $script:SettingsDialogBorder -BG $script:SettingsDialogBg
+					Write-Buffer -X ($dialogX + $dialogWidth - 1) -Y $absY -Text $script:BoxVertical -FG $script:SettingsDialogBorder -BG $script:SettingsDialogBg
+				}
+			}
+			if ($s -eq $animSteps -and $animY -gt 0) {
+				$aPadLeft  = [math]::Max(0, $dialogX - 1)
+				$aPadWidth = $dialogWidth + ($dialogX - $aPadLeft) + 1
+				Write-Buffer -X $aPadLeft -Y ($animY - 1) -Text (" " * $aPadWidth)
+			}
+			Flush-Buffer
+			if ($frameDelayMs -gt 0) { Start-Sleep -Milliseconds $frameDelayMs }
+		}
+	}
+
+		# ── Blank padding (terminal default BG) — top, left, right; no bottom ──
+		if ($dialogY -gt 0) {
+			$padLeft  = [math]::Max(0, $dialogX - 1)
+			$padWidth = $dialogWidth + ($dialogX - $padLeft) + 1
+			Write-Buffer -X $padLeft -Y ($dialogY - 1) -Text (" " * $padWidth)
+		}
+		for ($i = 0; $i -le $dialogHeight; $i++) {
+			if ($dialogX -gt 0) { Write-Buffer -X ($dialogX - 1) -Y ($dialogY + $i) -Text " " }
+			if (($dialogX + $dialogWidth) -lt $currentHostWidth) { Write-Buffer -X ($dialogX + $dialogWidth) -Y ($dialogY + $i) -Text " " }
+		}
+
+		# ── Render helper: one button row ─────────────────────────────────────────
+		# Reads $cBg/$cBorder/$cBtnBg/$cBtnText/$cBtnHotkey set by $drawSettingsDialog
+		$drawSettingsBtnRow = {
+			param($dx, $absRowY, $emoji, $hotkeyChar, $labelSuffix, $rowPad, $labelPrefix = "")
+			$bX = $dx + 2
+			Write-Buffer -X $dx -Y $absRowY -Text "$($script:BoxVertical) " -FG $cBorder -BG $cBg
+			if ($script:DialogButtonShowBrackets) { Write-Buffer -X $bX -Y $absRowY -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+			$bCX = $bX + [int]$script:DialogButtonShowBrackets
+			if ($script:DialogButtonShowIcon) {
+				Write-Buffer -X $bCX -Y $absRowY -Text $emoji -BG $cBtnBg -Wide
+				Write-Buffer -X ($bCX + 2) -Y $absRowY -Text $script:DialogButtonSeparator -FG $cBtnText -BG $cBtnBg
+			} else {
+				Write-Buffer -X $bCX -Y $absRowY -Text "" -BG $cBtnBg
+			}
+			if ($labelPrefix.Length -gt 0) { Write-Buffer -Text $labelPrefix -FG $cBtnText -BG $cBtnBg }
+			$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+			if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $cBtnText -BG $cBtnBg }
+			Write-Buffer -Text $hotkeyChar -FG $cBtnHotkey -BG $cBtnBg
+			Write-Buffer -Text "${_rp}${labelSuffix}" -FG $cBtnText -BG $cBtnBg
+			if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+			Write-Buffer -Text (" " * $rowPad) -BG $cBg
+			Write-Buffer -Text $script:BoxVertical -FG $cBorder -BG $cBg
+		}
+
+		# ── Render helper: full dialog — $focused selects onfocus vs offfocus ─────
+		$drawSettingsDialog = {
+			param($dx, $dy, [bool]$focused = $true)
+			# Resolve color set for this draw
+			$cBg        = if ($focused) { $script:SettingsDialogBg }                  else { $script:SettingsDialogOffFocusBg }
+			$cBorder    = if ($focused) { $script:SettingsDialogBorder }               else { $script:SettingsDialogOffFocusBorder }
+			$cTitle     = if ($focused) { $script:SettingsDialogTitle }                else { $script:SettingsDialogOffFocusTitle }
+			$cText      = if ($focused) { $script:SettingsDialogText }                 else { $script:SettingsDialogOffFocusText }
+			$cBtnBg     = if ($focused) { $script:SettingsDialogButtonBg }             else { $script:SettingsDialogOffFocusButtonBg }
+			$cBtnText   = if ($focused) { $script:SettingsDialogButtonText }           else { $script:SettingsDialogOffFocusButtonText }
+			$cBtnHotkey = if ($focused) { $script:SettingsDialogButtonHotkey }         else { $script:SettingsDialogOffFocusButtonHotkey }
+			for ($i = 0; $i -le $dialogHeight; $i++) {
+				$absY = $dy + $i
+				Write-Buffer -X $dx -Y $absY -Text (" " * $dialogWidth) -BG $cBg
+				if ($i -eq 1) {
+					# Title row
+					Write-Buffer -X $dx -Y $absY -Text "$($script:BoxVertical)  " -FG $cBorder -BG $cBg
+					Write-Buffer -Text "Settings" -FG $cTitle -BG $cBg
+					$tPad = Get-Padding -usedWidth (3 + "Settings".Length + 1) -totalWidth $dialogWidth
+					Write-Buffer -Text (" " * $tPad) -BG $cBg
+					Write-Buffer -Text $script:BoxVertical -FG $cBorder -BG $cBg
+			} elseif ($i -eq 4) {
+		& $drawSettingsBtnRow $dx $absY $emojiHourglass "t" "ime" $timePad "end_"
+		} elseif ($i -eq 6) {
+			& $drawSettingsBtnRow $dx $absY $emojiMouse "m" "ouse_movement" $movePad
+			} elseif ($i -eq 8) {
+				# Output inline toggle — shows current mode
+				$_outName   = if ($script:Output -eq "full") { "Full" } else { "Min " }
+				$_outSuffix = "utput: $_outName"
+				$_outPad    = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 3 + $_outSuffix.Length + $dlgParenAdj + 1)
+				& $drawSettingsBtnRow $dx $absY $emojiScreen "o" $_outSuffix ([math]::Max(0, $_outPad))
+			} elseif ($i -eq 10) {
+				# Debug inline checkbox — shows current state
+				$_dbgSuffix = if ($script:DebugMode) { "ebug: On " } else { "ebug: Off" }
+				$_dbgPad    = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 3 + $_dbgSuffix.Length + $dlgParenAdj + 1)
+				& $drawSettingsBtnRow $dx $absY $emojiDebug "d" $_dbgSuffix ([math]::Max(0, $_dbgPad))
+			} elseif ($i -eq $dialogHeight) {
+					Write-Buffer -X $dx -Y $absY -Text $lineBottom -FG $cBorder -BG $cBg
+				} elseif ($null -ne $dialogLines[$i]) {
+					Write-Buffer -X $dx -Y $absY -Text $dialogLines[$i] -FG $cText -BG $cBg
+				}
+			}
+		}
+
+		& $drawSettingsDialog $dialogX $dialogY $true
+		Flush-Buffer
+
+	# ── Button row Y coordinates ───────────────────────────────────────────────
+	$timeButtonRowY   = $dialogY + 4
+	$moveButtonRowY   = $dialogY + 6
+	$outputButtonRowY = $dialogY + 8
+	$debugButtonRowY  = $dialogY + 10
+
+	$script:DialogButtonBounds = @{
+		buttonRowY   = $timeButtonRowY
+		updateStartX = $timeButtonStartX
+		updateEndX   = $timeButtonEndX
+		cancelStartX = $moveButtonStartX
+		cancelEndX   = $moveButtonEndX
+	}
+		$script:DialogButtonClick = $null
+
+		$needsRedraw     = $false  # set true whenever a sub-dialog makes changes
+		$settingsReopen  = $false  # set true to break and re-open after full screen clear
+
+		:settingsLoop do {
+			# ── Resize check ───────────────────────────────────────────────────────
+			$pshost        = Get-Host
+			$pswindow      = $pshost.UI.RawUI
+			$newWindowSize = $pswindow.WindowSize
+			if ($newWindowSize.Width -ne $currentHostWidth -or $newWindowSize.Height -ne $currentHostHeight) {
+				$HostWidthRef.Value  = $newWindowSize.Width
+				$HostHeightRef.Value = $newWindowSize.Height
+				$currentHostWidth    = $newWindowSize.Width
+				$currentHostHeight   = $newWindowSize.Height
+
+				$settingsBtnX = if ($null -ne $script:SettingsButtonStartX) { $script:SettingsButtonStartX } else { 0 }
+				$dialogX      = [math]::Max(0, [math]::Min($settingsBtnX, $currentHostWidth - $dialogWidth))
+				$menuBarY     = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $currentHostHeight - 2 }
+				$dialogY      = [math]::Max(0, $menuBarY - 2 - $dialogHeight)
+				. $calcButtonVars
+
+				& $drawSettingsDialog $dialogX $dialogY $true
+				Flush-Buffer -ClearFirst
+
+		$timeButtonRowY   = $dialogY + 4
+		$moveButtonRowY   = $dialogY + 6
+		$outputButtonRowY = $dialogY + 8
+		$debugButtonRowY  = $dialogY + 10
+		$script:DialogButtonBounds = @{
+			buttonRowY   = $timeButtonRowY
+			updateStartX = $timeButtonStartX
+			updateEndX   = $timeButtonEndX
+			cancelStartX = $moveButtonStartX
+			cancelEndX   = $moveButtonEndX
+		}
+		}
+
+			# ── Mouse input ────────────────────────────────────────────────────────
+			$keyProcessed = $false
+			$char = $null; $key = $null; $keyInfo = $null
+
+			try {
+				$peekBuf  = New-Object 'mJiggAPI.INPUT_RECORD[]' 16
+				$peekEvts = [uint32]0
+				$hIn = [mJiggAPI.Mouse]::GetStdHandle(-10)
+				if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 16, [ref]$peekEvts) -and $peekEvts -gt 0) {
+					$lastClickIdx = -1; $clickX = -1; $clickY = -1
+					for ($e = 0; $e -lt $peekEvts; $e++) {
+						if ($peekBuf[$e].EventType -eq 0x0002 -and $peekBuf[$e].MouseEvent.dwEventFlags -eq 0 -and ($peekBuf[$e].MouseEvent.dwButtonState -band 0x0001) -ne 0) {
+							$clickX = $peekBuf[$e].MouseEvent.dwMousePosition.X
+							$clickY = $peekBuf[$e].MouseEvent.dwMousePosition.Y
+							$lastClickIdx = $e
+						}
+					}
+					if ($lastClickIdx -ge 0) {
+						$consumeCount = [uint32]($lastClickIdx + 1)
+						$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $consumeCount
+						$flushed  = [uint32]0
+						[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $consumeCount, [ref]$flushed) | Out-Null
+					# Click outside dialog bounds → close
+				if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
+					$char = "s"; $keyProcessed = $true
+			} elseif ($clickY -eq $timeButtonRowY -and $clickX -ge $timeButtonStartX -and $clickX -le $timeButtonEndX) {
+				$char = "t"; $keyProcessed = $true
+				} elseif ($clickY -eq $moveButtonRowY -and $clickX -ge $moveButtonStartX -and $clickX -le $moveButtonEndX) {
+					$char = "m"; $keyProcessed = $true
+				} elseif ($clickY -eq $outputButtonRowY -and $clickX -ge $outputButtonStartX -and $clickX -le $outputButtonEndX) {
+					$char = "o"; $keyProcessed = $true
+				} elseif ($clickY -eq $debugButtonRowY -and $clickX -ge $debugButtonStartX -and $clickX -le $debugButtonEndX) {
+					$char = "d"; $keyProcessed = $true
+				}
+				}
+				}
+			} catch { }
+
+			if (-not $keyProcessed -and $null -ne $script:DialogButtonClick) {
+				$buttonClick = $script:DialogButtonClick
+				$script:DialogButtonClick = $null
+				if ($buttonClick -eq "Update") { $char = "t"; $keyProcessed = $true }
+				elseif ($buttonClick -eq "Cancel") { $char = "m"; $keyProcessed = $true }
+			}
+
+			if (-not $keyProcessed) {
+				while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
+					$keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyup,AllowCtrlC")
+					$isKeyDown = $false
+					if ($null -ne $keyInfo.KeyDown) { $isKeyDown = $keyInfo.KeyDown }
+					if (-not $isKeyDown) { $key = $keyInfo.Key; $char = $keyInfo.Character; $keyProcessed = $true }
+				}
+			}
+
+			if (-not $keyProcessed) { Start-Sleep -Milliseconds 50; continue }
+
+			# ── Dispatch ───────────────────────────────────────────────────────────
+		if ($char -eq "t" -or $char -eq "T") {
+			# ── Go offfocus while time dialog is open ──────────────────────────
+				& $drawSettingsDialog $dialogX $dialogY $false
+				Flush-Buffer
+				$script:DialogButtonBounds = $null  # prevent outer loop interference
+
+				$subHostWidthRef  = [ref]$currentHostWidth
+				$subHostHeightRef = [ref]$currentHostHeight
+				$timeResult = Show-TimeChangeDialog -currentEndTime $EndTimeIntRef.Value -hostWidthRef $subHostWidthRef -hostHeightRef $subHostHeightRef
+				$currentHostWidth  = $subHostWidthRef.Value
+				$currentHostHeight = $subHostHeightRef.Value
+				$HostWidthRef.Value  = $currentHostWidth
+				$HostHeightRef.Value = $currentHostHeight
+
+				# Apply time result
+				if ($null -ne $timeResult.Result) {
+					$needsRedraw = $true
+					if ($timeResult.Result -eq -1) {
+						$oldStr = $EndTimeStrRef.Value
+						$EndTimeIntRef.Value = -1; $EndTimeStrRef.Value = ""; $EndRef.Value = ""
+						$cd = Get-Date
+						$msg = if ([string]::IsNullOrEmpty($oldStr)) { " - End time cleared" } else { " - End time cleared (was: $oldStr)" }
+						$LogArrayRef.Value += [PSCustomObject]@{ logRow = $true; components = @(
+							@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
+							@{ priority = 2; text = $msg; shortText = " - End time cleared" }
+						)}
+					} else {
+						$needsRedraw = $true
+						$oldInt = $EndTimeIntRef.Value; $oldStr = $EndTimeStrRef.Value
+						$EndTimeIntRef.Value = $timeResult.Result
+						$newStr = $EndTimeIntRef.Value.ToString().PadLeft(4, '0')
+						$EndTimeStrRef.Value = $newStr
+						$nowHHmm    = Get-Date -Format "HHmm"
+						$isTomorrow = $EndTimeIntRef.Value -le [int]$nowHHmm
+						$endDate    = if ($isTomorrow) { Get-Date (Get-Date).AddDays(1) -Format "MMdd" } else { Get-Date -Format "MMdd" }
+						$EndRef.Value = "$endDate$newStr"
+						$cd = Get-Date; $arrow = [char]0x2192
+						$dayLabel = if ($isTomorrow) { " (tomorrow)" } else { " (today)" }
+						$dd = $endDate.Substring(0,2) + "/" + $endDate.Substring(2,2)
+						$td = $newStr.Substring(0,2) + ":" + $newStr.Substring(2,2)
+						$msg = if ($oldInt -eq -1 -or [string]::IsNullOrEmpty($oldStr)) { " - End time set: $dd $td$dayLabel" } else { " - End time changed: $oldStr $arrow $dd $td$dayLabel" }
+						$LogArrayRef.Value += [PSCustomObject]@{ logRow = $true; components = @(
+							@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
+							@{ priority = 2; text = $msg; shortText = " - End time: $dd $td" }
+						)}
+					}
+				}
+
+			# Sub-dialog dirtied the background — break out so the caller can do a
+			# full screen repaint and then reopen settings cleanly.
+			$settingsReopen = $true
+			break :settingsLoop
+
+			} elseif ($char -eq "m" -or $char -eq "M") {
+				# ── Go offfocus while movement dialog is open ──────────────────────
+				& $drawSettingsDialog $dialogX $dialogY $false
+				Flush-Buffer
+				$script:DialogButtonBounds = $null
+
+				$subHostWidthRef  = [ref]$currentHostWidth
+				$subHostHeightRef = [ref]$currentHostHeight
+				$moveResult = Show-MovementModifyDialog `
+					-currentIntervalSeconds $script:IntervalSeconds -currentIntervalVariance $script:IntervalVariance `
+					-currentMoveSpeed $script:MoveSpeed -currentMoveVariance $script:MoveVariance `
+					-currentTravelDistance $script:TravelDistance -currentTravelVariance $script:TravelVariance `
+					-currentAutoResumeDelaySeconds $script:AutoResumeDelaySeconds `
+					-hostWidthRef $subHostWidthRef -hostHeightRef $subHostHeightRef
+				$currentHostWidth  = $subHostWidthRef.Value
+				$currentHostHeight = $subHostHeightRef.Value
+				$HostWidthRef.Value  = $currentHostWidth
+				$HostHeightRef.Value = $currentHostHeight
+
+				# Apply movement result
+				if ($null -ne $moveResult.Result) {
+					$needsRedraw = $true
+					$old = @{
+						Int  = $script:IntervalSeconds; IntV = $script:IntervalVariance
+						Spd  = $script:MoveSpeed;       SpdV = $script:MoveVariance
+						Dst  = $script:TravelDistance;  DstV = $script:TravelVariance
+						Dly  = $script:AutoResumeDelaySeconds
+					}
+					$script:IntervalSeconds       = $moveResult.Result.IntervalSeconds
+					$script:IntervalVariance      = $moveResult.Result.IntervalVariance
+					$script:MoveSpeed             = $moveResult.Result.MoveSpeed
+					$script:MoveVariance          = $moveResult.Result.MoveVariance
+					$script:TravelDistance        = $moveResult.Result.TravelDistance
+					$script:TravelVariance        = $moveResult.Result.TravelVariance
+					$script:AutoResumeDelaySeconds = $moveResult.Result.AutoResumeDelaySeconds
+					$arrow = [char]0x2192; $chg = @()
+					if ($old.Int  -ne $script:IntervalSeconds)       { $chg += "Interval: $($old.Int) $arrow $($script:IntervalSeconds)" }
+					if ($old.IntV -ne $script:IntervalVariance)      { $chg += "IntervalVar: $($old.IntV) $arrow $($script:IntervalVariance)" }
+					if ($old.Spd  -ne $script:MoveSpeed)             { $chg += "Speed: $($old.Spd) $arrow $($script:MoveSpeed)" }
+					if ($old.SpdV -ne $script:MoveVariance)          { $chg += "SpeedVar: $($old.SpdV) $arrow $($script:MoveVariance)" }
+					if ($old.Dst  -ne $script:TravelDistance)        { $chg += "Distance: $($old.Dst) $arrow $($script:TravelDistance)" }
+					if ($old.DstV -ne $script:TravelVariance)        { $chg += "DistVar: $($old.DstV) $arrow $($script:TravelVariance)" }
+					if ($old.Dly  -ne $script:AutoResumeDelaySeconds){ $chg += "Delay: $($old.Dly) $arrow $($script:AutoResumeDelaySeconds)" }
+					if ($chg.Count -gt 0) {
+						$cd = Get-Date
+						$LogArrayRef.Value += [PSCustomObject]@{ logRow = $true; components = @(
+							@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
+							@{ priority = 2; text = " - Settings updated: $($chg -join ', ')"; shortText = " - Updated: $($chg -join ', ')" }
+						)}
+					}
+				}
+
+			# Sub-dialog dirtied the background — break out so the caller can do a
+			# full screen repaint and then reopen settings cleanly.
+			$settingsReopen = $true
+			break :settingsLoop
+
+	} elseif ($char -eq "o" -or $char -eq "O") {
+		# ── Inline output toggle: cycle Full ↔ Min ─────────────────────────
+		$oldOutput = $script:Output
+		$script:Output = if ($script:Output -eq "full") { "min" } else { "full" }
+		$needsRedraw = $true
+		$modeNames = @{ 'full' = 'Full'; 'min' = 'Minimal' }
+		$oldName = if ($modeNames.ContainsKey($oldOutput))       { $modeNames[$oldOutput] }       else { $oldOutput }
+		$newName = if ($modeNames.ContainsKey($script:Output)) { $modeNames[$script:Output] } else { $script:Output }
+		$cd = Get-Date
+		$LogArrayRef.Value += [PSCustomObject]@{ logRow = $true; components = @(
+			@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
+			@{ priority = 2; text = " - Output mode: $oldName $([char]0x2192) $newName"; shortText = " - Output: $newName" }
+		)}
+		& $drawSettingsDialog $dialogX $dialogY $true
+		Flush-Buffer
+
+	} elseif ($char -eq "d" -or $char -eq "D") {
+		# ── Inline debug toggle ─────────────────────────────────────────────
+		$script:DebugMode = -not $script:DebugMode
+		$needsRedraw = $true
+		$cd = Get-Date
+		$dbgLabel = if ($script:DebugMode) { "enabled" } else { "disabled" }
+		$LogArrayRef.Value += [PSCustomObject]@{ logRow = $true; components = @(
+			@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
+			@{ priority = 2; text = " - Debug mode: $dbgLabel"; shortText = " - Debug: $dbgLabel" }
+		)}
+		& $drawSettingsDialog $dialogX $dialogY $true
+		Flush-Buffer
+
+	} elseif ($char -eq "s" -or $char -eq "S" -or $char -eq "q" -or $char -eq "Q" -or
+		          $key -eq "Escape" -or $key -eq "Enter" -or $char -eq [char]13 -or $char -eq [char]10 -or
+		          ($null -ne $keyInfo -and $keyInfo.VirtualKeyCode -eq 27)) {
+		break :settingsLoop
+	}
+
+			try {
+				while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,AllowCtrlC") }
+			} catch { }
+		} until ($false)
+
+		# ── Clear dialog area ─────────────────────────────────────────────────────
+		for ($i = 0; $i -le $dialogHeight; $i++) {
+			Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text (" " * $dialogWidth)
+		}
+		Flush-Buffer
+
+		$script:CursorVisible = $savedCursorVisible
+		if ($script:CursorVisible) { [Console]::Write("$($script:ESC)[?25h") } else { [Console]::Write("$($script:ESC)[?25l") }
+
+		$script:DialogButtonBounds = $null
+		$script:DialogButtonClick  = $null
+
+		return @{ NeedsRedraw = $needsRedraw; ReopenSettings = $settingsReopen }
+	}
+
+	# Info / About dialog — shows version, update status, and current configuration.
+	# Triggered by pressing '?' or clicking the mJig logo in the header.
+	function Show-InfoDialog {
+		param([ref]$HostWidthRef, [ref]$HostHeightRef)
+
+		$currentHostWidth  = $HostWidthRef.Value
+		$currentHostHeight = $HostHeightRef.Value
+
+		$dialogWidth  = 62
+		$dialogHeight = 21  # Y-offset of the bottom border row (rows 0..21 = 22 visible rows)
+		$dialogX = [math]::Max(0, [math]::Floor(($currentHostWidth  - $dialogWidth)  / 2))
+		$dialogY = [math]::Max(0, [math]::Floor(($currentHostHeight - $dialogHeight) / 2))
+
+		$savedCursorVisible = $script:CursorVisible
+		$script:CursorVisible = $false
+		[Console]::Write("$($script:ESC)[?25l")
+
+		# Fetch version info (uses cached result on subsequent calls)
+		$versionInfo = Get-LatestVersionInfo
+
+	$dlgIconWidth    = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
+	$dlgBracketWidth = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
+	$dlgParenAdj     = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+	# Single close button: "│ " + bracket? + icon? + "(c)lose" + padding + "│"
+	# padding = dialogWidth - 10 - bracketWidth - iconWidth  (= 52 - b - i)
+	$bottomLinePadding = $dialogWidth - 10 - $dlgParenAdj - $dlgBracketWidth - $dlgIconWidth
+
+		$drawInfoDialog = {
+			param($dx, $dy)
+			$inner = $dialogWidth - 2   # 60
+			$hLine = [string]$script:BoxHorizontal
+			$mouseEmoji = [char]::ConvertFromUtf32(0x1F400)  # 🐀
+			$checkChar  = [char]0x2713   # ✓
+			$arrowUp    = [char]0x2191   # ↑
+			$redX       = [char]::ConvertFromUtf32(0x274C)   # ❌
+
+			# Clear dialog background
+			for ($i = 0; $i -lt $dialogHeight; $i++) {
+				Write-Buffer -X $dx -Y ($dy + $i) -Text (" " * $dialogWidth) -BG $script:InfoDialogBg
+			}
+
+			# ── Line 0: top border ────────────────────────────────────────────
+			Write-Buffer -X $dx -Y ($dy + 0) -Text ($script:BoxTopLeft + ($hLine * $inner) + $script:BoxTopRight) -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+		# ── Line 1: title with logo emoji ─────────────────────────────────
+		# Layout: │(1) + "  mJig("(7) + emoji(2) + ")"(1) + "  About & Version"(17) + pad(33) + │(1) = 62
+		Write-Buffer -X $dx -Y ($dy + 1) -Text "$($script:BoxVertical)  mJig(" -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+		Write-Buffer -Text $mouseEmoji -FG $script:InfoDialogTitle -BG $script:InfoDialogBg
+		Write-Buffer -X ($dx + 10) -Y ($dy + 1) -Text ")" -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+		Write-Buffer -Text "  About & Version" -FG $script:InfoDialogTitle -BG $script:InfoDialogBg
+		Write-Buffer -Text (" " * 33) -BG $script:InfoDialogBg
+		Write-Buffer -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 2: divider ───────────────────────────────────────────────
+			Write-Buffer -X $dx -Y ($dy + 2) -Text ($script:BoxVerticalRight + ($hLine * $inner) + $script:BoxVerticalLeft) -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 3: blank ─────────────────────────────────────────────────
+			Write-Buffer -X $dx -Y ($dy + 3) -Text ($script:BoxVertical + (" " * $inner) + $script:BoxVertical) -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 4: Version ───────────────────────────────────────────────
+			$vLabel = "  Version:     "; $vVal = $script:Version
+			Write-Buffer -X $dx -Y ($dy + 4) -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+			Write-Buffer -Text $vLabel -FG $script:InfoDialogText -BG $script:InfoDialogBg
+			Write-Buffer -Text $vVal   -FG $script:InfoDialogValue -BG $script:InfoDialogBg
+			Write-Buffer -Text (" " * ($inner - $vLabel.Length - $vVal.Length)) -BG $script:InfoDialogBg
+			Write-Buffer -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 5: Latest release ────────────────────────────────────────
+			$lLabel = "  Latest:      "
+			Write-Buffer -X $dx -Y ($dy + 5) -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+			Write-Buffer -Text $lLabel -FG $script:InfoDialogText -BG $script:InfoDialogBg
+			$lUsed = $lLabel.Length
+			if ($null -eq $versionInfo -or $null -ne $versionInfo.error) {
+				$failText = "Could not check for updates"
+				Write-Buffer -Text $failText -FG $script:InfoDialogValueMuted -BG $script:InfoDialogBg
+				$lUsed += $failText.Length
+			} elseif ($versionInfo.isNewer) {
+				Write-Buffer -Text $versionInfo.latest -FG $script:InfoDialogValueWarn -BG $script:InfoDialogBg
+				Write-Buffer -Text "  " -BG $script:InfoDialogBg
+				Write-Buffer -Text $arrowUp -FG $script:InfoDialogValueWarn -BG $script:InfoDialogBg
+				Write-Buffer -Text " Update available!" -FG $script:InfoDialogValueWarn -BG $script:InfoDialogBg
+				$lUsed += $versionInfo.latest.Length + 2 + 1 + " Update available!".Length
+			} else {
+				Write-Buffer -Text $versionInfo.latest -FG $script:InfoDialogValueGood -BG $script:InfoDialogBg
+				Write-Buffer -Text "  " -BG $script:InfoDialogBg
+				Write-Buffer -Text $checkChar -FG $script:InfoDialogValueGood -BG $script:InfoDialogBg
+				Write-Buffer -Text " Up to date" -FG $script:InfoDialogValueGood -BG $script:InfoDialogBg
+				$lUsed += $versionInfo.latest.Length + 2 + 1 + " Up to date".Length
+			}
+			Write-Buffer -Text (" " * [math]::Max(0, $inner - $lUsed)) -BG $script:InfoDialogBg
+			Write-Buffer -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+		# ── Line 6: Repository ────────────────────────────────────────────
+		$rLabel = "  Repository:  "; $rVal = "https://github.com/ziaprazid0ne/mJig"
+			Write-Buffer -X $dx -Y ($dy + 6) -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+			Write-Buffer -Text $rLabel -FG $script:InfoDialogText -BG $script:InfoDialogBg
+			Write-Buffer -Text $rVal   -FG $script:InfoDialogValue -BG $script:InfoDialogBg
+			Write-Buffer -Text (" " * ($inner - $rLabel.Length - $rVal.Length)) -BG $script:InfoDialogBg
+			Write-Buffer -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 7: blank ─────────────────────────────────────────────────
+			Write-Buffer -X $dx -Y ($dy + 7) -Text ($script:BoxVertical + (" " * $inner) + $script:BoxVertical) -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 8: section divider ───────────────────────────────────────
+			Write-Buffer -X $dx -Y ($dy + 8) -Text ($script:BoxVerticalRight + ($hLine * $inner) + $script:BoxVerticalLeft) -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 9: "Configuration" section title ─────────────────────────
+			$secTitle = "  Configuration"
+			Write-Buffer -X $dx -Y ($dy + 9) -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+			Write-Buffer -Text $secTitle -FG $script:InfoDialogSectionTitle -BG $script:InfoDialogBg
+			Write-Buffer -Text (" " * ($inner - $secTitle.Length)) -BG $script:InfoDialogBg
+			Write-Buffer -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 10: section divider ──────────────────────────────────────
+			Write-Buffer -X $dx -Y ($dy + 10) -Text ($script:BoxVerticalRight + ($hLine * $inner) + $script:BoxVerticalLeft) -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 11: blank ────────────────────────────────────────────────
+			Write-Buffer -X $dx -Y ($dy + 11) -Text ($script:BoxVertical + (" " * $inner) + $script:BoxVertical) -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Lines 12-17: configuration rows ──────────────────────────────
+			$endTimeDsp    = if ($endTimeInt -eq -1 -or [string]::IsNullOrEmpty($endTimeStr)) { "none" } else { "$($endTimeStr.Substring(0,2)):$($endTimeStr.Substring(2,2))" }
+			$autoResumeDsp = if ($script:AutoResumeDelaySeconds -gt 0) { "$($script:AutoResumeDelaySeconds)s" } else { "off" }
+			$cfgRows = @(
+				@{ label = "  Output:       "; value = $Output },
+				@{ label = "  Interval:     "; value = "$($script:IntervalSeconds)s  (+-$($script:IntervalVariance)s)" },
+				@{ label = "  Distance:     "; value = "$($script:TravelDistance)px  (+-$($script:TravelVariance)px)" },
+				@{ label = "  Move speed:   "; value = "$($script:MoveSpeed)s  (+-$($script:MoveVariance)s)" },
+				@{ label = "  End time:     "; value = $endTimeDsp },
+				@{ label = "  Auto-resume:  "; value = $autoResumeDsp }
+			)
+			for ($ri = 0; $ri -lt $cfgRows.Count; $ri++) {
+				$row  = $cfgRows[$ri]
+				$rowY = $dy + 12 + $ri
+				Write-Buffer -X $dx -Y $rowY -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+				Write-Buffer -Text $row.label -FG $script:InfoDialogText  -BG $script:InfoDialogBg
+				Write-Buffer -Text $row.value -FG $script:InfoDialogValue -BG $script:InfoDialogBg
+				Write-Buffer -Text (" " * [math]::Max(0, $inner - $row.label.Length - $row.value.Length)) -BG $script:InfoDialogBg
+				Write-Buffer -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+			}
+
+			# ── Line 18: blank ────────────────────────────────────────────────
+			Write-Buffer -X $dx -Y ($dy + 18) -Text ($script:BoxVertical + (" " * $inner) + $script:BoxVertical) -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 19: close button row ─────────────────────────────────────
+			$btnX = $dx + 2
+			Write-Buffer -X $dx -Y ($dy + 19) -Text "$($script:BoxVertical) " -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+			if ($script:DialogButtonShowBrackets) {
+				Write-Buffer -X $btnX -Y ($dy + 19) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+			}
+			$btnContentX = $btnX + [int]$script:DialogButtonShowBrackets
+			if ($script:DialogButtonShowIcon) {
+				Write-Buffer -X $btnContentX -Y ($dy + 19) -Text $redX -FG $script:InfoDialogButtonText -BG $script:InfoDialogButtonBg -Wide
+				Write-Buffer -X ($btnContentX + 2) -Y ($dy + 19) -Text $script:DialogButtonSeparator -FG $script:InfoDialogButtonText -BG $script:InfoDialogButtonBg
+			} else {
+				Write-Buffer -X $btnContentX -Y ($dy + 19) -Text "" -BG $script:InfoDialogButtonBg
+			}
+		$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:InfoDialogButtonText -BG $script:InfoDialogButtonBg }
+		Write-Buffer -Text "c" -FG $script:InfoDialogButtonHotkey -BG $script:InfoDialogButtonBg
+		Write-Buffer -Text "${_rp}lose" -FG $script:InfoDialogButtonText -BG $script:InfoDialogButtonBg
+			if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+			Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:InfoDialogBg
+			Write-Buffer -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 20: blank ────────────────────────────────────────────────
+			Write-Buffer -X $dx -Y ($dy + 20) -Text ($script:BoxVertical + (" " * $inner) + $script:BoxVertical) -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+
+			# ── Line 21: bottom border ────────────────────────────────────────
+			Write-Buffer -X $dx -Y ($dy + 21) -Text ($script:BoxBottomLeft + ($hLine * $inner) + $script:BoxBottomRight) -FG $script:InfoDialogBorder -BG $script:InfoDialogBg
+		}
+
+		# Initial draw
+		& $drawInfoDialog $dialogX $dialogY
+		Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:InfoDialogShadow
+		Flush-Buffer
+
+	# Button bounds (close button only — both update/cancel map to "close")
+	$buttonRowY        = $dialogY + 19
+	$closeButtonStartX = $dialogX + 2
+	$closeButtonEndX   = $closeButtonStartX + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj - 1
+	$script:DialogButtonBounds = @{
+		buttonRowY   = $buttonRowY
+		updateStartX = $closeButtonStartX
+		updateEndX   = $closeButtonEndX
+		cancelStartX = $closeButtonStartX
+		cancelEndX   = $closeButtonEndX
+	}
+		$script:DialogButtonClick = $null
+
+		$needsRedraw = $false
+
+		:inputLoop do {
+			# Resize check
+			$pshost       = Get-Host
+			$pswindow     = $pshost.UI.RawUI
+			$newWindowSize = $pswindow.WindowSize
+			if ($newWindowSize.Width -ne $currentHostWidth -or $newWindowSize.Height -ne $currentHostHeight) {
+				$HostWidthRef.Value  = $newWindowSize.Width
+				$HostHeightRef.Value = $newWindowSize.Height
+				$currentHostWidth    = $newWindowSize.Width
+				$currentHostHeight   = $newWindowSize.Height
+				$needsRedraw         = $true
+
+				$dialogX = [math]::Max(0, [math]::Floor(($currentHostWidth  - $dialogWidth)  / 2))
+				$dialogY = [math]::Max(0, [math]::Floor(($currentHostHeight - $dialogHeight) / 2))
+
+				& $drawInfoDialog $dialogX $dialogY
+				Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:InfoDialogShadow
+			Flush-Buffer -ClearFirst
+
+			$buttonRowY        = $dialogY + 19
+			$closeButtonStartX = $dialogX + 2
+			$closeButtonEndX   = $closeButtonStartX + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj - 1
+			$script:DialogButtonBounds = @{
+				buttonRowY   = $buttonRowY
+				updateStartX = $closeButtonStartX
+				updateEndX   = $closeButtonEndX
+				cancelStartX = $closeButtonStartX
+				cancelEndX   = $closeButtonEndX
+			}
+			}
+
+			# Mouse click detection
+			$keyProcessed = $false
+			$keyInfo = $null
+			$key     = $null
+			$char    = $null
+
+			try {
+				$peekBuf  = New-Object 'mJiggAPI.INPUT_RECORD[]' 16
+				$peekEvts = [uint32]0
+				$hIn      = [mJiggAPI.Mouse]::GetStdHandle(-10)
+				if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 16, [ref]$peekEvts) -and $peekEvts -gt 0) {
+					$lastClickIdx = -1
+					$clickX = -1; $clickY = -1
+					for ($e = 0; $e -lt $peekEvts; $e++) {
+						if ($peekBuf[$e].EventType -eq 0x0002 -and $peekBuf[$e].MouseEvent.dwEventFlags -eq 0 -and ($peekBuf[$e].MouseEvent.dwButtonState -band 0x0001) -ne 0) {
+							$clickX = $peekBuf[$e].MouseEvent.dwMousePosition.X
+							$clickY = $peekBuf[$e].MouseEvent.dwMousePosition.Y
+							$lastClickIdx = $e
+						}
+					}
+					if ($lastClickIdx -ge 0) {
+						$consumeCount = [uint32]($lastClickIdx + 1)
+						$flushBuf     = New-Object 'mJiggAPI.INPUT_RECORD[]' $consumeCount
+						$flushed      = [uint32]0
+						[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $consumeCount, [ref]$flushed) | Out-Null
+					# Click outside dialog bounds → close
+					if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
+						$char = "c"; $keyProcessed = $true
+					} elseif ($clickY -eq $buttonRowY -and $clickX -ge $closeButtonStartX -and $clickX -le $closeButtonEndX) {
+						$char = "c"; $keyProcessed = $true
+					}
+					}
+				}
+			} catch {}
+
+			# Main-loop DialogButtonClick (set when click is routed through main input handler)
+			if (-not $keyProcessed -and $null -ne $script:DialogButtonClick) {
+				$script:DialogButtonClick = $null
+				$char = "c"; $keyProcessed = $true
+			}
+
+			# Keyboard input
+			if (-not $keyProcessed) {
+				while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
+					$keyInfo    = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyup,AllowCtrlC")
+					$isKeyDown  = if ($null -ne $keyInfo.KeyDown) { $keyInfo.KeyDown } else { $false }
+					if (-not $isKeyDown) {
+						$key = $keyInfo.Key; $char = $keyInfo.Character; $keyProcessed = $true
+					}
+				}
+			}
+
+			if (-not $keyProcessed) { Start-Sleep -Milliseconds 50; continue }
+
+		if ($char -eq "c" -or $char -eq "C" -or $char -eq "?" -or $char -eq "/" -or
+			$key  -eq "Escape" -or $key -eq "Enter" -or $char -eq [char]13 -or $char -eq [char]10) {
+				break inputLoop
+			}
+
+		} while ($true)
+
+		$script:DialogButtonBounds = $null
+		$script:DialogButtonClick  = $null
+
+		# Clear key buffer
+		try { while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,AllowCtrlC") } } catch {}
+
+		# Clear dialog area
+		Clear-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight
+		for ($i = 0; $i -lt $dialogHeight; $i++) {
+			Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text (" " * $dialogWidth)
+		}
+		Flush-Buffer
+
+		$script:CursorVisible = $savedCursorVisible
+		if ($script:CursorVisible) { [Console]::Write("$($script:ESC)[?25h") } else { [Console]::Write("$($script:ESC)[?25l") }
+
+		return @{ NeedsRedraw = $needsRedraw }
+	}
+
 	# Show startup complete screen (non-debug, non-hidden modes only)
 	if (-not $DebugMode -and $Output -ne "hidden") {
 		Show-StartupComplete -HasParams ($PSBoundParameters.Count -gt 0)
@@ -4016,58 +5136,55 @@ namespace mJiggAPI {
 	if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - CHECKPOINT 4: Before debug mode check (DebugMode=$DebugMode)" | Out-File $script:StartupDiagFile -Append }
 	
 	if ($DebugMode) {
-			if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - ENTERED DEBUG MODE KEY WAIT LOOP" | Out-File $script:StartupDiagFile -Append }
+		if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - ENTERED DEBUG MODE KEY WAIT LOOP" | Out-File $script:StartupDiagFile -Append }
 
-			Write-Host "`nPress any key to start mJig..." -ForegroundColor $script:TextWarning
-			
-			$keyPressed = $false
-			
-			$VK_LCONTROL = 0xA2
-			$VK_RCONTROL = 0xA3
-			
-			while (-not $keyPressed) {
-				$ctrlPressedAlone = $false
-				try {
-					$ctrlState = [mJiggAPI.Mouse]::GetAsyncKeyState($VK_LCONTROL) -bor [mJiggAPI.Mouse]::GetAsyncKeyState($VK_RCONTROL)
-					$ctrlPressed = (($ctrlState -band 0x8000) -ne 0)
-					if ($ctrlPressed) {
-						$ctrlPressedAlone = $true
-					}
-				} catch {}
-				
-				if ($ctrlPressedAlone) {
-					Start-Sleep -Milliseconds 50
-					continue
-				}
-				
-				try {
-					if ($Host.UI.RawUI.KeyAvailable) {
-						$validKeyFound = $false
-						while ($Host.UI.RawUI.KeyAvailable -and -not $validKeyFound) {
-							$keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,AllowCtrlC")
-							$isKeyDown = if ($null -ne $keyInfo.KeyDown) { $keyInfo.KeyDown } else { $true }
-							$isCtrlOnly = ($keyInfo.Key -eq "LeftCtrl" -or $keyInfo.Key -eq "RightCtrl")
-							
-							if ($isKeyDown -and -not $isCtrlOnly) {
-								$keyPressed = $true
-								$validKeyFound = $true
-							}
+		Write-Host "`nPress any key to start mJig..." -ForegroundColor $script:TextWarning
+
+		$dbgModifierVKs = @(0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C)
+		$hIn      = [mJiggAPI.Mouse]::GetStdHandle(-10)
+		$peekBuf  = New-Object 'mJiggAPI.INPUT_RECORD[]' 32
+		$peekEvts = [uint32]0
+		# Drain events buffered before the prompt appeared (e.g. Enter key-up from launch)
+		try { $Host.UI.RawUI.FlushInputBuffer() } catch {}
+		$detected = $false
+		while (-not $detected) {
+			Start-Sleep -Milliseconds 5
+			try {
+				if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 32, [ref]$peekEvts) -and $peekEvts -gt 0) {
+					for ($e = 0; $e -lt [int]$peekEvts; $e++) {
+						if ($peekBuf[$e].EventType -eq 0x0001 -and $peekBuf[$e].KeyEvent.bKeyDown -eq 0 -and
+						    $peekBuf[$e].KeyEvent.wVirtualKeyCode -notin $dbgModifierVKs) {
+							$detected = $true; break
 						}
-					} else {
-						Start-Sleep -Milliseconds 50
 					}
-				} catch {
-					Start-Sleep -Milliseconds 50
+					if ($detected) {
+						$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $peekEvts
+						$flushed  = [uint32]0
+						[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $peekEvts, [ref]$flushed) | Out-Null
+					}
+				}
+			} catch {
+				if ($Host.UI.RawUI.KeyAvailable) {
+					try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,IncludeKeyUp,AllowCtrlC") } catch {}
+					$detected = $true
+				} else {
+					Start-Sleep -Milliseconds 45
 				}
 			}
-
 		}
 
-		# Note: Previously had code here to clear key buffer, but $Host.UI.RawUI.KeyAvailable 
-		# can return false positives and ReadKey blocks waiting for input, causing startup freeze.
-		# The main loop handles stale input gracefully, so pre-clearing is not necessary.
-		if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - CHECKPOINT 5: Skipping key buffer clear (causes blocking)" | Out-File $script:StartupDiagFile -Append }
+	}
+
+	# Key-up detection above already flushes all buffered events via ReadConsoleInput,
+	# so the main loop starts with a clean input queue.
+	if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - CHECKPOINT 5: Input buffer flushed by key-up handler" | Out-File $script:StartupDiagFile -Append }
 		if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - CHECKPOINT 6: Entering main loop" | Out-File $script:StartupDiagFile -Append }
+
+	# Clear the entire console buffer (viewport + scrollback) so the startup screen
+	# cannot be scrolled back to after the main UI takes over.
+	try { [Console]::Clear() } catch {}
+	# Signal the first render to atomically redraw over the now-blank console.
+	$script:PendingForceRedraw = $true
 
 	# Sync window/buffer tracking to the current state before the main loop.
 	# Without this, the first iteration sees $oldWindowSize = $null → windowSizeChanged = $true
@@ -4089,10 +5206,17 @@ namespace mJiggAPI {
 			$intervalMouseInputs = @()
 			$interval = 0
 			$math = 0
-			$date = Get-Date
-			$currentTime = $date.ToString("HHmm")
-			$forceRedraw = $false
-			$automatedMovementPos = $null  # Track position after automated movement
+		[System.TimeZoneInfo]::ClearCachedData()
+		$date = Get-Date
+		$currentTime = $date.ToString("HHmm")
+	$forceRedraw = $false
+	# If a sub-dialog was used inside settings, keep forceRedraw so the main
+	# render uses ClearFirst and we get a pristine background before reopening.
+	if ($script:PendingReopenSettings) { $forceRedraw = $true }
+	# After the reopened Settings dialog closes, skip sleep so the screen
+	# redraws immediately without ever going blank.
+	if ($script:PendingForceRedraw) { $forceRedraw = $true; $script:PendingForceRedraw = $false }
+		$automatedMovementPos = $null  # Track position after automated movement
 			$directionArrow = ""  # Track direction arrow for log display
 			$lastKeyPress = $null  # Reset key press tracking
 			$lastKeyInfo = $null  # Reset key info tracking
@@ -4209,10 +5333,13 @@ namespace mJiggAPI {
 												foreach ($btn in $script:MenuItemsBounds) {
 													if ($null -ne $btn.hotkey -and $dY -eq $btn.y -and $dX -ge $btn.startX -and $dX -le $btn.endX) {
 														$script:PressedMenuButton = $btn.hotkey
-														$ocFg = if ($null -ne $btn.onClickFg)       { $btn.onClickFg }       else { $script:MenuButtonOnClickFg }
-														$ocBg = if ($null -ne $btn.onClickBg)       { $btn.onClickBg }       else { $script:MenuButtonOnClickBg }
-														$ocHk = if ($null -ne $btn.onClickHotkeyFg) { $btn.onClickHotkeyFg } else { $script:MenuButtonOnClickHotkey }
-														Write-ButtonImmediate -btn $btn -fg $ocFg -bg $ocBg -hotkeyFg $ocHk
+						$ocFg         = if ($null -ne $btn.onClickFg)         { $btn.onClickFg }         else { $script:MenuButtonOnClickFg }
+							$ocBg         = if ($null -ne $btn.onClickBg)         { $btn.onClickBg }         else { $script:MenuButtonOnClickBg }
+							$ocHk         = if ($null -ne $btn.onClickHotkeyFg)   { $btn.onClickHotkeyFg }   else { $script:MenuButtonOnClickHotkey }
+							$ocPipe       = if ($null -ne $btn.onClickPipeFg)      { $btn.onClickPipeFg }     else { $script:MenuButtonOnClickSeparatorFg }
+							$ocBracketFg  = if ($null -ne $btn.onClickBracketFg)   { $btn.onClickBracketFg }  else { $script:MenuButtonOnClickBracketFg }
+							$ocBracketBg  = if ($null -ne $btn.onClickBracketBg)   { $btn.onClickBracketBg }  else { $script:MenuButtonOnClickBracketBg }
+							Write-ButtonImmediate -btn $btn -fg $ocFg -bg $ocBg -hotkeyFg $ocHk -pipeFg $ocPipe -bracketFg $ocBracketFg -bracketBg $ocBracketBg
 														break
 													}
 												}
@@ -4237,20 +5364,25 @@ namespace mJiggAPI {
 														} else {
 															# Cancelled (dragged off): wait 100ms then restore immediately
 															Start-Sleep -Milliseconds 100
-															$nFg = if ($null -ne $btn.fg)       { $btn.fg }       else { $script:MenuButtonText }
-															$nBg = if ($null -ne $btn.bg)       { $btn.bg }       else { $script:MenuButtonBg }
-															$nHk = if ($null -ne $btn.hotkeyFg) { $btn.hotkeyFg } else { $script:MenuButtonHotkey }
-															Write-ButtonImmediate -btn $btn -fg $nFg -bg $nBg -hotkeyFg $nHk
+								$nFg        = if ($null -ne $btn.fg)         { $btn.fg }         else { $script:MenuButtonText }
+								$nBg        = if ($null -ne $btn.bg)         { $btn.bg }         else { $script:MenuButtonBg }
+								$nHk        = if ($null -ne $btn.hotkeyFg)   { $btn.hotkeyFg }   else { $script:MenuButtonHotkey }
+								$nPipe      = if ($null -ne $btn.pipeFg)     { $btn.pipeFg }     else { $script:MenuButtonSeparatorFg }
+								$nBracketFg = if ($null -ne $btn.bracketFg)  { $btn.bracketFg }  else { $script:MenuButtonBracketFg }
+								$nBracketBg = if ($null -ne $btn.bracketBg)  { $btn.bracketBg }  else { $script:MenuButtonBracketBg }
+								Write-ButtonImmediate -btn $btn -fg $nFg -bg $nBg -hotkeyFg $nHk -pipeFg $nPipe -bracketFg $nBracketFg -bracketBg $nBracketBg
 															$script:PressedMenuButton = $null
 															$script:ButtonClickedAt   = $null
 														}
 														break
 													}
 												}
-											} elseif ($null -ne $script:DialogButtonBounds) {
-												# Dialog buttons: trigger on UP
-												$script:ConsoleClickCoords = @{ X = $uX; Y = $uY }
-											}
+									} else {
+										# No pressed menu button — always record coords so the processing
+										# section can evaluate dialog buttons, mode button, and header
+										# time regions against their bounds.
+										$script:ConsoleClickCoords = @{ X = $uX; Y = $uY }
+									}
 											$lastClickIdx = $e
 										}
 										$script:LButtonWasDown = $lmbNow
@@ -4350,15 +5482,44 @@ namespace mJiggAPI {
 								}
 							}
 							
-							# Check menu items (only when no dialog is open)
-							if ($null -eq $script:DialogButtonBounds -and $null -ne $script:MenuItemsBounds -and $script:MenuItemsBounds.Count -gt 0) {
-								foreach ($menuItem in $script:MenuItemsBounds) {
-									if ($null -ne $menuItem.hotkey -and $consoleY -eq $menuItem.y -and $consoleX -ge $menuItem.startX -and $consoleX -le $menuItem.endX) {
-										$script:MenuClickHotkey = $menuItem.hotkey
-										break
-									}
+					# Check output button in header
+				if ($null -eq $script:DialogButtonBounds -and $null -ne $script:ModeButtonBounds) {
+					$mb = $script:ModeButtonBounds
+					if ($consoleY -eq $mb.y -and $consoleX -ge $mb.startX -and $consoleX -le $mb.endX) {
+						$script:MenuClickHotkey = "o"
+					}
+				}
+					# Check hidden time click regions (no dialog check — these are header-level easter eggs)
+					if ($null -eq $script:DialogButtonBounds -and $null -eq $script:MenuClickHotkey) {
+						if ($null -ne $script:HeaderEndTimeBounds) {
+							$b = $script:HeaderEndTimeBounds
+							if ($consoleY -eq $b.y -and $consoleX -ge $b.startX -and $consoleX -le $b.endX) {
+								$script:MenuClickHotkey = "t"  # opens Set End Time dialog
+							}
+						}
+					if ($null -eq $script:MenuClickHotkey -and $null -ne $script:HeaderCurrentTimeBounds) {
+						$b = $script:HeaderCurrentTimeBounds
+						if ($consoleY -eq $b.y -and $consoleX -ge $b.startX -and $consoleX -le $b.endX) {
+							Start-Process "control.exe" -ArgumentList "timedate.cpl"
+						}
+					}
+					if ($null -eq $script:MenuClickHotkey -and $null -ne $script:HeaderLogoBounds) {
+						$b = $script:HeaderLogoBounds
+						if ($consoleY -eq $b.y -and $consoleX -ge $b.startX -and $consoleX -le $b.endX) {
+							$script:MenuClickHotkey = "?"  # opens info/about dialog
+						}
+					}
+				}
+
+						# Check menu items (only when no dialog is open)
+						if ($null -eq $script:DialogButtonBounds -and $null -ne $script:MenuItemsBounds -and $script:MenuItemsBounds.Count -gt 0) {
+							foreach ($menuItem in $script:MenuItemsBounds) {
+								if ($null -ne $menuItem.hotkey -and $consoleY -eq $menuItem.y -and $consoleX -ge $menuItem.startX -and $consoleX -le $menuItem.endX) {
+									$script:MenuClickHotkey = $menuItem.hotkey
+									break
 								}
 							}
+						}
 							
 							if ($DebugMode) {
 								$clickTarget = "none"
@@ -4487,8 +5648,8 @@ namespace mJiggAPI {
 								Write-Host "  mJig($mouseEmoji) " -NoNewline -ForegroundColor $script:HeaderAppName
 								Write-Host "Stopped" -ForegroundColor $script:TextError
 								Write-Host ""
-								Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:StatsLabel
-								Write-Host $runtimeStr -ForegroundColor $script:StatsValue
+								Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:StatsBoxLabel
+								Write-Host $runtimeStr -ForegroundColor $script:StatsBoxValue
 								Write-Host ""
 								return
 							} else {
@@ -4579,8 +5740,8 @@ namespace mJiggAPI {
 									Write-Host ") " -NoNewline -ForegroundColor $script:HeaderAppName
 									Write-Host "Stopped" -ForegroundColor $script:TextError
 									Write-Host ""
-									Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:StatsLabel
-									Write-Host $runtimeStr -ForegroundColor $script:StatsValue
+									Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:StatsBoxLabel
+									Write-Host $runtimeStr -ForegroundColor $script:StatsBoxValue
 									Write-Host ""
 									return
 								} else {
@@ -4610,88 +5771,106 @@ namespace mJiggAPI {
 									clear-host
 									break
 								}
-							} elseif ($lastKeyPress -eq "v") {
-								$oldOutput = $Output
-								if ($Output -eq "hidden") {
-									if ($PreviousView -ne $null) {
-										$Output = $PreviousView
-									} else {
-										$Output = "min"
-									}
-								} else {
-									if ($Output -eq "full") {
-										$Output = "min"
-									} else {
-										$Output = "full"
-									}
-								}
-								# Debug: Log view toggle
-								if ($DebugMode) {
-									if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
-										$LogArray = @()
-									}
-									$LogArray += [PSCustomObject]@{
-										logRow = $true
-										components = @(
-											@{
-												priority = 1
-												text = (Get-Date).ToString("HH:mm:ss")
-												shortText = (Get-Date).ToString("HH:mm:ss")
-											},
-											@{
-												priority = [int]2
-												text = " - [DEBUG] View toggle: $oldOutput $([char]0x2192) $Output"
-												shortText = " - [DEBUG] View: $oldOutput $([char]0x2192) $Output"
-											}
-										)
-									}
-								}
-								$SkipUpdate = $true
-								$forceRedraw = $true
-								clear-host
-								break
-							} elseif ($lastKeyPress -eq "h") {
-								$oldOutput = $Output
-								if ($Output -eq "hidden") {
-									if ($PreviousView -ne $null) {
-										$Output = $PreviousView
-									} else {
-										$Output = "min"
-									}
-									$PreviousView = $null
-								} else {
-								$PreviousView = $Output
-								$Output = "hidden"
-								$script:MenuItemsBounds = @()
+				} elseif ($lastKeyPress -eq "o" -and $Output -ne "hidden") {
+					$oldOutput = $Output
+					if ($Output -eq "full") {
+						$Output = "min"
+					} else {
+						$Output = "full"
+					}
+					$script:Output = $Output
+						# Debug: Log view toggle
+						if ($DebugMode) {
+							if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
+								$LogArray = @()
 							}
-								# Debug: Log hide/show toggle
-								if ($DebugMode) {
-									if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
-										$LogArray = @()
+							$LogArray += [PSCustomObject]@{
+								logRow = $true
+								components = @(
+									@{
+										priority = 1
+										text = (Get-Date).ToString("HH:mm:ss")
+										shortText = (Get-Date).ToString("HH:mm:ss")
+									},
+									@{
+										priority = [int]2
+										text = " - [DEBUG] View toggle: $oldOutput $([char]0x2192) $Output"
+										shortText = " - [DEBUG] View: $oldOutput $([char]0x2192) $Output"
 									}
-									$LogArray += [PSCustomObject]@{
-										logRow = $true
-										components = @(
-											@{
-												priority = 1
-												text = (Get-Date).ToString("HH:mm:ss")
-												shortText = (Get-Date).ToString("HH:mm:ss")
-											},
-											@{
-												priority = [int]2
-												text = " - [DEBUG] Hide/Show toggle: $oldOutput $([char]0x2192) $Output"
-												shortText = " - [DEBUG] Hide/Show: $oldOutput $([char]0x2192) $Output"
-											}
-										)
+								)
+							}
+						}
+						$SkipUpdate = $true
+						$forceRedraw = $true
+						clear-host
+						break
+					} elseif ($lastKeyPress -eq "i") {
+					$oldOutput = $Output
+					if ($Output -eq "hidden") {
+						if ($PreviousView -ne $null) {
+							$Output = $PreviousView
+						} else {
+							$Output = "min"
+						}
+						$PreviousView = $null
+					} else {
+						$PreviousView = $Output
+						$Output = "hidden"
+						$script:MenuItemsBounds = @()
+					}
+					$script:Output = $Output
+						# Debug: Log incognito toggle
+						if ($DebugMode) {
+							if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
+								$LogArray = @()
+							}
+							$LogArray += [PSCustomObject]@{
+								logRow = $true
+								components = @(
+									@{
+										priority = 1
+										text = (Get-Date).ToString("HH:mm:ss")
+										shortText = (Get-Date).ToString("HH:mm:ss")
+									},
+									@{
+										priority = [int]2
+										text = " - [DEBUG] Incognito toggle: $oldOutput $([char]0x2192) $Output"
+										shortText = " - [DEBUG] Incognito: $oldOutput $([char]0x2192) $Output"
 									}
-								}
-								$SkipUpdate = $true
-								$forceRedraw = $true
-								clear-host
-								break
-							} elseif ($lastKeyPress -eq "m" -and $Output -eq "full") {
-								# Debug: Log movement dialog opened (before calling dialog)
-								if ($DebugMode) {
+								)
+							}
+						}
+						$SkipUpdate = $true
+						$forceRedraw = $true
+						clear-host
+						break
+				} elseif ($lastKeyPress -eq "s") {
+					$lastKeyPress = $null
+					$lastKeyInfo  = $null
+					$HostWidthRef  = [ref]$HostWidth;  $HostHeightRef = [ref]$HostHeight
+					$endTimeIntRef = [ref]$endTimeInt; $endTimeStrRef = [ref]$endTimeStr
+					$endRef        = [ref]$end;        $logArrayRef   = [ref]$LogArray
+					$settingsResult = Show-SettingsDialog `
+						-HostWidthRef $HostWidthRef -HostHeightRef $HostHeightRef `
+						-EndTimeIntRef $endTimeIntRef -EndTimeStrRef $endTimeStrRef `
+						-EndRef $endRef -LogArrayRef $logArrayRef
+			$HostWidth  = $HostWidthRef.Value;  $HostHeight = $HostHeightRef.Value
+			$endTimeInt = $endTimeIntRef.Value; $endTimeStr = $endTimeStrRef.Value
+			$end        = $endRef.Value;        $LogArray   = $logArrayRef.Value
+			$Output    = $script:Output
+			$DebugMode = $script:DebugMode
+			if ($settingsResult.ReopenSettings) {
+					# Sub-dialog was used — flag so the main loop reopens settings
+					# after it has repainted the full screen cleanly.
+					$script:PendingReopenSettings = $true
+				}
+				$SkipUpdate  = $true
+				$forceRedraw = $true
+				clear-host
+				break
+					} elseif ($lastKeyPress -eq "m" -and $Output -ne "hidden") {
+							# Debug: Log movement dialog opened (before calling dialog)
+							if ($DebugMode) {
 									if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
 										$LogArray = @()
 									}
@@ -4883,14 +6062,26 @@ namespace mJiggAPI {
 										$LogArray += [PSCustomObject]@{logRow = $true; components = $changeLogComponents}
 									}
 								}
-								$SkipUpdate = $true
-								$forceRedraw = $true
-								clear-host
-								break
-							}
-						}
-					
-					# Check for window size changes - process only when window stops resizing
+							$SkipUpdate = $true
+							$forceRedraw = $true
+							clear-host
+							break
+				} elseif (($lastKeyPress -eq "?" -or $lastKeyPress -eq "/") -and $Output -ne "hidden") {
+						$lastKeyPress = $null
+						$lastKeyInfo  = $null
+						$HostWidthRef  = [ref]$HostWidth
+						$HostHeightRef = [ref]$HostHeight
+						$infoResult = Show-InfoDialog -hostWidthRef $HostWidthRef -hostHeightRef $HostHeightRef
+						$HostWidth  = $HostWidthRef.Value
+						$HostHeight = $HostHeightRef.Value
+						$SkipUpdate  = $true
+						$forceRedraw = $true
+						clear-host
+						break
+					}
+				}
+				
+				# Check for window size changes - process only when window stops resizing
 					# Only check every 200ms (every 4th iteration) to avoid blocking Windows from processing mouse messages
 					# Frequent window property access can interfere with cursor rendering during user mouse movement
 					if ($Output -ne "hidden" -and ($x % 4 -eq 0)) {
@@ -5134,7 +6325,16 @@ namespace mJiggAPI {
 			# Prepare UI dimensions
 			$outputline = 0
 			$oldRows = $Rows
-			$Rows = $HostHeight - 6
+			$_bpV  = [math]::Max(1, $script:BorderPadV)
+		$_bpH  = [math]::Max(1, $script:BorderPadH)
+			$_hBg  = $script:HeaderBg
+			$_hrBg = $script:HeaderRowBg
+			$_fBg  = $script:FooterBg
+			$_mrBg = $script:MenuRowBg
+		# Chrome = (bpV-1) plain top + 1 hBg blank + header + sep + sep + menu + (bpV≥2: 1 fBg blank) + max(0,bpV-2) plain bottom + 1 reserved
+		# For bpV=1 the reserved row *is* the footer blank, so chrome = 6 rows (same as original).
+		# Each bpV beyond 1 adds 2 rows (1 top plain + 1 explicit bottom blank).
+		$Rows = [math]::Max(1, $HostHeight - 4 - 2 * $_bpV)
 			
 			# Save current log array BEFORE building new one (this preserves the previous iteration's logs)
 			# On first run, $LogArray might be null or empty, so handle that case
@@ -5689,15 +6889,27 @@ namespace mJiggAPI {
 				$skipConsoleUpdate = $false
 			}
 			
-			if ($Output -ne "hidden" -and -not $skipConsoleUpdate) {
-				# Output blank line
+		if ($Output -ne "hidden" -and -not $skipConsoleUpdate) {
+		# Extra plain blank lines above the header background strip (beyond the 1-minimum)
+		for ($__bpi = 0; $__bpi -lt ($_bpV - 1); $__bpi++) {
 				Write-Buffer -X 0 -Y $Outputline -Text (" " * $HostWidth)
 				$Outputline++
+			}
+		# The 1-minimum blank immediately before the header carries the header background (transparent outer, group-bg inner)
+		if ($_bpH -gt 1) { Write-Buffer -X 0                   -Y $Outputline -Text (" " * ($_bpH - 1)) }                         # transparent left
+		Write-Buffer -X ($_bpH - 1) -Y $Outputline -Text (" " * ($HostWidth - 2 * $_bpH + 2)) -BG $_hBg                           # group-bg centre
+		if ($_bpH -gt 1) { Write-Buffer -X ($HostWidth-$_bpH+1) -Y $Outputline -Text (" " * ($_bpH - 1)) }                        # transparent right
+		$Outputline++
 
-				# Output header
-				# Calculate widths for centering times between mJig title and view tag
-				# Left part: "  mJig(`u{1F400})" = 2 + 5 + 2 + 1 = 10 (with emoji)
-				$headerLeftWidth = 2 + 5 + 2 + 1  # "  " + "mJig(" + emoji + ")"
+			# Output header
+			# Refresh current time. ClearCachedData() is required so that timezone changes
+			# (e.g. via the Windows date/time settings) are picked up immediately — .NET
+			# caches timezone info and won't reflect a changed timezone without this call.
+			[System.TimeZoneInfo]::ClearCachedData()
+			$currentTime = (Get-Date).ToString("HHmm")
+			# Calculate widths for centering times between mJig title and view tag
+			# Left part: "mJig(`u{1F400})" = 5 + 2 + 1 = 8 (content only; $_bpH+2 left margin handled separately)
+			$headerLeftWidth = 5 + 2 + 1  # "mJig(" + emoji + ")"
 				# Add DEBUGMODE text width if in debug mode
 				if ($DebugMode) {
 					$headerLeftWidth += 13  # " - DEBUGMODE" = 13 chars
@@ -5715,97 +6927,124 @@ namespace mJiggAPI {
 				$timeSectionTimeWidth = $currentTime.Length + $endTimeDisplay.Length
 				$timeSectionWidth = $timeSectionBaseWidth + $timeSectionTimeWidth
 				
-				# Right part: view tag (with 2 spaces after for right margin)
-				if ($Output -eq "full") {
-					$viewTagText = " Full"
-				} else {
-					$viewTagText = " Minimum"
-				}
-				$viewTagWidth = $viewTagText.Length
-				$rightMarginWidth = 2  # 2 spaces after view tag
-				
-				# Calculate spacing to center times between left and right parts
-				# Account for 2 spaces after view tag
-				$totalUsedWidth = $headerLeftWidth + $timeSectionWidth + $viewTagWidth + $rightMarginWidth
-				$remainingSpace = $HostWidth - $totalUsedWidth
+		# Right part: output button (clickable, right-aligned)
+		# Format: [(o)utput]|Full — button is just [(o)utput], separator and mode name are plain trailing text
+		# Separator char uses $script:MenuButtonSeparator but is not part of the clickable button.
+	$modeName = if ($Output -eq "full") { "Full" } else { " Min" }  # pad Min to match Full width
+	$modeBracketWidth = if ($script:MenuButtonShowBrackets) { 2 } else { 0 }
+	$hotkeyParenAdj = if ($script:MenuButtonShowHotkeyParens) { 0 } else { -2 }
+	$modeButtonOnlyWidth = $modeBracketWidth + 8 + $hotkeyParenAdj   # brackets + "(o)utput"
+		# Total display width: button + " " + separator + " " + modeName
+		$modeButtonWidth = $modeButtonOnlyWidth + 1 + $script:MenuButtonSeparator.Length + 1 + $modeName.Length
+			$rightMarginWidth = 0  # inner right padding handled by inset writes
+
+			# Calculate spacing to center times between left and right parts
+			$totalUsedWidth = $headerLeftWidth + $timeSectionWidth + $modeButtonWidth + $rightMarginWidth
+				$remainingSpace = $HostWidth - 2 * ($_bpH + 2) - $totalUsedWidth
 				$spacingBeforeTimes = [math]::Max(1, [math]::Floor($remainingSpace / 2))
 				$spacingAfterTimes = [math]::Max(1, $remainingSpace - $spacingBeforeTimes)
 				
-				# Write left part (mJig title) via buffer with static emoji positioning
-				$mouseEmoji = [char]::ConvertFromUtf32(0x1F400)  # 🐀
-				$hourglassEmoji = [char]::ConvertFromUtf32(0x23F3)  # ⏳
-				Write-Buffer -X 0 -Y $Outputline -Text "  mJig(" -FG $script:HeaderAppName
-				$curX = 7  # "  mJig(" = 7 chars
-				Write-Buffer -Text $mouseEmoji -FG $script:HeaderIcon
-				Write-Buffer -X ($curX + 2) -Y $Outputline -Text ")" -FG $script:HeaderAppName
-				$curX = $curX + 2 + 1  # emoji (2) + ")" (1)
-				# Add DEBUGMODE indicator if in debug mode
-			if ($DebugMode) {
-				Write-Buffer -Text " - DEBUGMODE" -FG $script:TextError
-				$curX += 12
-			}
-				
-				# Add spacing before times
-				Write-Buffer -Text (" " * $spacingBeforeTimes)
-				$curX += $spacingBeforeTimes
-				
-				# Write times (Current first, then End)
-				Write-Buffer -Text "Current" -FG $script:HeaderTimeLabel
-				$hourglassX1 = $curX + 7  # "Current" = 7 chars
-				Write-Buffer -Text $hourglassEmoji -FG $script:HeaderIcon
-				Write-Buffer -X ($hourglassX1 + 2) -Y $Outputline -Text "/" -FG $script:TextDefault
-				$curX = $hourglassX1 + 2 + 1  # emoji (2) + "/" (1)
-				Write-Buffer -Text "$currentTime" -FG $script:HeaderTimeValue
-				$curX += $currentTime.Length
-				$arrowTriangle = [char]0x27A3  # ➣
-				Write-Buffer -Text " $arrowTriangle  "
-				$curX += 4  # " ➣  " = 4 display chars
-				Write-Buffer -Text "End" -FG $script:HeaderTimeLabel
-				$hourglassX2 = $curX + 3  # "End" = 3 chars
-				Write-Buffer -Text $hourglassEmoji -FG $script:HeaderIcon
-				Write-Buffer -X ($hourglassX2 + 2) -Y $Outputline -Text "/" -FG $script:TextDefault
-				$curX = $hourglassX2 + 2 + 1  # emoji (2) + "/" (1)
-				Write-Buffer -Text "$endTimeDisplay" -FG $script:HeaderTimeValue
-				$curX += $endTimeDisplay.Length
-				
-				# Add spacing after times and write view tag aligned to the right
-				Write-Buffer -Text (" " * $spacingAfterTimes)
-				$curX += $spacingAfterTimes
-				if ($Output -eq "full") {
-					Write-Buffer -Text " Full" -FG $script:HeaderViewTag
-					$curX += 5
-				} else {
-					Write-Buffer -Text " Minimum" -FG $script:HeaderViewTag
-					$curX += 8
-				}
-				
-				# Add 2 spaces for right margin
-				Write-Buffer -Text "  "
-				$curX += 2
-				
-				# Clear any remaining characters on the line
-				if ($curX -lt $HostWidth) {
-					Write-Buffer -Text (" " * ($HostWidth - $curX))
-				}
-				$Outputline++
+			# Write left part (mJig title) via buffer with static emoji positioning
+			$mouseEmoji = [char]::ConvertFromUtf32(0x1F400)  # 🐀
+			$hourglassEmoji = [char]::ConvertFromUtf32(0x23F3)  # ⏳
+	Write-Buffer -X ($_bpH + 2) -Y $Outputline -Text "mJig(" -FG $script:HeaderAppName -BG $_hrBg
+	$curX = $_bpH + 2 + 5  # content starts at bpH+2; "mJig(" = 5 chars
+			Write-Buffer -Text $mouseEmoji -FG $script:HeaderIcon -BG $_hrBg
+		Write-Buffer -X ($curX + 2) -Y $Outputline -Text ")" -FG $script:HeaderAppName -BG $_hrBg
+		$curX = $curX + 2 + 1  # emoji (2) + ")" (1)
+		$script:HeaderLogoBounds = @{ y = $Outputline; startX = ($_bpH + 2); endX = ($curX - 1) }
+		# Add DEBUGMODE indicator if in debug mode
+		if ($DebugMode) {
+			Write-Buffer -Text " - DEBUGMODE" -FG $script:TextError -BG $_hrBg
+			$curX += 12
+		}
+			
+			# Add spacing before times
+			Write-Buffer -Text (" " * $spacingBeforeTimes) -BG $_hrBg
+			$curX += $spacingBeforeTimes
+			
+		# Write times (Current first, then End) — hidden click regions track each section
+		$currentTimeSectionStartX = $curX
+		Write-Buffer -Text "Current" -FG $script:HeaderTimeLabel -BG $_hrBg
+		$hourglassX1 = $curX + 7  # "Current" = 7 chars
+		Write-Buffer -Text $hourglassEmoji -FG $script:HeaderIcon -BG $_hrBg
+		Write-Buffer -X ($hourglassX1 + 2) -Y $Outputline -Text "/" -FG $script:TextDefault -BG $_hrBg
+		$curX = $hourglassX1 + 2 + 1  # emoji (2) + "/" (1)
+		Write-Buffer -Text "$currentTime" -FG $script:HeaderTimeValue -BG $_hrBg
+		$curX += $currentTime.Length
+		$script:HeaderCurrentTimeBounds = @{ y = $Outputline; startX = $currentTimeSectionStartX; endX = $curX - 1 }
+		$arrowTriangle = [char]0x27A3  # ➣
+		Write-Buffer -Text " $arrowTriangle  " -BG $_hrBg
+		$curX += 4  # " ➣  " = 4 display chars
+		$endTimeSectionStartX = $curX
+		Write-Buffer -Text "End" -FG $script:HeaderTimeLabel -BG $_hrBg
+		$hourglassX2 = $curX + 3  # "End" = 3 chars
+		Write-Buffer -Text $hourglassEmoji -FG $script:HeaderIcon -BG $_hrBg
+		Write-Buffer -X ($hourglassX2 + 2) -Y $Outputline -Text "/" -FG $script:TextDefault -BG $_hrBg
+		$curX = $hourglassX2 + 2 + 1  # emoji (2) + "/" (1)
+		Write-Buffer -Text "$endTimeDisplay" -FG $script:HeaderTimeValue -BG $_hrBg
+		$curX += $endTimeDisplay.Length
+		$script:HeaderEndTimeBounds = @{ y = $Outputline; startX = $endTimeSectionStartX; endX = $curX - 1 }
+			
+			# Add spacing after times and write view tag aligned to the right
+			Write-Buffer -Text (" " * $spacingAfterTimes) -BG $_hrBg
+			$curX += $spacingAfterTimes
+		# Render mode button (clickable) then separator + mode name (plain, non-clickable)
+	$modeButtonStartX = $curX
+	if ($script:MenuButtonShowBrackets) {
+		Write-Buffer -X $modeButtonStartX -Y $Outputline -Text "[" -FG $script:MenuButtonBracketFg -BG $script:MenuButtonBracketBg
+		if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:MenuButtonText -BG $script:MenuButtonBg } else { Write-Buffer -Text "" -BG $script:MenuButtonBg }
+	} else {
+		if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -X $modeButtonStartX -Y $Outputline -Text "(" -FG $script:MenuButtonText -BG $script:MenuButtonBg } else { Write-Buffer -X $modeButtonStartX -Y $Outputline -Text "" -BG $script:MenuButtonBg }
+	}
+	Write-Buffer -Text "o" -FG $script:MenuButtonHotkey -BG $script:MenuButtonBg
+	if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $script:MenuButtonText -BG $script:MenuButtonBg }
+	Write-Buffer -Text "utput" -FG $script:MenuButtonText -BG $script:MenuButtonBg
+	if ($script:MenuButtonShowBrackets) {
+		Write-Buffer -Text "]" -FG $script:MenuButtonBracketFg -BG $script:MenuButtonBracketBg
+	}
+	# Separator and mode name are plain header text — not part of the clickable area
+	Write-Buffer -Text " $($script:MenuButtonSeparator)" -FG $script:MenuButtonSeparatorFg -BG $_hrBg
+	Write-Buffer -Text " $modeName" -FG $script:HeaderViewTag -BG $_hrBg
+		$curX += $modeButtonWidth
+		$script:ModeButtonBounds = @{
+			y      = $Outputline
+			startX = $modeButtonStartX
+			endX   = $modeButtonStartX + $modeButtonOnlyWidth - 1
+		}
 
-				# Output Line Spacer
-				Write-Buffer -X 0 -Y $Outputline -Text " "
-				Write-Buffer -Text ("$($script:BoxHorizontal)" * ($HostWidth - 2)) -FG $script:HeaderSeparator
-				Write-Buffer -Text " "
-				$outputLine++
+		# Clear any remaining characters on the line
+			if ($curX -lt $HostWidth) {
+				Write-Buffer -Text (" " * ($HostWidth - $curX)) -BG $_hrBg
+			}
+		# Outer transparent padding (bpH-1), then 1 group-bg, then 2 inner row-bg on each side
+		if ($_bpH -gt 1) { Write-Buffer -X 0                     -Y $Outputline -Text (" " * ($_bpH - 1)) }  # transparent left outer
+		Write-Buffer -X ($_bpH - 1)           -Y $Outputline -Text " "            -BG $_hBg                   # 1 group-bg left
+		Write-Buffer -X $_bpH                 -Y $Outputline -Text "  "           -BG $_hrBg                  # 2 inner left  (row bg)
+		Write-Buffer -X ($HostWidth-$_bpH-2)  -Y $Outputline -Text "  "           -BG $_hrBg                  # 2 inner right (row bg)
+		Write-Buffer -X ($HostWidth-$_bpH)    -Y $Outputline -Text " "            -BG $_hBg                   # 1 group-bg right
+		if ($_bpH -gt 1) { Write-Buffer -X ($HostWidth-$_bpH+1) -Y $Outputline -Text (" " * ($_bpH - 1)) }  # transparent right outer
+			$Outputline++
+
+		# Output Line Spacer
+		if ($_bpH -gt 1) { Write-Buffer -X 0            -Y $Outputline -Text (" " * ($_bpH - 1)) }          # transparent left outer
+		Write-Buffer -X ($_bpH - 1) -Y $Outputline -Text " " -BG $_hBg                                       # 1 group-bg left
+		Write-Buffer -Text ("$($script:BoxHorizontal)" * ($HostWidth - 2 * $_bpH)) -FG $script:HeaderSeparator -BG $_hBg
+		Write-Buffer -X ($HostWidth - $_bpH) -Y $Outputline -Text " " -BG $_hBg                              # 1 group-bg right
+		if ($_bpH -gt 1) { Write-Buffer -X ($HostWidth-$_bpH+1) -Y $Outputline -Text (" " * ($_bpH - 1)) }  # transparent right outer
+			$outputLine++
 
 			# Only render console if not skipping updates (prevents stutter during mouse movement)
 			if (-not $skipConsoleUpdate) {
-				# Calculate view-dependent variables INSIDE the skip check to ensure they use current $Output value
-				# This prevents stale view calculations when console updates resume after mouse movement
-				$boxWidth = 50  # Width for stats box
-				$boxPadding = 2  # Padding around box (1 space on each side)
-				$verticalSeparatorWidth = 3  # " $($script:BoxVertical) " = 3 characters
-				$showStatsBox = ($Output -eq "full" -and $HostWidth -ge ($boxWidth + $boxPadding + $verticalSeparatorWidth + 50))  # Need at least 50 chars for logs
-				$logWidth = if ($showStatsBox) { $HostWidth - $boxWidth - $boxPadding - $verticalSeparatorWidth } else { $HostWidth }  # Reserve space for box + padding + separator
-				
-				# Pre-calculate key text splitting for full view
+			# Calculate view-dependent variables INSIDE the skip check to ensure they use current $Output value
+			# This prevents stale view calculations when console updates resume after mouse movement
+			$boxWidth = 50  # Width for stats box
+			$boxPadding = 2  # Padding around box (1 space on each side)
+			$verticalSeparatorWidth = 3  # " $($script:BoxVertical) " = 3 characters
+		$showStatsBox = ($Output -eq "full" -and $HostWidth -ge ($boxWidth + $boxPadding + $verticalSeparatorWidth + 50 + 2 * $_bpH))  # Need at least 50 chars for logs + padding
+		$logWidth = if ($showStatsBox) { $HostWidth - 2 * $_bpH - $boxWidth - $boxPadding - $verticalSeparatorWidth + 1 } else { $HostWidth - 2 * $_bpH + 1 }  # +1 extends right boundary to group-bg char
+			
+		# Pre-calculate key text splitting for full view
 				$keysFirstLine = ""
 				$keysSecondLine = ""
 				if ($showStatsBox) {
@@ -5837,8 +7076,9 @@ namespace mJiggAPI {
 				}
 				
 				for ($i = 0; $i -lt $Rows; $i++) {
-					$rowY = $Outputline + $i
-					$availableWidth = $logWidth
+				$rowY = $Outputline + $i
+			$logStartX      = $_bpH - 2            # 1 col left of the group-bg char
+			$availableWidth = $logWidth + 2        # +2: 1 for left shift + 1 for right expansion; separator X stays at bpH+logWidth
 					
 					$hasLogEntry = ($i -lt $LogArray.Count -and $null -ne $LogArray[$i] -and $null -ne $LogArray[$i].components)
 					$hasContent = ($hasLogEntry -and $LogArray[$i].components.Count -gt 0)
@@ -5902,12 +7142,12 @@ namespace mJiggAPI {
 							} else {
 								$formattedLine
 							}
-							$paddedLine = $truncatedLine.PadRight($availableWidth)
-							Write-Buffer -X 0 -Y $rowY -Text $paddedLine
-							
-							if ($showStatsBox) {
-								Write-Buffer -X $logWidth -Y $rowY -Text " $($script:BoxVertical) " -FG $script:StatsBoxBorder
-							}
+					$paddedLine = $truncatedLine.PadRight($availableWidth)
+					Write-Buffer -X $logStartX -Y $rowY -Text $paddedLine
+						
+						if ($showStatsBox) {
+							Write-Buffer -X ($_bpH + $logWidth) -Y $rowY -Text " $($script:BoxVertical) " -FG $script:StatsBoxBorder
+						}
 							
 							# Draw stats box in full view (with padding so it doesn't touch white lines)
 							if ($showStatsBox) {
@@ -5941,7 +7181,7 @@ namespace mJiggAPI {
 								} elseif ($i -eq $Rows - 3) {
 									if ($PreviousIntervalKeys.Count -gt 0) {
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text $keysFirstLine.PadRight($boxWidth - 2) -FG $script:StatsValue
+										Write-Buffer -Text $keysFirstLine.PadRight($boxWidth - 2) -FG $script:StatsBoxValue
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									} else {
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
@@ -5951,7 +7191,7 @@ namespace mJiggAPI {
 								} elseif ($i -eq $Rows - 2) {
 									if ($PreviousIntervalKeys.Count -gt 0 -and $keysSecondLine -ne "") {
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text $keysSecondLine.PadRight($boxWidth - 2) -FG $script:StatsValue
+										Write-Buffer -Text $keysSecondLine.PadRight($boxWidth - 2) -FG $script:StatsBoxValue
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									} else {
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
@@ -5970,13 +7210,13 @@ namespace mJiggAPI {
 								
 								Write-Buffer -Text " "
 							}
-						} else {
-							$emptyLine = "".PadRight($availableWidth)
-							Write-Buffer -X 0 -Y $rowY -Text $emptyLine
-							
-							if ($showStatsBox) {
-								Write-Buffer -X $logWidth -Y $rowY -Text " $($script:BoxVertical) " -FG $script:StatsBoxBorder
-							}
+					} else {
+					$emptyLine = "".PadRight($availableWidth)
+					Write-Buffer -X $logStartX -Y $rowY -Text $emptyLine
+						
+						if ($showStatsBox) {
+							Write-Buffer -X ($_bpH + $logWidth) -Y $rowY -Text " $($script:BoxVertical) " -FG $script:StatsBoxBorder
+						}
 							
 							if ($showStatsBox) {
 								Write-Buffer -Text " "
@@ -6003,7 +7243,7 @@ namespace mJiggAPI {
 								} elseif ($i -eq $Rows - 3) {
 									if ($PreviousIntervalKeys.Count -gt 0) {
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text $keysFirstLine.PadRight($boxWidth - 2) -FG $script:StatsValue
+										Write-Buffer -Text $keysFirstLine.PadRight($boxWidth - 2) -FG $script:StatsBoxValue
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									} else {
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
@@ -6013,7 +7253,7 @@ namespace mJiggAPI {
 								} elseif ($i -eq $Rows - 2) {
 									if ($PreviousIntervalKeys.Count -gt 0 -and $keysSecondLine -ne "") {
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text $keysSecondLine.PadRight($boxWidth - 2) -FG $script:StatsValue
+										Write-Buffer -Text $keysSecondLine.PadRight($boxWidth - 2) -FG $script:StatsBoxValue
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									} else {
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
@@ -6039,100 +7279,93 @@ namespace mJiggAPI {
 
 			# Output bottom separator (only if not skipping console updates)
 			if ($Output -ne "hidden" -and -not $skipConsoleUpdate) {
-				# Calculate if we should show stats box (full view, wide enough window)
-				$boxWidth = 50  # Width for stats box
-				$boxPadding = 2  # Padding around box (1 space on each side)
-				$verticalSeparatorWidth = 3  # " $($script:BoxVertical) " = 3 characters
-				$showStatsBox = ($Output -eq "full" -and $HostWidth -ge ($boxWidth + $boxPadding + $verticalSeparatorWidth + 50))  # Need at least 50 chars for logs
-				$logWidth = if ($showStatsBox) { $HostWidth - $boxWidth - $boxPadding - $verticalSeparatorWidth } else { $HostWidth }  # Reserve space for box + padding + separator
+			# Calculate if we should show stats box (full view, wide enough window)
+			$boxWidth = 50  # Width for stats box
+			$boxPadding = 2  # Padding around box (1 space on each side)
+			$verticalSeparatorWidth = 3  # " $($script:BoxVertical) " = 3 characters
+		$showStatsBox = ($Output -eq "full" -and $HostWidth -ge ($boxWidth + $boxPadding + $verticalSeparatorWidth + 50 + 2 * $_bpH))  # Need at least 50 chars for logs + padding
+		$logWidth = if ($showStatsBox) { $HostWidth - 2 * $_bpH - $boxWidth - $boxPadding - $verticalSeparatorWidth + 1 } else { $HostWidth - 2 * $_bpH + 1 }  # +1 extends right boundary to group-bg char
 				
-				# Bottom separator line
-				Write-Buffer -X 0 -Y $Outputline -Text " "
-				Write-Buffer -Text ("$($script:BoxHorizontal)" * ($HostWidth - 2)) -FG $script:HeaderSeparator
-				Write-Buffer -Text " "
-				$outputLine++
+		# Bottom separator line
+		if ($_bpH -gt 1) { Write-Buffer -X 0            -Y $Outputline -Text (" " * ($_bpH - 1)) }          # transparent left outer
+		Write-Buffer -X ($_bpH - 1) -Y $Outputline -Text " " -BG $_fBg                                       # 1 group-bg left
+		Write-Buffer -Text ("$($script:BoxHorizontal)" * ($HostWidth - 2 * $_bpH)) -FG $script:HeaderSeparator -BG $_fBg
+		Write-Buffer -X ($HostWidth - $_bpH) -Y $Outputline -Text " " -BG $_fBg                              # 1 group-bg right
+		if ($_bpH -gt 1) { Write-Buffer -X ($HostWidth-$_bpH+1) -Y $Outputline -Text (" " * ($_bpH - 1)) }  # transparent right outer
+			$outputLine++
 
-				## Menu Options ##
-				$timeMenuText = if ($endTimeInt -eq -1 -or [string]::IsNullOrEmpty($endTimeStr)) {
-					"set_end_(t)ime"
-				} else {
-					"change_end_(t)ime"
-				}
-				
-				$emojiHourglass = [char]::ConvertFromUtf32(0x23F3)  # ⏳
-				$emojiRefresh = [char]::ConvertFromUtf32(0x1F441)  # 👁️
-				$emojiLock = [char]::ConvertFromUtf32(0x1F512)  # 🔒
-				$emojiGear = [char]::ConvertFromUtf32(0x1F6E0)  # 🛠
+			## Menu Options ##
+			$emojiLock = [char]::ConvertFromUtf32(0x1F512)  # 🔒
+			$emojiGear = [char]::ConvertFromUtf32(0x1F6E0)  # 🛠
 				$emojiRedX = [char]::ConvertFromUtf32(0x274C)  # ❌
 				
-				$menuItemsList = @(
-					@{
-						full = "$emojiHourglass|$timeMenuText"
-						noIcons = $timeMenuText
-						short = "(t)ime"
-					},
-					@{
-						full = "$emojiRefresh|toggle_(v)iew"
-						noIcons = "toggle_(v)iew"
-						short = "(v)iew"
-					},
-					@{
-						full = "$emojiLock|(h)ide_output"
-						noIcons = "(h)ide_output"
-						short = "(h)ide"
-					}
-				)
+			$menuItemsList = @(
+				@{
+					full            = "$emojiGear|(s)ettings"
+					noIcons         = "(s)ettings"
+					short           = "(s)et"
+					isSettingsButton = $true
+				},
+			@{
+				full    = "$emojiLock|(i)ncognito"
+				noIcons = "(i)ncognito"
+				short   = "(i)nc"
+			}
+			)
+
+			$menuItemsList += @{
+				full    = "$emojiRedX|(q)uit"
+				noIcons = "(q)uit"
+				short   = "(q)uit"
+			}
+
+			$menuItems = $menuItemsList
 				
-				if ($Output -eq "full") {
-					$menuItemsList += @{
-						full = "$emojiGear|modify_(m)ovement"
-						noIcons = "modify_(m)ovement"
-						short = "(m)ove"
-					}
-				}
-				
-				$menuItemsList += @{
-					full = "$emojiRedX|(q)uit"
-					noIcons = "(q)uit"
-					short = "(q)uit"
-				}
-				
-				$menuItems = $menuItemsList
-				
-				# Calculate widths for each format (emojis = 2 display chars)
-				$format0Width = 2  # Leading spaces
-				$format1Width = 2
-				$format2Width = 2
-				
-				foreach ($item in $menuItems) {
-					$textPart = $item.full -replace "^.+\|", ""
-					$format0Width += 2 + 1 + $textPart.Length + 2
-					$format1Width += $item.noIcons.Length + 2
-					$format2Width += $item.short.Length + 1
-				}
-				
-				$format0Width += 2
-				$format1Width += 2
-				$format2Width += 2
-				
-				$menuFormat = 0
-				if ($HostWidth -lt $format0Width) {
-					if ($HostWidth -lt $format1Width) {
-						$menuFormat = 2
-					} else {
-						$menuFormat = 1
-					}
-				}
-				
-				$quitItem = $menuItems[$menuItems.Count - 1]
-				if ($menuFormat -eq 0) {
-					$textPart = $quitItem.full -replace "^.+\|", ""
-					$quitWidth = 2 + 1 + $textPart.Length
-				} elseif ($menuFormat -eq 1) {
-					$quitWidth = $quitItem.noIcons.Length
+		# Calculate widths for each format (emojis = 2 display chars)
+		$menuIconWidth    = if ($script:MenuButtonShowIcon)    { 2 + $script:MenuButtonSeparator.Length } else { 0 }
+		$menuBracketWidth = if ($script:MenuButtonShowBrackets) { 2 } else { 0 }
+		$hotkeyParenAdj   = if ($script:MenuButtonShowHotkeyParens) { 0 } else { -2 }
+		$format0Width = 2  # Leading spaces
+		$format1Width = 2
+		$format2Width = 2
+		
+		foreach ($item in $menuItems) {
+			$textPart = $item.full -replace "^.+\|", ""
+			$format0Width += $menuIconWidth + $textPart.Length + $hotkeyParenAdj + $menuBracketWidth + 2
+			$format1Width += $item.noIcons.Length + $hotkeyParenAdj + 2
+			$format2Width += $item.short.Length + $hotkeyParenAdj + 1
+		}
+			
+			$format0Width += 2
+			$format1Width += 2
+			$format2Width += 2
+
+			# ? help button contributes to format 0 and 1 only (hidden in format 2 / short mode)
+			$helpButtonWidth = 0
+			if ($Output -eq "full") {
+				$helpButtonWidth = $menuBracketWidth + 1  # "?" char + optional brackets
+				$format0Width += $helpButtonWidth + 2    # +2 for trailing spaces
+				$format1Width += $helpButtonWidth + 2
+			}
+
+			$menuFormat = 0
+			if ($HostWidth -lt $format0Width) {
+				if ($HostWidth -lt $format1Width) {
+					$menuFormat = 2
 				} else {
-					$quitWidth = $quitItem.short.Length
+					$menuFormat = 1
 				}
+			}
+			
+		$quitItem = $menuItems[$menuItems.Count - 1]
+		if ($menuFormat -eq 0) {
+			$textPart = $quitItem.full -replace "^.+\|", ""
+			$quitWidth = $menuIconWidth + $textPart.Length + $hotkeyParenAdj + $menuBracketWidth
+			} elseif ($menuFormat -eq 1) {
+				$quitWidth = $quitItem.noIcons.Length + $hotkeyParenAdj
+			} else {
+				$quitWidth = $quitItem.short.Length + $hotkeyParenAdj
+			}
 				
 			# Restore pressed-button highlight when appropriate:
 			# - Immediate actions (toggle, hide): clear on the very first render after the click (no dialog opened)
@@ -6148,10 +7381,10 @@ namespace mJiggAPI {
 				# If DialogButtonBounds is non-null a dialog is open; leave everything in place until it closes
 			}
 
-			# Write menu items via buffer with static position tracking
-			$menuY = $Outputline
-			$currentMenuX = 2  # Start after "  " prefix
-				Write-Buffer -X 0 -Y $menuY -Text "  "
+		# Write menu items via buffer with static position tracking
+		$menuY = $Outputline
+		$script:MenuBarY = $menuY  # stored for quit dialog positioning
+	$currentMenuX = $_bpH + 2  # Start after group-bg + 2-char inner padding
 				
 				$script:MenuItemsBounds = @()
 				$itemsBeforeQuit = $menuItems.Count - 1
@@ -6167,101 +7400,205 @@ namespace mJiggAPI {
 						$itemText = $item.short
 					}
 					
-					# Calculate item display width statically (emoji = 2 display cells)
-					$itemDisplayWidth = 0
-					if ($menuFormat -eq 0) {
-						$parts = $itemText -split "\|", 2
-						if ($parts.Count -eq 2) {
-							$itemDisplayWidth = 2 + 1 + $parts[1].Length
-						}
-					} else {
-						$itemDisplayWidth = $itemText.Length
-					}
+			# Calculate item display width statically (emoji = 2 display cells)
+			$itemDisplayWidth = 0
+			if ($menuFormat -eq 0) {
+				$parts = $itemText -split "\|", 2
+				if ($parts.Count -eq 2) {
+					$itemDisplayWidth = $menuIconWidth + $parts[1].Length + $hotkeyParenAdj + $menuBracketWidth
+				}
+			} else {
+					$itemDisplayWidth = $itemText.Length + $hotkeyParenAdj
+				}
 					
-				# Resolve hotkey and pressed-state colors before rendering
-				$hotkeyMatch = $itemText -match "\(([a-z])\)"
-				$hotkey = if ($hotkeyMatch) { $matches[1] } else { $null }
-				$isPressed = ($null -ne $script:PressedMenuButton -and $script:PressedMenuButton -eq $hotkey)
-				$btnFg     = if ($isPressed) { $script:MenuButtonOnClickFg }     else { $script:MenuButtonText }
-				$btnBg     = if ($isPressed) { $script:MenuButtonOnClickBg }     else { $script:MenuButtonBg }
-				$btnHkFg   = if ($isPressed) { $script:MenuButtonOnClickHotkey } else { $script:MenuButtonHotkey }
-				$btnPipeFg = if ($isPressed) { $script:MenuButtonOnClickFg }     else { $script:MenuButtonPipe }
+		# Resolve hotkey and pressed-state colors before rendering
+		$hotkeyMatch = $itemText -match "\(([a-z])\)"
+		$hotkey = if ($hotkeyMatch) { $matches[1] } else { $null }
+		$isPressed = ($null -ne $script:PressedMenuButton -and $script:PressedMenuButton -eq $hotkey)
+		if ($item.isSettingsButton -eq $true) {
+			# Settings button uses its own dedicated color variables
+			$btnFg        = if ($isPressed) { $script:SettingsButtonOnClickFg }          else { $script:SettingsButtonText }
+			$btnBg        = if ($isPressed) { $script:SettingsButtonOnClickBg }          else { $script:SettingsButtonBg }
+			$btnHkFg      = if ($isPressed) { $script:SettingsButtonOnClickHotkey }      else { $script:SettingsButtonHotkey }
+			$btnPipeFg    = if ($isPressed) { $script:SettingsButtonOnClickSeparatorFg } else { $script:SettingsButtonSeparatorFg }
+			$btnBracketFg = if ($isPressed) { $script:SettingsButtonOnClickBracketFg }   else { $script:SettingsButtonBracketFg }
+			$btnBracketBg = if ($isPressed) { $script:SettingsButtonOnClickBracketBg }   else { $script:SettingsButtonBracketBg }
+		} else {
+			$btnFg        = if ($isPressed) { $script:MenuButtonOnClickFg }         else { $script:MenuButtonText }
+			$btnBg        = if ($isPressed) { $script:MenuButtonOnClickBg }         else { $script:MenuButtonBg }
+			$btnHkFg      = if ($isPressed) { $script:MenuButtonOnClickHotkey }     else { $script:MenuButtonHotkey }
+			$btnPipeFg    = if ($isPressed) { $script:MenuButtonOnClickSeparatorFg } else { $script:MenuButtonSeparatorFg }
+			$btnBracketFg = if ($isPressed) { $script:MenuButtonOnClickBracketFg }  else { $script:MenuButtonBracketFg }
+			$btnBracketBg = if ($isPressed) { $script:MenuButtonOnClickBracketBg }  else { $script:MenuButtonBracketBg }
+		}
 
-				# Render the menu item
-				if ($menuFormat -eq 0) {
-					$parts = $itemText -split "\|", 2
-					if ($parts.Count -eq 2) {
-						$emoji = $parts[0]
-						$text = $parts[1]
-						Write-Buffer -X $itemStartX -Y $menuY -Text $emoji -BG $btnBg -Wide
-					$pipeX = $itemStartX + 2
-					Write-Buffer -X $pipeX -Y $menuY -Text "|" -FG $btnPipeFg -BG $btnBg
-					$textParts = $text -split "([()])"
-						for ($j = 0; $j -lt $textParts.Count; $j++) {
-							$part = $textParts[$j]
-							if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
-								Write-Buffer -Text "(" -FG $btnFg -BG $btnBg
-								Write-Buffer -Text $textParts[$j + 1] -FG $btnHkFg -BG $btnBg
-								Write-Buffer -Text ")" -FG $btnFg -BG $btnBg
-								$j += 2
-							} elseif ($part -ne "") {
-								Write-Buffer -Text $part -FG $btnFg -BG $btnBg
-							}
-						}
-					}
+		# Render the menu item
+		if ($menuFormat -eq 0) {
+			$parts = $itemText -split "\|", 2
+			if ($parts.Count -eq 2) {
+				$emoji = $parts[0]
+				$text = $parts[1]
+				$contentX = $itemStartX
+				if ($script:MenuButtonShowBrackets) {
+					Write-Buffer -X $contentX -Y $menuY -Text "[" -FG $btnBracketFg -BG $btnBracketBg
+					$contentX += 1
+				}
+				if ($script:MenuButtonShowIcon) {
+					Write-Buffer -X $contentX -Y $menuY -Text $emoji -BG $btnBg -Wide
+					$sepX = $contentX + 2
+					Write-Buffer -X $sepX -Y $menuY -Text $script:MenuButtonSeparator -FG $btnPipeFg -BG $btnBg
 				} else {
-					Write-Buffer -X $itemStartX -Y $menuY -Text "" -BG $btnBg
-					$textParts = $itemText -split "([()])"
-					for ($j = 0; $j -lt $textParts.Count; $j++) {
-						$part = $textParts[$j]
-						if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
-							Write-Buffer -Text "(" -FG $btnFg -BG $btnBg
-							Write-Buffer -Text $textParts[$j + 1] -FG $btnHkFg -BG $btnBg
-							Write-Buffer -Text ")" -FG $btnFg -BG $btnBg
-							$j += 2
-						} elseif ($part -ne "") {
-							Write-Buffer -Text $part -FG $btnFg -BG $btnBg
-						}
+					Write-Buffer -X $contentX -Y $menuY -Text "" -BG $btnBg
+				}
+		$textParts = $text -split "([()])"
+			for ($j = 0; $j -lt $textParts.Count; $j++) {
+				$part = $textParts[$j]
+				if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
+					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $btnFg -BG $btnBg }
+					Write-Buffer -Text $textParts[$j + 1] -FG $btnHkFg -BG $btnBg
+					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $btnFg -BG $btnBg }
+					$j += 2
+				} elseif ($part -ne "") {
+					Write-Buffer -Text $part -FG $btnFg -BG $btnBg
+				}
+			}
+			if ($script:MenuButtonShowBrackets) {
+				Write-Buffer -Text "]" -FG $btnBracketFg -BG $btnBracketBg
+			}
+		}
+	} else {
+				Write-Buffer -X $itemStartX -Y $menuY -Text "" -BG $btnBg
+				$textParts = $itemText -split "([()])"
+				for ($j = 0; $j -lt $textParts.Count; $j++) {
+					$part = $textParts[$j]
+					if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
+						if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $btnFg -BG $btnBg }
+						Write-Buffer -Text $textParts[$j + 1] -FG $btnHkFg -BG $btnBg
+						if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $btnFg -BG $btnBg }
+						$j += 2
+					} elseif ($part -ne "") {
+						Write-Buffer -Text $part -FG $btnFg -BG $btnBg
 					}
 				}
+			}
 				
-			# Store menu item bounds (computed statically)
-			$itemEndX = $itemStartX + $itemDisplayWidth - 1
-				$script:MenuItemsBounds += @{
-					startX      = $itemStartX
-					endX        = $itemEndX
-					y           = $menuY
-					hotkey      = $hotkey
-					index       = $mi
-					displayText = $itemText
-					format      = $menuFormat
-					fg          = $script:MenuButtonText
-					bg          = $script:MenuButtonBg
-					hotkeyFg    = $script:MenuButtonHotkey
-					onClickFg   = $script:MenuButtonOnClickFg
-					onClickBg   = $script:MenuButtonOnClickBg
-					onClickHotkeyFg = $script:MenuButtonOnClickHotkey
-				}
+	# Store menu item bounds (computed statically)
+	$itemEndX = $itemStartX + $itemDisplayWidth - 1
+	if ($item.isSettingsButton -eq $true) {
+		$script:SettingsButtonStartX = $itemStartX   # for dialog positioning
+		$script:SettingsButtonEndX   = $itemEndX     # for close-on-reclick detection
+		$script:MenuItemsBounds += @{
+			startX           = $itemStartX
+			endX             = $itemEndX
+			y                = $menuY
+			hotkey           = $hotkey
+			isSettingsButton = $true
+			index            = $mi
+			displayText      = $itemText
+			format           = $menuFormat
+			fg               = $script:SettingsButtonText
+			bg               = $script:SettingsButtonBg
+			hotkeyFg         = $script:SettingsButtonHotkey
+			pipeFg           = $script:SettingsButtonSeparatorFg
+			bracketFg        = $script:SettingsButtonBracketFg
+			bracketBg        = $script:SettingsButtonBracketBg
+			onClickFg        = $script:SettingsButtonOnClickFg
+			onClickBg        = $script:SettingsButtonOnClickBg
+			onClickHotkeyFg  = $script:SettingsButtonOnClickHotkey
+			onClickPipeFg    = $script:SettingsButtonOnClickSeparatorFg
+			onClickBracketFg = $script:SettingsButtonOnClickBracketFg
+			onClickBracketBg = $script:SettingsButtonOnClickBracketBg
+		}
+	} else {
+		$script:MenuItemsBounds += @{
+			startX      = $itemStartX
+			endX        = $itemEndX
+			y           = $menuY
+			hotkey      = $hotkey
+			index       = $mi
+			displayText = $itemText
+			format      = $menuFormat
+			fg          = $script:MenuButtonText
+			bg          = $script:MenuButtonBg
+			hotkeyFg    = $script:MenuButtonHotkey
+			pipeFg      = $script:MenuButtonSeparatorFg
+			bracketFg   = $script:MenuButtonBracketFg
+			bracketBg   = $script:MenuButtonBracketBg
+			onClickFg          = $script:MenuButtonOnClickFg
+			onClickBg          = $script:MenuButtonOnClickBg
+			onClickHotkeyFg    = $script:MenuButtonOnClickHotkey
+			onClickPipeFg      = $script:MenuButtonOnClickSeparatorFg
+			onClickBracketFg   = $script:MenuButtonOnClickBracketFg
+			onClickBracketBg   = $script:MenuButtonOnClickBracketBg
+		}
+	}
 					
 					# Advance position statically
 					$currentMenuX = $itemStartX + $itemDisplayWidth
 					
-					if ($menuFormat -eq 2) {
-						Write-Buffer -Text " "
-						$currentMenuX += 1
-					} else {
-						Write-Buffer -Text "  "
-						$currentMenuX += 2
-					}
+				if ($menuFormat -eq 2) {
+					Write-Buffer -Text " " -BG $_mrBg
+					$currentMenuX += 1
+				} else {
+					Write-Buffer -Text "  " -BG $_mrBg
+					$currentMenuX += 2
+				}
 				}
 				
-				# Add spacing before quit (right-align in full/noIcons formats)
-				if ($menuFormat -lt 2) {
-					$desiredQuitX = $HostWidth - $quitWidth - 2
-					$spacing = [math]::Max(1, $desiredQuitX - $currentMenuX)
-					Write-Buffer -Text (" " * $spacing)
-					$currentMenuX += $spacing
+				# Add spacing before right-side cluster (right-align quit; ? button sits just left of quit)
+			if ($menuFormat -lt 2) {
+				$desiredQuitX = $HostWidth - $_bpH - 2 - $quitWidth  # leave room for inner right padding + group bg
+				# In full mode, gap ends at the ? button start; otherwise gap ends at quit start
+				$gapTarget = if ($Output -eq "full") { $desiredQuitX - 2 - $helpButtonWidth } else { $desiredQuitX }
+			$spacing = [math]::Max(1, $gapTarget - $currentMenuX)
+			Write-Buffer -Text (" " * $spacing) -BG $_mrBg
+			$currentMenuX += $spacing
+			}
+
+			# Render ? help button (full mode only; hidden in format 2 / short mode)
+			if ($Output -eq "full" -and $menuFormat -lt 2) {
+				$helpStartX  = $currentMenuX
+				$helpHotkey  = "?"
+				$hIsPressed  = ($null -ne $script:PressedMenuButton -and $script:PressedMenuButton -eq $helpHotkey)
+				$hBtnBg      = if ($hIsPressed) { $script:MenuButtonOnClickBg }        else { $script:MenuButtonBg }
+				$hBtnHkFg    = if ($hIsPressed) { $script:MenuButtonOnClickHotkey }    else { $script:MenuButtonHotkey }
+				$hBracketFg  = if ($hIsPressed) { $script:MenuButtonOnClickBracketFg } else { $script:MenuButtonBracketFg }
+				$hBracketBg  = if ($hIsPressed) { $script:MenuButtonOnClickBracketBg } else { $script:MenuButtonBracketBg }
+				if ($script:MenuButtonShowBrackets) {
+					Write-Buffer -X $helpStartX -Y $menuY -Text "[" -FG $hBracketFg -BG $hBracketBg
 				}
+				$hContentX = $helpStartX + [int]$script:MenuButtonShowBrackets
+				Write-Buffer -X $hContentX -Y $menuY -Text "?" -FG $hBtnHkFg -BG $hBtnBg
+				if ($script:MenuButtonShowBrackets) {
+					Write-Buffer -Text "]" -FG $hBracketFg -BG $hBracketBg
+				}
+				$helpEndX = $helpStartX + $helpButtonWidth - 1
+				$script:MenuItemsBounds += @{
+					startX           = $helpStartX
+					endX             = $helpEndX
+					y                = $menuY
+					hotkey           = $helpHotkey
+					isHelpButton     = $true
+					index            = -1
+					displayText      = "?"
+					format           = $menuFormat
+					fg               = $script:MenuButtonText
+					bg               = $script:MenuButtonBg
+					hotkeyFg         = $script:MenuButtonHotkey
+					pipeFg           = $script:MenuButtonSeparatorFg
+					bracketFg        = $script:MenuButtonBracketFg
+					bracketBg        = $script:MenuButtonBracketBg
+					onClickFg        = $script:MenuButtonOnClickFg
+					onClickBg        = $script:MenuButtonOnClickBg
+					onClickHotkeyFg  = $script:MenuButtonOnClickHotkey
+					onClickPipeFg    = $script:MenuButtonOnClickSeparatorFg
+					onClickBracketFg = $script:MenuButtonOnClickBracketFg
+					onClickBracketBg = $script:MenuButtonOnClickBracketBg
+				}
+			$currentMenuX = $helpStartX + $helpButtonWidth
+			Write-Buffer -Text "  " -BG $_mrBg
+			$currentMenuX += 2
+		}
 				
 				# Write quit item
 				$quitStartX = $currentMenuX
@@ -6273,84 +7610,140 @@ namespace mJiggAPI {
 					$itemText = $quitItem.short
 				}
 				
-			# Resolve hotkey and pressed-state colors for quit button
-			$quitHotkeyMatch = $itemText -match "\(([a-z])\)"
-			$quitHotkey = if ($quitHotkeyMatch) { $matches[1] } else { $null }
-			$qIsPressed  = ($null -ne $script:PressedMenuButton -and $script:PressedMenuButton -eq $quitHotkey)
-			$qBtnFg      = if ($qIsPressed) { $script:MenuButtonOnClickFg }     else { $script:MenuButtonText }
-			$qBtnBg      = if ($qIsPressed) { $script:MenuButtonOnClickBg }     else { $script:MenuButtonBg }
-			$qBtnHkFg    = if ($qIsPressed) { $script:MenuButtonOnClickHotkey } else { $script:MenuButtonHotkey }
-			$qBtnPipeFg  = if ($qIsPressed) { $script:MenuButtonOnClickFg }     else { $script:MenuButtonPipe }
+	# Resolve hotkey and pressed-state colors for quit button
+	$quitHotkeyMatch = $itemText -match "\(([a-z])\)"
+	$quitHotkey = if ($quitHotkeyMatch) { $matches[1] } else { $null }
+	$qIsPressed      = ($null -ne $script:PressedMenuButton -and $script:PressedMenuButton -eq $quitHotkey)
+	$qBtnFg          = if ($qIsPressed) { $script:QuitButtonOnClickFg }         else { $script:QuitButtonText }
+	$qBtnBg          = if ($qIsPressed) { $script:QuitButtonOnClickBg }         else { $script:QuitButtonBg }
+	$qBtnHkFg        = if ($qIsPressed) { $script:QuitButtonOnClickHotkey }     else { $script:QuitButtonHotkey }
+	$qBtnPipeFg      = if ($qIsPressed) { $script:QuitButtonOnClickSeparatorFg } else { $script:QuitButtonSeparatorFg }
+	$qBtnBracketFg   = if ($qIsPressed) { $script:QuitButtonOnClickBracketFg }  else { $script:QuitButtonBracketFg }
+	$qBtnBracketBg   = if ($qIsPressed) { $script:QuitButtonOnClickBracketBg }  else { $script:QuitButtonBracketBg }
 
-			if ($menuFormat -eq 0) {
-				$parts = $itemText -split "\|", 2
-				if ($parts.Count -eq 2) {
-					$emoji = $parts[0]
-					$text = $parts[1]
-					Write-Buffer -X $quitStartX -Y $menuY -Text $emoji -BG $qBtnBg -Wide
-				$pipeX = $quitStartX + 2
-					Write-Buffer -X $pipeX -Y $menuY -Text "|" -FG $qBtnPipeFg -BG $qBtnBg
-					$textParts = $text -split "([()])"
-					for ($j = 0; $j -lt $textParts.Count; $j++) {
-						$part = $textParts[$j]
-						if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
-							Write-Buffer -Text "(" -FG $qBtnFg -BG $qBtnBg
-							Write-Buffer -Text $textParts[$j + 1] -FG $qBtnHkFg -BG $qBtnBg
-							Write-Buffer -Text ")" -FG $qBtnFg -BG $qBtnBg
-							$j += 2
-						} elseif ($part -ne "") {
-							Write-Buffer -Text $part -FG $qBtnFg -BG $qBtnBg
-						}
-					}
-				}
+	if ($menuFormat -eq 0) {
+		$parts = $itemText -split "\|", 2
+		if ($parts.Count -eq 2) {
+			$emoji = $parts[0]
+			$text = $parts[1]
+			$contentX = $quitStartX
+			if ($script:MenuButtonShowBrackets) {
+				Write-Buffer -X $contentX -Y $menuY -Text "[" -FG $qBtnBracketFg -BG $qBtnBracketBg
+				$contentX += 1
+			}
+			if ($script:MenuButtonShowIcon) {
+				Write-Buffer -X $contentX -Y $menuY -Text $emoji -BG $qBtnBg -Wide
+				$sepX = $contentX + 2
+				Write-Buffer -X $sepX -Y $menuY -Text $script:MenuButtonSeparator -FG $qBtnPipeFg -BG $qBtnBg
 			} else {
-				Write-Buffer -X $quitStartX -Y $menuY -Text "" -BG $qBtnBg
-				$textParts = $itemText -split "([()])"
-				for ($j = 0; $j -lt $textParts.Count; $j++) {
-					$part = $textParts[$j]
-					if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
-						Write-Buffer -Text "(" -FG $qBtnFg -BG $qBtnBg
-						Write-Buffer -Text $textParts[$j + 1] -FG $qBtnHkFg -BG $qBtnBg
-						Write-Buffer -Text ")" -FG $qBtnFg -BG $qBtnBg
-						$j += 2
-					} elseif ($part -ne "") {
-						Write-Buffer -Text $part -FG $qBtnFg -BG $qBtnBg
-					}
+				Write-Buffer -X $contentX -Y $menuY -Text "" -BG $qBtnBg
+			}
+		$textParts = $text -split "([()])"
+		for ($j = 0; $j -lt $textParts.Count; $j++) {
+			$part = $textParts[$j]
+			if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
+				if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $qBtnFg -BG $qBtnBg }
+				Write-Buffer -Text $textParts[$j + 1] -FG $qBtnHkFg -BG $qBtnBg
+				if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $qBtnFg -BG $qBtnBg }
+				$j += 2
+			} elseif ($part -ne "") {
+				Write-Buffer -Text $part -FG $qBtnFg -BG $qBtnBg
+			}
+		}
+		if ($script:MenuButtonShowBrackets) {
+			Write-Buffer -Text "]" -FG $qBtnBracketFg -BG $qBtnBracketBg
+		}
+	}
+} else {
+			Write-Buffer -X $quitStartX -Y $menuY -Text "" -BG $qBtnBg
+			$textParts = $itemText -split "([()])"
+			for ($j = 0; $j -lt $textParts.Count; $j++) {
+				$part = $textParts[$j]
+				if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
+					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $qBtnFg -BG $qBtnBg }
+					Write-Buffer -Text $textParts[$j + 1] -FG $qBtnHkFg -BG $qBtnBg
+					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $qBtnFg -BG $qBtnBg }
+					$j += 2
+				} elseif ($part -ne "") {
+					Write-Buffer -Text $part -FG $qBtnFg -BG $qBtnBg
 				}
 			}
-			
-		# Store quit item bounds (computed statically)
-		$quitEndX = $quitStartX + $quitWidth - 1
-		$script:MenuItemsBounds += @{
-			startX      = $quitStartX
-			endX        = $quitEndX
-			y           = $menuY
-			hotkey      = $quitHotkey
-			index       = $menuItems.Count - 1
-			displayText = $itemText
-			format      = $menuFormat
-			fg          = $script:MenuButtonText
-			bg          = $script:MenuButtonBg
-			hotkeyFg    = $script:MenuButtonHotkey
-			onClickFg   = $script:MenuButtonOnClickFg
-			onClickBg   = $script:MenuButtonOnClickBg
-			onClickHotkeyFg = $script:MenuButtonOnClickHotkey
 		}
+			
+	# Store quit item bounds (computed statically)
+	$quitEndX = $quitStartX + $quitWidth - 1
+	$script:MenuItemsBounds += @{
+		startX      = $quitStartX
+		endX        = $quitEndX
+		y           = $menuY
+	hotkey      = $quitHotkey
+	index       = $menuItems.Count - 1
+	displayText = $itemText
+	format      = $menuFormat
+	fg          = $script:QuitButtonText
+	bg          = $script:QuitButtonBg
+	hotkeyFg    = $script:QuitButtonHotkey
+	pipeFg      = $script:QuitButtonSeparatorFg
+	bracketFg   = $script:QuitButtonBracketFg
+	bracketBg   = $script:QuitButtonBracketBg
+	onClickFg          = $script:QuitButtonOnClickFg
+	onClickBg          = $script:QuitButtonOnClickBg
+	onClickHotkeyFg    = $script:QuitButtonOnClickHotkey
+	onClickPipeFg      = $script:QuitButtonOnClickSeparatorFg
+	onClickBracketFg   = $script:QuitButtonOnClickBracketFg
+	onClickBracketBg   = $script:QuitButtonOnClickBracketBg
+}
 				
-				# Right margin and clear remaining
-				$menuEndX = $quitStartX + $quitWidth
-				Write-Buffer -Text "  "
-				$menuEndX += 2
-				if ($menuEndX -lt $HostWidth) {
-					Write-Buffer -Text (" " * ($HostWidth - $menuEndX))
-				}
-				$Outputline++
+		# Clear remaining (inner right padding + group-bg handled by inset writes below)
+		$menuEndX = $quitStartX + $quitWidth
+	if ($menuEndX -lt $HostWidth) {
+			Write-Buffer -Text (" " * ($HostWidth - $menuEndX)) -BG $_mrBg
+		}
+		# Outer transparent padding (bpH-1), then 1 group-bg, then 2 inner row-bg on each side
+		if ($_bpH -gt 1) { Write-Buffer -X 0                     -Y $menuY -Text (" " * ($_bpH - 1)) }  # transparent left outer
+		Write-Buffer -X ($_bpH - 1)           -Y $menuY -Text " "            -BG $_fBg                   # 1 group-bg left
+		Write-Buffer -X $_bpH                 -Y $menuY -Text "  "           -BG $_mrBg                  # 2 inner left  (row bg)
+		Write-Buffer -X ($HostWidth-$_bpH-2)  -Y $menuY -Text "  "           -BG $_mrBg                  # 2 inner right (row bg)
+		Write-Buffer -X ($HostWidth-$_bpH)    -Y $menuY -Text " "            -BG $_fBg                   # 1 group-bg right
+		if ($_bpH -gt 1) { Write-Buffer -X ($HostWidth-$_bpH+1) -Y $menuY -Text (" " * ($_bpH - 1)) }  # transparent right outer
+		$Outputline++
 				
-				# Flush entire UI to console in one operation
-				Flush-Buffer
-		} elseif ($Output -eq "hidden") {
-			if (-not $skipConsoleUpdate) {
-				# Use live window dimensions for layout so the (h) button is always correctly
+	if ($_bpV -eq 1) {
+		# For bpV=1 the reserved row (Y=$HostHeight-1) is the 1-minimum footer blank.
+		# NoWrap disables auto-wrap so writing the last cell doesn't trigger a console scroll.
+		# bpV=1: handle transparency based on $_bpH; apply NoWrap to the last segment.
+		if ($_bpH -gt 1) {
+			Write-Buffer -X 0                    -Y $Outputline -Text (" " * ($_bpH - 1))                             # transparent left
+			Write-Buffer -X ($_bpH - 1)          -Y $Outputline -Text (" " * ($HostWidth - 2*$_bpH + 2)) -BG $_fBg   # group-bg centre
+			Write-Buffer -X ($HostWidth-$_bpH+1) -Y $Outputline -Text (" " * ($_bpH - 1)) -NoWrap                    # transparent right (NoWrap on last)
+		} else {
+			Write-Buffer -X 0 -Y $Outputline -Text (" " * $HostWidth) -BG $_fBg -NoWrap
+		}
+		# Do NOT increment $Outputline — reserved row is the scroll guard.
+	} else {
+		# For bpV≥2 write the 1-minimum FooterBg blank (transparent outer, group-bg inner)
+		if ($_bpH -gt 1) { Write-Buffer -X 0                    -Y $Outputline -Text (" " * ($_bpH - 1)) }                           # transparent left
+		Write-Buffer -X ($_bpH - 1)          -Y $Outputline -Text (" " * ($HostWidth - 2*$_bpH + 2)) -BG $_fBg                       # group-bg centre
+		if ($_bpH -gt 1) { Write-Buffer -X ($HostWidth-$_bpH+1) -Y $Outputline -Text (" " * ($_bpH - 1)) }                           # transparent right
+		$Outputline++
+		# ... then any extra plain blanks (bpV-2 rows).
+		# The reserved row at $HostHeight-1 acts as the final extra plain blank.
+		for ($__bpi = 0; $__bpi -lt ($_bpV - 2); $__bpi++) {
+			Write-Buffer -X 0 -Y $Outputline -Text (" " * $HostWidth)
+			$Outputline++
+		}
+	}
+		# Flush entire UI to console in one operation
+		# Use ClearFirst on forced redraws (startup transition, resize, re-open after dialog)
+		# to atomically clear stale content and paint the new frame in one write.
+		if ($forceRedraw) { Flush-Buffer -ClearFirst } else { Flush-Buffer }
+	} elseif ($Output -eq "hidden") {
+		$script:ModeButtonBounds        = $null  # Header not rendered in hidden mode
+		$script:HeaderEndTimeBounds     = $null
+		$script:HeaderCurrentTimeBounds = $null
+		$script:HeaderLogoBounds        = $null
+		if (-not $skipConsoleUpdate) {
+			# Use live window dimensions for layout so the (h) button is always correctly
 				# positioned even while a resize is in progress. The outer resize path (above)
 				# handles updating $HostWidth/$HostHeight and firing Send-ResizeExitWakeKey
 				# once the window has been stable for $ResizeThrottleMs.
@@ -6365,42 +7758,76 @@ namespace mJiggAPI {
 				
 			$hBtnY = [math]::Max(1, $newH - 2)
 			$hBtnX = [math]::Max(0, $newW - 4)
-			$hIsPressed = ($script:PressedMenuButton -eq "h")
-			$hBtnFg   = if ($hIsPressed) { $script:MenuButtonOnClickFg }     else { $script:MenuButtonText }
-			$hBtnBg   = if ($hIsPressed) { $script:MenuButtonOnClickBg }     else { $script:MenuButtonBg }
-			$hBtnHkFg = if ($hIsPressed) { $script:MenuButtonOnClickHotkey } else { $script:MenuButtonHotkey }
-			Write-Buffer -X $hBtnX -Y $hBtnY -Text "(" -FG $hBtnFg -BG $hBtnBg
-			Write-Buffer -Text "h" -FG $hBtnHkFg -BG $hBtnBg
-			Write-Buffer -Text ")" -FG $hBtnFg -BG $hBtnBg
-				
-				if ($forceRedraw) { Flush-Buffer -ClearFirst } else { Flush-Buffer }
-				
-				$script:MenuItemsBounds = @(@{
-					startX      = $hBtnX
-					endX        = $hBtnX + 2
-					y           = $hBtnY
-					hotkey      = "h"
-					index       = 0
-					displayText = "(h)"
-					format      = 1
-					fg          = $script:MenuButtonText
-					bg          = $script:MenuButtonBg
-					hotkeyFg    = $script:MenuButtonHotkey
-					onClickFg   = $script:MenuButtonOnClickFg
-					onClickBg   = $script:MenuButtonOnClickBg
-					onClickHotkeyFg = $script:MenuButtonOnClickHotkey
-				})
+	$hIsPressed = ($script:PressedMenuButton -eq "i")
+	$hBtnFg   = if ($hIsPressed) { $script:MenuButtonOnClickFg }     else { $script:MenuButtonText }
+	$hBtnBg   = if ($hIsPressed) { $script:MenuButtonOnClickBg }     else { $script:MenuButtonBg }
+	$hBtnHkFg = if ($hIsPressed) { $script:MenuButtonOnClickHotkey } else { $script:MenuButtonHotkey }
+	Write-Buffer -X $hBtnX -Y $hBtnY -Text "(" -FG $hBtnFg -BG $hBtnBg
+	Write-Buffer -Text "i" -FG $hBtnHkFg -BG $hBtnBg
+	Write-Buffer -Text ")" -FG $hBtnFg -BG $hBtnBg
+			
+			if ($forceRedraw) { Flush-Buffer -ClearFirst } else { Flush-Buffer }
+			
+		$script:MenuItemsBounds = @(@{
+			startX      = $hBtnX
+			endX        = $hBtnX + 2
+			y           = $hBtnY
+		hotkey      = "i"
+		index       = 0
+		displayText = "(i)"
+				format      = 1
+				fg          = $script:MenuButtonText
+				bg          = $script:MenuButtonBg
+				hotkeyFg    = $script:MenuButtonHotkey
+				pipeFg      = $script:MenuButtonSeparatorFg
+				bracketFg   = $script:MenuButtonBracketFg
+				bracketBg   = $script:MenuButtonBracketBg
+				onClickFg          = $script:MenuButtonOnClickFg
+				onClickBg          = $script:MenuButtonOnClickBg
+				onClickHotkeyFg    = $script:MenuButtonOnClickHotkey
+				onClickPipeFg      = $script:MenuButtonOnClickSeparatorFg
+				onClickBracketFg   = $script:MenuButtonOnClickBracketFg
+				onClickBracketBg   = $script:MenuButtonOnClickBracketBg
+			})
 			}
 		}
 			# If skipConsoleUpdate is true and Output is not "hidden", don't render anything (prevents stutter)
 			
-			# Reset resize cleared screen flag after we've completed a redraw
-			# This ensures the screen will be cleared again if user starts a new resize
-			if ($forceRedraw -and -not $skipConsoleUpdate) {
-				$ResizeClearedScreen = $false
-			}
-			
-			# Check if end time reached (only if end time is set)
+		# Reset resize cleared screen flag after we've completed a redraw
+		# This ensures the screen will be cleared again if user starts a new resize
+		if ($forceRedraw -and -not $skipConsoleUpdate) {
+			$ResizeClearedScreen = $false
+
+			# A sub-dialog was used inside the Settings dialog — the full screen has
+			# just been repainted cleanly above, so reopen Settings instantly on top.
+			if ($script:PendingReopenSettings) {
+				$script:PendingReopenSettings = $false
+				$HostWidthRef  = [ref]$HostWidth;  $HostHeightRef = [ref]$HostHeight
+				$endTimeIntRef = [ref]$endTimeInt; $endTimeStrRef = [ref]$endTimeStr
+				$endRef        = [ref]$end;        $logArrayRef   = [ref]$LogArray
+				$settingsResult = Show-SettingsDialog `
+					-HostWidthRef $HostWidthRef -HostHeightRef $HostHeightRef `
+					-EndTimeIntRef $endTimeIntRef -EndTimeStrRef $endTimeStrRef `
+					-EndRef $endRef -LogArrayRef $logArrayRef `
+					-SkipAnimation:$true
+			$HostWidth  = $HostWidthRef.Value;  $HostHeight = $HostHeightRef.Value
+			$endTimeInt = $endTimeIntRef.Value; $endTimeStr = $endTimeStrRef.Value
+			$end        = $endRef.Value;        $LogArray   = $logArrayRef.Value
+			$Output    = $script:Output
+			$DebugMode = $script:DebugMode
+			if ($settingsResult.ReopenSettings) {
+			# Another sub-dialog was used — loop again via the next iteration
+			$script:PendingReopenSettings = $true
+		}
+			$SkipUpdate  = $true
+			# Signal the next iteration to skip sleep and redraw immediately.
+			# Do NOT call clear-host here — the screen was just rendered cleanly
+			# above and clearing it would cause a blank-screen flash.
+			$script:PendingForceRedraw = $true
+		}
+		}
+		
+		# Check if end time reached (only if end time is set)
 			# Compare full MMddHHmm values to handle overnight runs correctly
 			if ($endTimeInt -ne -1 -and -not [string]::IsNullOrEmpty($end)) {
 				try {
@@ -6428,6 +7855,3 @@ namespace mJiggAPI {
 			}
 		} # end :process
 }
-
-# Uncomment the line below to run the function when script is executed directly
-# Start-mJig -Output full

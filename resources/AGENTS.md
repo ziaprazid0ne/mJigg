@@ -29,7 +29,7 @@ This document provides deep context for AI agents working on the `start-mjig.ps1
 
 ## Architecture Overview
 
-The script is a single-file PowerShell application (~6,000 lines) implementing a console-based TUI mouse jiggler. It uses Win32 API calls via P/Invoke for low-level mouse/keyboard interaction.
+The script is a single-file PowerShell application (~7,800 lines) implementing a console-based TUI mouse jiggler. It uses Win32 API calls via P/Invoke for low-level mouse/keyboard interaction.
 
 ### High-Level Flow
 
@@ -84,9 +84,11 @@ start-mjig.ps1
     │   ├── Resize handling variables
     │   └── Box-drawing character definitions
     │
-    ├── Theme Colors Section (lines 214-289)
+    ├── Theme Colors Section (lines 134-210)
     │   ├── Menu bar colors (incl. OnClick pressed-state colors)
-    │   ├── Header colors
+    │   ├── Header colors (HeaderBg, HeaderRowBg)
+    │   ├── Footer colors (FooterBg, MenuRowBg)
+    │   ├── Border padding (BorderPadV, BorderPadH)
     │   ├── Stats box colors
     │   ├── Dialog colors (Quit, Time, Movement)
     │   ├── Resize screen colors
@@ -102,21 +104,21 @@ start-mjig.ps1
     ├── Invoke-ResizeHandler (lines ~383-425)
     │   └── Unified blocking resize handler for main loop and hidden-mode contexts
     │
-    ├── Helper Functions (lines ~384-3700)
+    ├── Helper Functions (lines ~384-5150)
     │   ├── Find-WindowHandle (~384-470)
-    │   ├── Buffered Rendering (Write-Buffer, Flush-Buffer, Clear-Buffer, Write-ButtonImmediate) (~1663-1780)
-    │   ├── Draw-DialogShadow / Clear-DialogShadow (~1785-1830)
-    │   ├── Show-TimeChangeDialog (~1835-2410)
-    │   ├── Draw-ResizeLogo (~2495-2610)
-    │   ├── Get-MousePosition (~2615-2630)
-    │   ├── Test-MouseMoved (~2632-2650)
-    │   ├── Get-TimeSinceMs (~2652-2660)
-    │   ├── Get-ValueWithVariance (~2662-2685)
-    │   ├── Get-Padding (~2686-2715)
-    │   ├── Write-SimpleDialogRow (~2716-2745)
-    │   ├── Write-SimpleFieldRow (~2746-2790)
-    │   ├── Show-MovementModifyDialog (~2792-3520)
-    │   └── Show-QuitConfirmationDialog (~3525-3720)
+    │   ├── Buffered Rendering (Write-Buffer w/-NoWrap, Flush-Buffer, Clear-Buffer, Write-ButtonImmediate) (~1920-1980)
+    │   ├── Draw-DialogShadow / Clear-DialogShadow (~1985-2030)
+    │   ├── Show-TimeChangeDialog (~2035-2660)
+    │   ├── Draw-ResizeLogo (~2870-2960)
+    │   ├── Get-MousePosition (~2965-2980)
+    │   ├── Test-MouseMoved (~2982-3000)
+    │   ├── Get-TimeSinceMs / Get-ValueWithVariance / Get-Padding (~3000-3060)
+    │   ├── Write-SimpleDialogRow (~3060-3100)
+    │   ├── Write-SimpleFieldRow (~3100-3140)
+    │   ├── Show-MovementModifyDialog (~3145-3920)
+    │   ├── Show-QuitConfirmationDialog (~3925-4240)
+    │   ├── Show-SettingsDialog (~4245-4700) — slide-up 13-row dialog; time + movement sub-dialogs; inline output toggle + debug checkbox; `SkipAnimation` param for clean reopen
+    │   └── Show-InfoDialog (~4700+) — info/about dialog; version check, clickable GitHub URL
     │
     ├── P/Invoke Type Definitions (lines ~700-900)
     │   ├── POINT struct
@@ -167,14 +169,14 @@ start-mjig.ps1
     │   │   ├── Animate cursor movement
     │   │   └── Send simulated keypress
     │   │
-    │   ├── UI Rendering (~5000-5930)
-    │   │   ├── Header line
-    │   │   ├── Horizontal separator
-    │   │   ├── Log entries (full view)
-    │   │   ├── Stats box (full view, wide window)
-    │   │   ├── Bottom separator
-    │   │   ├── Menu bar
-    │   │   └── Hidden view (status line + (h) button)
+    │      ├── UI Rendering (~5000-5930)
+   │   │   ├── Header line
+   │   │   ├── Horizontal separator
+   │   │   ├── Log entries (full view)
+   │   │   ├── Stats box (full view, wide window)
+   │   │   ├── Bottom separator
+   │   │   ├── Menu bar
+   │   │   └── Incognito view (status line + (i) button)
     │   │
     │   └── End Time Check (~5990)
     │       └── Exit if scheduled time reached
@@ -204,6 +206,12 @@ These can be modified at runtime via the Modify Movement dialog. When accessing 
 - `$script:MoveSpeed`, `$script:MoveVariance` - Animation speed
 - `$script:TravelDistance`, `$script:TravelVariance` - Movement distance
 - `$script:AutoResumeDelaySeconds` - User input cooldown
+- `$script:Output` - Current output mode (`"min"` / `"full"` / `"hidden"`); synced from/to local `$Output` at settings dialog close and on incognito/output-toggle hotkeys
+- `$script:DebugMode` - Current debug mode flag (`[bool]`); synced from/to local `$DebugMode` at settings dialog close
+- `$script:BorderPadV` - Blank-row border thickness above/below header+footer chrome groups (min 1)
+- `$script:BorderPadH` - Blank-column border thickness left/right of every chrome row (min 1)
+- `$script:HeaderBg`, `$script:FooterBg` - Group background colors for 3-row header / footer blocks
+- `$script:HeaderRowBg`, `$script:MenuRowBg` - Per-row background colors (inset by `$_bpH`, do not bleed into padding)
 - `$script:DiagEnabled` - Diagnostics flag
 - `$script:LoopIteration` - Main loop counter
 - `$script:MenuItemsBounds` - Click detection bounds array; each entry now also carries `displayText`, `format`, `fg`, `bg`, `hotkeyFg`, `onClickFg`, `onClickBg`, `onClickHotkeyFg`
@@ -293,8 +301,8 @@ Flush-Buffer -ClearFirst
 
 **Buffer infrastructure** (`$script:RenderQueue`, `Write-Buffer`, `Flush-Buffer`, `Clear-Buffer`):
 - `$script:RenderQueue` - `System.Collections.Generic.List[hashtable]` holding `@{ X; Y; Text; FG; BG }` segments
-- `Write-Buffer` - Adds a segment. `X`/`Y` of `-1` = continue from last position. `FG`/`BG` of `$null` = use terminal default color. `-Wide` switch appends a trailing space for 2-column emoji background fill.
-- `Flush-Buffer` - Builds a `StringBuilder` with VT100 sequences: `ESC[?25l` (hide cursor), `ESC[row;colH` (positioning), `ESC[fg;bgm` (colors, only emitted on change), segment text, `ESC[0m` (reset), optional `ESC[?25h` (show cursor if `$script:CursorVisible` is true). Single `[Console]::Write()` outputs the entire frame atomically. `-ClearFirst` switch prepends `ESC[2J` for atomic screen clear+redraw.
+- `Write-Buffer` - Adds a segment. `X`/`Y` of `-1` = continue from last position. `FG`/`BG` of `$null` = use terminal default color (ANSI 39/49). `-Wide` switch appends a trailing space for 2-column emoji background fill. `-NoWrap` switch emits `ESC[?7l` before the segment and `ESC[?7h` after, disabling ANSI auto-wrap so writing to the last character of the last row does not trigger a console scroll.
+- `Flush-Buffer` - Builds a `StringBuilder` with VT100 sequences: `ESC[?25l` (hide cursor), `ESC[row;colH` (positioning), `ESC[fg;bgm` (colors, only emitted on change), segment text, optional `ESC[?7l`/`ESC[?7h` wrapping for NoWrap segments, `ESC[0m` (reset), optional `ESC[?25h` (show cursor if `$script:CursorVisible` is true). Single `[Console]::Write()` outputs the entire frame atomically. `-ClearFirst` switch prepends `ESC[2J` for atomic screen clear+redraw.
 - `Clear-Buffer` - Discards all queued segments without writing.
 
 **Cursor visibility** is tracked via `$script:CursorVisible` (boolean) and controlled with VT100 sequences (`ESC[?25l` / `ESC[?25h`) instead of `[Console]::CursorVisible`. The cursor is hidden during flush and conditionally shown at the end based on the tracked state (e.g., shown during dialog text input, hidden otherwise).
@@ -336,13 +344,55 @@ All colors are centralized as `$script:` variables (lines 214-289):
 $script:MenuButtonBg = "DarkBlue"
 $script:MenuButtonText = "White"
 $script:MenuButtonHotkey = "Green"
-$script:MenuButtonPipe = "White"
+$script:MenuButtonSeparatorFg = "White"
 # Menu Bar (pressed / onclick state)
-$script:MenuButtonOnClickBg     = "DarkCyan"
-$script:MenuButtonOnClickFg     = "Black"
-$script:MenuButtonOnClickHotkey = "Black"
+$script:MenuButtonOnClickBg        = "DarkCyan"
+$script:MenuButtonOnClickFg        = "Black"
+$script:MenuButtonOnClickHotkey    = "Black"
+$script:MenuButtonOnClickSeparatorFg      = "Black"      # onclick counterpart for MenuButtonSeparatorFg
+# Menu button icon prefix
+$script:MenuButtonShowIcon         = $true    # Show/hide emoji + separator before label
+$script:MenuButtonSeparator        = "|"      # Separator char between icon and label
+# Menu button bracket wrapping (e.g. "[👁 |toggle_(v)iew]")
+$script:MenuButtonShowBrackets     = $false
+$script:MenuButtonBracketFg        = "DarkCyan"
+$script:MenuButtonBracketBg        = "DarkBlue"
+$script:MenuButtonOnClickBracketFg = "Black"
+$script:MenuButtonOnClickBracketBg = "DarkCyan"
+# Dialog button icon prefix (Quit, Time, Move dialogs)
+$script:DialogButtonShowIcon       = $true   # Show/hide emoji + separator on dialog buttons
+$script:DialogButtonSeparator      = "|"     # Separator char between icon and label
+# Dialog button bracket wrapping (e.g. "[✅ |(u)pdate]")
+$script:DialogButtonShowBrackets   = $false
+$script:DialogButtonBracketFg      = "White"
+$script:DialogButtonBracketBg      = $null   # null = terminal default (transparent)
+# Show/hide () around hotkey letters — menu bar and header buttons
+$script:MenuButtonShowHotkeyParens   = $true   # When $false the letter is still highlighted
+# Show/hide () around hotkey letters — all dialog box buttons
+$script:DialogButtonShowHotkeyParens = $true   # Independent of the menu bar setting
 
 # Dialogs
+$script:SettingsDialogBg           = "DarkBlue"
+$script:SettingsDialogBorder       = "White"
+$script:SettingsDialogTitle        = "Yellow"
+$script:SettingsDialogText         = "White"
+$script:SettingsDialogButtonBg     = "Blue"
+$script:SettingsDialogButtonText   = "White"
+$script:SettingsDialogButtonHotkey = "Yellow"
+# Menu Bar: Settings Button
+$script:SettingsButtonBg                 = $script:MenuButtonBg
+$script:SettingsButtonText               = $script:MenuButtonText
+$script:SettingsButtonHotkey             = $script:MenuButtonHotkey
+$script:SettingsButtonSeparatorFg        = $script:MenuButtonSeparatorFg
+$script:SettingsButtonBracketFg          = $script:MenuButtonBracketFg
+$script:SettingsButtonBracketBg          = $script:MenuButtonBracketBg
+$script:SettingsButtonOnClickBg          = $script:SettingsDialogBg
+$script:SettingsButtonOnClickFg          = $script:SettingsDialogText
+$script:SettingsButtonOnClickHotkey      = $script:SettingsDialogTitle
+$script:SettingsButtonOnClickSeparatorFg = $script:SettingsDialogText
+$script:SettingsButtonOnClickBracketFg   = $script:SettingsDialogBorder
+$script:SettingsButtonOnClickBracketBg   = $script:SettingsDialogBg
+# Quit
 $script:QuitDialogBg = "DarkMagenta"
 $script:QuitDialogShadow = "DarkMagenta"
 $script:QuitDialogBorder = "White"
@@ -354,15 +404,66 @@ $script:QuitDialogTitle = "Yellow"
 | Prefix | Component |
 |--------|-----------|
 | `MenuButton*` | Bottom menu bar (normal + `OnClick*` pressed state) |
+| `MenuButtonOnClickSeparatorFg` | Onclick separator color (was inheriting from `MenuButtonOnClickFg`) |
+| `MenuButtonShowIcon` / `MenuButtonSeparator` | Main menu icon prefix visibility and separator char |
+| `MenuButtonShowBrackets` / `MenuButtonBracketFg` / `MenuButtonBracketBg` | Main menu button bracket wrapping and normal-state bracket colors |
+| `MenuButtonOnClickBracketFg` / `MenuButtonOnClickBracketBg` | Pressed-state bracket colors for main menu buttons |
+| `DialogButtonShowIcon` / `DialogButtonSeparator` | Dialog button icon prefix visibility and separator char |
+| `DialogButtonShowBrackets` / `DialogButtonBracketFg` / `DialogButtonBracketBg` | Dialog button bracket wrapping and bracket colors (`BracketBg = $null` = transparent) |
+| `MenuButtonShowHotkeyParens` | Hides/shows `()` around hotkey letters on menu bar + header mode button; letter remains highlighted |
+| `DialogButtonShowHotkeyParens` | Hides/shows `()` around hotkey letters on all dialog box buttons; independent of the menu bar setting |
 | `Header*` | Top header line |
+| `HeaderBg` | Background for the 3-row header group (top blank + header row + top separator); outer `$_bpH-1` cols transparent |
+| `HeaderRowBg` | Background applied **only** to the header content row, inset by `$_bpH` so it doesn't bleed into padding |
+| `FooterBg` | Background for the 3-row footer group (bottom separator + menu row + bottom blank); same transparency rules |
+| `MenuRowBg` | Background applied **only** to the menu bar content row, with the same inset |
+| `BorderPadV` | Blank-row count above/below chrome (min 1); only innermost row gets `HeaderBg`/`FooterBg`, extras are transparent |
+| `BorderPadH` | Blank-column count left/right of every chrome row (min 1); only innermost column gets group bg |
 | `StatsBox*` | Right-side stats panel |
-| `QuitDialog*` | Quit confirmation dialog |
+| `QuitDialog*` / `QuitButton*` | Quit confirmation dialog and dedicated quit menu button colors |
+| `SettingsDialog*` | Settings mini-dialog (slide-up; time, movement, output toggle, debug toggle) |
+| `SettingsButton*` | Dedicated colors for the `(s)ettings` menu bar button; `OnClick*` defaults match `SettingsDialog*` |
 | `TimeDialog*` | Set end time dialog |
 | `MoveDialog*` | Modify movement dialog |
 | `Resize*` | Window resize splash screen |
 | `Text*` | General purpose colors |
 
-### 4a. Button Click System
+### 4a. Chrome Layout System (BorderPad, group bg, row bg)
+
+The chrome (header + footer strip) is rendered using a layered background model controlled by two variables:
+
+- **`$script:BorderPadV`** (`$_bpV`) — number of blank rows above and below the chrome group. Row count: `$Rows = $HostHeight - 4 - 2 * $_bpV`.
+- **`$script:BorderPadH`** (`$_bpH`) — number of blank columns on each side of every chrome row.
+
+**Horizontal layout per chrome row (left side):**
+```
+[transparent: $_bpH-1 cols] [group-bg: 1 col at X=$_bpH-1] [inner row-bg: 2 cols] [content ...]
+```
+**Right side (mirror):**
+```
+[... content] [inner row-bg: 2 cols] [group-bg: 1 col at X=$HostWidth-$_bpH] [transparent: $_bpH-1 cols]
+```
+
+The transparency is achieved by writing spaces with **no BG** (`$null` → ANSI 49 default background). This is implemented as the **last writes** in the render queue for each row (the inset overwrites), so they always win over any content that happened to land there.
+
+**Rows affected:**
+| Row type | Group bg var | Row bg var |
+|----------|-------------|-----------|
+| Top blank | `$_hBg` (HeaderBg) | — (whole row is group bg inside) |
+| Header content | `$_hBg` | `$_hrBg` (HeaderRowBg) |
+| Top separator | `$_hBg` | — |
+| Bottom separator | `$_fBg` (FooterBg) | — |
+| Menu content | `$_fBg` | `$_mrBg` (MenuRowBg) |
+| Bottom blank | `$_fBg` | — |
+
+**Content start/end X:**
+- Header and menu content start at `X = $_bpH + 2` (group-bg col + 2 inner padding).
+- Log rows start at `X = $_bpH - 2` (flush with the group-bg col; no inner padding for logs).
+- Stats separator at `X = $_bpH + $logWidth + 1`.
+
+**`$_bpV = 1` footer blank**: Uses `Write-Buffer -NoWrap` on the last segment to prevent console scroll when writing to `Y = $HostHeight - 1`. When `$_bpH > 1`, the row is split into three segments (transparent left, group-bg centre, transparent right with NoWrap) to achieve both transparency and full background coverage.
+
+### 4b. Button Click System
 
 Menu buttons use a multi-phase click model:
 
@@ -381,7 +482,7 @@ Menu buttons use a multi-phase click model:
 - Clear `$script:PressedMenuButton` immediately
 
 **Phase 3 — Render loop restoration** (top of menu bar render, checks `$script:PendingDialogCheck`):
-- `$script:DialogButtonBounds -eq $null` (no dialog open) → clears `$script:PressedMenuButton` immediately — handles toggles (v, h) and instant actions
+- `$script:DialogButtonBounds -eq $null` (no dialog open) → clears `$script:PressedMenuButton` immediately — handles toggles (o, i) and instant actions
 - `$script:DialogButtonBounds -ne $null` (dialog open) → skips; button stays pressed while dialog is open
 
 **Popup persistence**: Dialog-opening actions (q, t, m) call `Show-*Dialog` synchronously, blocking the main loop. The button stays visually highlighted (from Phase 1) throughout because no main render runs during the dialog. When the dialog closes, `DialogButtonBounds` is cleared and the next render's `PendingDialogCheck` fires the restore.
@@ -552,7 +653,53 @@ return @{
 }
 ```
 
-### 8. Menu Item Bounds Tracking & Click Detection
+### 8. Incognito Mode
+
+Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minimal status line and a small `(i)` toggle button positioned at the bottom-right. It is toggled by the `(i)ncognito` menu button or the `i` hotkey.
+
+**Restricted hotkeys in incognito mode**: Only `q` (quit) and `i` (exit incognito) are processed. All other hotkeys (`o`, `s`, `m`, `?`, `/`, etc.) are silently ignored. The `o` (output cycle) handler is explicitly guarded with `$Output -ne "hidden"` so it cannot be used to exit incognito mode.
+
+**Hidden-view render** (inside `elseif ($Output -eq "hidden")`):
+- Draws a one-line status: `HH:mm:ss | running...` at row 0
+- Draws `(i)` button using `$script:MenuButtonText`/`Bg`/`Hotkey` colors, positioned at `($newW - 4, $newH - 2)`
+- Registers a single entry in `$script:MenuItemsBounds` with `hotkey = "i"`
+- Clears `$script:ModeButtonBounds`, `$script:HeaderEndTimeBounds`, `$script:HeaderCurrentTimeBounds`, `$script:HeaderLogoBounds` since those regions aren't rendered
+
+**Entering incognito**: `$PreviousView = $Output; $Output = "hidden"; $script:MenuItemsBounds = @()`
+**Exiting incognito**: `$Output = $PreviousView` (or `"min"` if `$PreviousView` is null); `$PreviousView = $null`
+
+### 8a. Settings Dialog
+
+`Show-SettingsDialog` is a slide-up mini-dialog that appears above the `(s)ettings` menu button. It is the consolidated entry point for time, movement, output mode, and debug mode configuration.
+
+**Layout (13 rows, height = 12):**
+```
+0: top border    1: title    2: divider    3: blank
+4: [⏳|(t)ime]   5: blank    6: [🛠|(m)ovement]    7: blank
+8: [💻|(o)utput: Full/Min]  (inline toggle)   9: blank
+10: [🔍|(d)ebug: On/Off]    (inline checkbox) 11: blank   12: bottom border
+```
+
+**Key behaviors:**
+- **Slide-up animation**: Animates from behind the separator/menu bar. Can be skipped via `[bool]$SkipAnimation = $false` parameter.
+- **Onfocus / offfocus**: While a sub-dialog (time or movement) is open, the dialog dims; returns to onfocus on sub-dialog close.
+- **Sub-dialog background cleanup**: When time or movement sub-dialog closes, `Show-SettingsDialog` breaks out with `ReopenSettings = $true`. The caller sets `$script:PendingReopenSettings = $true` and triggers a full repaint, then reopens settings with `SkipAnimation = $true`.
+- **Inline output toggle** (`o`): Cycles `$script:Output` between `"full"` and `"min"` immediately, redraws the row, stays in the settings loop. No sub-dialog or screen repaint needed.
+- **Inline debug toggle** (`d`): Toggles `$script:DebugMode`, redraws the row, stays in the settings loop.
+- **Re-click to close**: Clicking the `(s)ettings` menu button while settings is visible closes the dialog.
+- **Returns**: `@{ NeedsRedraw = $bool; ReopenSettings = $bool }`
+
+**Output / debug rows use full inner-row click detection** — `$outputButtonStartX/EndX` and `$debugButtonStartX/EndX` span the entire inner width (`$dialogX + 1` to `$dialogX + $dialogWidth - 2`). Pads are computed dynamically at render time based on current `$script:Output` / `$script:DebugMode`.
+
+**Sync after dialog closes**: Both call sites (`s`-hotkey handler and `$script:PendingReopenSettings` reopen path) sync `$Output = $script:Output` and `$DebugMode = $script:DebugMode` after `Show-SettingsDialog` returns.
+
+**Theme variables** (all in the `# Dialogs: Settings` block):
+- `SettingsDialog{Bg,Border,Title,Text,ButtonBg,ButtonText,ButtonHotkey}` — onfocus colors
+- `SettingsDialogOffFocus{Bg,Border,Title,Text,ButtonBg,ButtonText,ButtonHotkey}` — offfocus (sub-dialog open)
+- `SettingsButton{Bg,Text,Hotkey,SeparatorFg,BracketFg,BracketBg}` — normal menu button colors
+- `SettingsButtonOnClick{Bg,Fg,Hotkey,SeparatorFg,BracketFg,BracketBg}` — pressed/open state (defaults match dialog colors)
+
+### 9. Menu Item Bounds Tracking & Click Detection
 
 For mouse click detection, menu items track their console coordinates:
 
@@ -602,7 +749,7 @@ Show-MovementModifyDialog also supports **field click selection**: after button 
 
 **Important**: All three dialogs must clear `$script:DialogButtonBounds = $null` and `$script:DialogButtonClick = $null` in their cleanup code. The main loop's menu click detection is guarded by `$null -eq $script:DialogButtonBounds` — stale bounds will block all menu item clicks.
 
-### 9. Emoji Handling
+### 10. Emoji Handling
 
 Emojis display as 2 columns in the console but have string length of 1. With buffered rendering, emoji positions are computed statically (assuming 2 display cells) rather than reading `$Host.UI.RawUI.CursorPosition.X` after writing:
 
@@ -623,7 +770,7 @@ $emojiRedX = [char]::ConvertFromUtf32(0x274C)        # ❌
 $emojiMouse = [char]::ConvertFromUtf32(0x1F400)      # 🐀
 ```
 
-### 10. Log Array Structure
+### 11. Log Array Structure
 
 Log entries use a component-based structure for dynamic truncation:
 
@@ -647,7 +794,7 @@ $LogArray += [PSCustomObject]@{
 
 Priority determines display order when truncating. Components with lower priority numbers are shown first.
 
-### 11. Input Detection and State Tracking
+### 12. Input Detection and State Tracking
 
 Input detection uses four complementary mechanisms, each providing evidence for a specific input type:
 
@@ -680,7 +827,7 @@ $wasJustPressed = ($state -band 0x0001) -ne 0
 - `$scrollDetectedInInterval` - Boolean, set by `PeekConsoleInput` scroll events, persists across wait loop iterations
 - `$script:userInputDetected` - Boolean, set by any detection mechanism, triggers jiggler pause
 
-### 12. Movement Animation
+### 13. Movement Animation
 
 Mouse movement is animated over time for a natural appearance. The path is generated by `Get-SmoothMovementPath` which produces points with ease-in-out-cubic easing and optional curved paths:
 
@@ -723,6 +870,38 @@ Write-Buffer -Text "text" -FG $script:NewComponentColor -BG $script:NewComponent
 ```
 
 3. Update `resources/AGENTS.md` color categories table.
+
+### Icon/Separator Theme Variables
+
+Menu buttons and dialog buttons support toggling the emoji icon prefix and its separator character via two independent variable pairs:
+
+- `$script:MenuButtonShowIcon` / `$script:MenuButtonSeparator` — controls the `"👁 |"` prefix on all main menu bar buttons (including quit; the incognito-mode `(i)` button is text-only and unaffected)
+- `$script:DialogButtonShowIcon` / `$script:DialogButtonSeparator` — controls the `"✅ |"` / `"❌ |"` prefix on action buttons inside the Quit, Time, and Move dialogs
+
+**How they are consumed:**
+- `$menuIconWidth = if ($script:MenuButtonShowIcon) { 2 + $script:MenuButtonSeparator.Length } else { 0 }` is computed once at the top of the menu width calculation block and reused for all format-0 items, `$quitWidth`, `$itemDisplayWidth`, and the render loop.
+- Each dialog computes `$dlgIconWidth` (or `$_dlgIW` / `$_moveDlgIW` inside scriptblocks) with the same pattern and uses it for both rendering positions and click-detection bounds.
+- Button click bounds (`$script:DialogButtonBounds`) are always computed using `$dlgIconWidth` so click detection stays accurate regardless of the setting.
+
+### Bracket Wrapping Theme Variables
+
+Menu buttons and dialog buttons optionally wrap their full content in `[ ]` brackets with independent color control:
+
+**Main menu buttons:**
+- `$script:MenuButtonShowBrackets` (`$false`) — when `$true`, renders `[` before and `]` after the full button content (including icon)
+- `$script:MenuButtonBracketFg` / `$script:MenuButtonBracketBg` — normal-state bracket colors
+- `$script:MenuButtonOnClickBracketFg` / `$script:MenuButtonOnClickBracketBg` — pressed-state bracket colors
+- `$script:MenuButtonOnClickSeparatorFg` — dedicated onclick color for the `|` separator (previously inherited from `MenuButtonOnClickFg`)
+
+**Dialog buttons (Quit, Time, Move):**
+- `$script:DialogButtonShowBrackets` (`$false`) — when `$true`, renders `[` before and `]` after each dialog action button
+- `$script:DialogButtonBracketFg` / `$script:DialogButtonBracketBg` — bracket colors (`$null` BG = terminal default, transparent over dialog background)
+
+**How brackets affect layout:**
+- `$menuBracketWidth = if ($script:MenuButtonShowBrackets) { 2 } else { 0 }` is computed alongside `$menuIconWidth` and added to `$format0Width`, `$quitWidth`, and `$itemDisplayWidth`.
+- Each dialog computes `$dlgBracketWidth` (or `$_dlgBW` / `$_moveDlgBW`) and applies it to `$bottomLinePadding`/`$buttonPadding`, `$btn2X`, and all four click-bound variables.
+- In render code, a local `$contentX` offset (`$btnXX + 1` when brackets are on) is used so icon/text always render at the correct column regardless of bracket state.
+- `$script:MenuItemsBounds` entries now include `pipeFg`, `bracketFg`, `bracketBg`, `onClickPipeFg`, `onClickBracketFg`, `onClickBracketBg` fields so `Write-ButtonImmediate` can restore exact colors on drag-off.
 
 ### Adding a New Parameter
 
@@ -992,26 +1171,28 @@ No external dependencies - the script is fully self-contained.
 |-----------|------------------|
 | Parameters | 41-120 |
 | Box Characters | 124-132 |
-| Theme Colors | 134-210 |
+| Theme Colors (incl. BorderPadV/H, HeaderBg, FooterBg, HeaderRowBg, MenuRowBg) | 134-210 |
 | Show-StartupScreen | ~220-252 |
 | Show-StartupComplete | ~253-355 |
 | Invoke-ResizeHandler | ~341-382 |
 | Find-WindowHandle | ~384-470 |
 | P/Invoke Types | ~700-980 |
-| Buffered Rendering Functions (Write-Buffer, Flush-Buffer, Write-ButtonImmediate) | ~1663-1780 |
-| Draw-DialogShadow / Clear-DialogShadow | ~1785-1830 |
-| Show-TimeChangeDialog | ~1835-2410 |
-| Draw-ResizeLogo | ~2495-2610 |
-| Get-MousePosition / Test-MouseMoved | ~2615-2650 |
-| Write-SimpleDialogRow / Write-SimpleFieldRow | ~2716-2790 |
-| Show-MovementModifyDialog | ~2792-3520 |
-| Show-QuitConfirmationDialog | ~3525-3720 |
-| $oldWindowSize / $OldBufferSize init (pre-main-loop) | ~3944-3950 |
-| Main Loop Start | ~3955 |
-| Wait Loop | ~3970-4860 |
-| Resize Detection (wait loop, calls Invoke-ResizeHandler) | ~4760-4855 |
-| Resize Detection (outside wait loop, calls Invoke-ResizeHandler) | ~4900-4960 |
-| UI Rendering | ~5100-6050 |
-| Menu Rendering | ~5700-6050 |
+| Buffered Rendering (Write-Buffer w/ -NoWrap, Flush-Buffer, Write-ButtonImmediate) | ~1920-1980 |
+| Draw-DialogShadow / Clear-DialogShadow | ~1985-2030 |
+| Show-TimeChangeDialog | ~2035-2660 |
+| Draw-ResizeLogo | ~2870-2960 |
+| Get-MousePosition / Test-MouseMoved | ~2965-3000 |
+| Write-SimpleDialogRow / Write-SimpleFieldRow | ~3060-3140 |
+| Show-MovementModifyDialog | ~3145-3920 |
+| Show-QuitConfirmationDialog | ~3925-4240 |
+| Show-SettingsDialog | ~4245-4700 |
+| Show-InfoDialog | ~4700+ |
+| $oldWindowSize / $OldBufferSize init (pre-main-loop) | ~5150-5160 |
+| Main Loop Start | ~5165 |
+| Wait Loop | ~5180-6050 |
+| Resize Detection (wait loop) | ~5950-6050 |
+| UI Rendering — chrome rows (header blank, header, separators, footer blank) | ~6300-6910, ~7280-7730 |
+| UI Rendering — log rows + stats box | ~7078-7275 |
+| Menu Bar Render | ~7370-7700 |
 
 *Note: Line numbers are approximate and shift as code is modified.*

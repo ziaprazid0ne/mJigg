@@ -6,7 +6,104 @@ All notable changes to `start-mjig.ps1` are documented in this file.
 
 ## [Latest] - Unreleased
 
-Changes since last commit (cee9bf8 - "VT100 flicker-free rendering, clickable buttons via PeekConsoleInput, buffered frame output"):
+Changes since last commit (bb04ba8 - "Startup screen, unified resize handler, mouse click UP with per-button colors"):
+
+### Added
+- **`$script:Output`** — script-scoped copy of the `$Output` parameter, initialized at startup alongside the other `$script:*` parameter copies. Allows dialogs and the main loop to share and modify the output mode via a consistent variable.
+- **`$script:DebugMode`** — script-scoped copy of `$DebugMode`, initialized as `[bool]$DebugMode` at startup. Enables runtime toggling of debug mode from the Settings dialog; synced back to `$DebugMode` in the main loop after the dialog closes.
+- **Inline output toggle in Settings dialog (row 8)** — replaces the old `(o)utput` sub-dialog button. Clicking or pressing `o` inside Settings cycles `$script:Output` between `"full"` and `"min"` immediately, displaying the current mode as `(o)utput: Full` or `(o)utput: Min`. No sub-dialog or screen repaint needed.
+- **Inline debug toggle in Settings dialog (row 10)** — new `🔍|(d)ebug: On/Off` row. Clicking or pressing `d` toggles `$script:DebugMode`. Shows `On ` or `Off` as the current state. Both toggled values log a change entry.
+- **`$emojiDebug` (🔍, U+1F50D)** — magnifying glass emoji used for the debug row in the Settings dialog.
+
+### Changed
+- **Settings dialog height** — expanded from 10 to 12 rows to accommodate the output toggle (row 8), debug toggle (row 10), and their blank spacer rows (9, 11).
+- **`$calcButtonVars`** — removed static `$outputPad`, `$outputButtonStartX/EndX` (pads are now dynamic per current mode); added `$outputButtonStartX/EndX` and `$debugButtonStartX/EndX` as full inner-row clickable areas (`$dialogX + 1` to `$dialogX + $dialogWidth - 2`).
+- **`$dialogLines` array** — extended from 11 entries (indices 0-10) to 13 entries (indices 0-12) for the expanded layout.
+- **`$drawSettingsDialog` render scriptblock** — rows 8 and 10 now compute dynamic label text and padding at render time (reading `$script:Output` / `$script:DebugMode`) and call `$drawSettingsBtnRow` directly; bottom border moved to `$dialogHeight` (row 12).
+- **`(o)` hotkey in main loop** — now also sets `$script:Output = $Output` after toggling to keep script scope in sync with local var.
+- **Incognito toggle (`i` hotkey)** — now also sets `$script:Output = $Output` after the mode change.
+- **Settings dialog call sites** — both the primary `s`-hotkey handler and the `$script:PendingReopenSettings` reopen path now sync `$DebugMode = $script:DebugMode` (and the existing `$Output = $script:Output`) after the dialog returns.
+- **`$Output` ValidateSet** — removed `"dib"` (was a placeholder; no separate rendering path existed). Accepted values are now `"min"`, `"full"`, `"hidden"`.
+
+### Removed
+- **`Show-OutputSelectDialog`** — full-screen centered picker dialog for output mode. Replaced by the inline toggle in the Settings dialog.
+- **`OutputDialog*` theme variables** — `$script:OutputDialogBg/Shadow/Border/Title/Text/SelectedFg/SelectedBg/ButtonBg/ButtonText/ButtonHotkey` removed since the dialog they styled no longer exists.
+
+
+- **`$script:MenuButtonShowIcon`** (`$true`) — show/hide the emoji icon prefix on all main menu bar buttons. When `$false` the emoji and separator are omitted and the label starts at the button's left edge.
+- **`$script:MenuButtonSeparator`** (`"|"`) — the separator character rendered between the icon and label on main menu buttons. Any single character (or short string) works.
+- **`$script:MenuButtonOnClickSeparatorFg`** (`"Black"`) — dedicated pressed-state color for the `|` separator on main menu buttons. Previously inherited from `MenuButtonOnClickFg`.
+- **`$script:MenuButtonShowBrackets`** (`$false`) — when `$true`, wraps each main menu button in `[ ]` brackets (e.g. `"[👁 |toggle_(v)iew]"`).
+- **`$script:MenuButtonBracketFg`** (`"DarkCyan"`) / **`$script:MenuButtonBracketBg`** (`"DarkBlue"`) — normal-state foreground and background colors for main menu button brackets.
+- **`$script:MenuButtonOnClickBracketFg`** (`"Black"`) / **`$script:MenuButtonOnClickBracketBg`** (`"DarkCyan"`) — pressed-state bracket colors for main menu buttons.
+- **`$script:DialogButtonShowIcon`** (`$true`) — show/hide the emoji icon prefix (`✅`/`❌`) on action buttons in the Quit, Time, and Move dialogs.
+- **`$script:DialogButtonSeparator`** (`"|"`) — the separator character rendered between the icon and label on dialog buttons.
+- **`$script:DialogButtonShowBrackets`** (`$false`) — when `$true`, wraps each dialog action button in `[ ]` brackets (e.g. `"[✅ |(u)pdate]"`).
+- **`$script:DialogButtonBracketFg`** (`"White"`) / **`$script:DialogButtonBracketBg`** (`$null`) — bracket colors for dialog buttons. `$null` background = terminal default, which renders transparent over the dialog background.
+- **`$script:MenuButtonShowHotkeyParens`** (`$false`) / **`$script:DialogButtonShowHotkeyParens`** (`$false`) — independently control whether `()` appear around hotkey letters on menu bar buttons and dialog buttons respectively. The letter is still highlighted in its hotkey color when parens are hidden.
+- **Per-button hotkey colors** — `$script:MenuButtonHotkey`, `$script:MenuButtonOnClickHotkey`, `$script:QuitButtonHotkey`, `$script:QuitButtonOnClickHotkey`, `$script:SettingsButtonHotkey`, `$script:SettingsButtonOnClickHotkey`, `$script:DialogButtonButtonHotkey` — independent hotkey letter foreground colors for each button group/state.
+- **`(o)utput` mode button in header** — replaces the old `(v)iew` toggle. Displays as `[(o)utput]` (clickable) with `|` separator and current mode name (`Full` / `Min`) rendered as non-clickable decorative text after the button. Hotkey changed from `v` to `o`.
+- **Hidden clickable regions in header** — "End⏳/HH:MM" opens the Set End Time dialog; "Current⏳/HH:MM" opens Windows date/time settings (`control.exe timedate.cpl`); mJig logo opens the Info dialog. All are invisible (no visual button styling).
+- **`Show-InfoDialog`** — info/about dialog showing current version, update check via GitHub Releases API (`https://github.com/ziaprazid0ne/mJig`), and configuration summary. Accessible via `?`, `/`, mJig logo click, or `[?]` help button.
+- **`[?]` help menu button** — shown in full output mode only (hidden in minimal/narrow views). Hotkeys `?` and `/`. Positioned to the right of the gap, left of Quit. Opens the Info dialog.
+- **`Show-QuitConfirmationDialog` repositioned** — dialog now appears right-aligned, bottom-docked above the menu separator, no drop shadow. Padding: 1 blank row/column on top, left, right (but not bottom) using terminal-default background for a clean pop-over appearance.
+- **Quit dialog slide-up animation** — animates from behind the separator/menu bar using a clip-from-below reveal. 9 frames, 15ms per frame. The box appears to rise from behind the menu bar rather than appearing on top of it.
+- **Separate quit button theme variables** — `$script:QuitButton{Bg,Text,Hotkey,SeparatorFg,BracketFg,BracketBg}` / `QuitButtonOnClick{Bg,Fg,Hotkey,SeparatorFg,BracketFg,BracketBg}` allow independent styling for the quit button. `OnClick*` defaults match the Quit dialog colors.
+- **`Show-SettingsDialog`** — slide-up mini-dialog consolidating end-time and movement configuration. Replaces `set_end_time` and `modify_movement` menu buttons with a single `(s)ettings` button. Two stacked option buttons: `[⏳|(t)ime]` and `[🛠|(m)ovement]`. Hotkey `s`.
+- **Settings dialog onfocus/offfocus states** — dialog dims to offfocus colors while a sub-dialog (time/movement) is open, returns to onfocus when the sub-dialog closes.
+- **Settings dialog sub-dialog background cleanup** — when a sub-dialog closes inside Settings, the full main screen is repainted before Settings reopens (via `$script:PendingReopenSettings` flag + `SkipAnimation = $true` on reopen). Prevents blank/corrupted log areas behind the reopened settings box.
+- **Settings dialog re-click to close** — clicking the `(s)ettings` menu button while the dialog is visible closes it.
+- **`$script:SettingsDialog{Bg,Border,Title,Text,ButtonBg,ButtonText,ButtonHotkey}`** and **`SettingsDialogOffFocus*`** — onfocus and offfocus color sets for the Settings dialog.
+- **`$script:SettingsButton*`** — dedicated theme variables for the Settings menu bar button (normal and onclick states). `OnClick*` defaults match `SettingsDialog*` so the button highlights to match the open dialog.
+- **`$script:PendingReopenSettings`** — script-scoped flag used by the main loop to reopen Settings after a full screen repaint following a sub-dialog close.
+- **System timezone / time change detection** — `[System.TimeZoneInfo]::ClearCachedData()` called at the top of each main loop iteration so the displayed current time updates immediately when the system clock or timezone is changed.
+- **`(i)ncognito` button replaces `(h)ide_output`** — the menu button label is now `(i)ncognito` with hotkey `i`. The minimal `(i)` button shown in incognito mode also uses hotkey `i`. The old `h` hotkey no longer does anything. In incognito mode, only `i` (exit incognito) and `q` (quit) are processed; all other hotkeys are blocked.
+
+### Changed
+- **Menu button rendering** — the `menuFormat -eq 0` path in the main render loop, quit item render, and `Write-ButtonImmediate` all now branch on `$script:MenuButtonShowIcon`/`$script:MenuButtonShowBrackets` and use `$script:MenuButtonSeparator` instead of the hardcoded `"|"`. A local `$contentX` offset shifts icon/text by 1 when brackets are on.
+- **Menu width calculations** — `$menuBracketWidth` (`2` or `0`) added alongside `$menuIconWidth` and included in `$format0Width`, `$quitWidth`, and `$itemDisplayWidth` so the format auto-select logic stays correct in all combinations.
+- **`$script:MenuItemsBounds` schema** — every bounds entry now also stores `pipeFg`, `bracketFg`, `bracketBg`, `onClickPipeFg`, `onClickBracketFg`, `onClickBracketBg` so `Write-ButtonImmediate` can restore exact colors on drag-off.
+- **`Write-ButtonImmediate` signature** — added optional `$pipeFg`, `$bracketFg`, `$bracketBg` parameters (default to script-scope vars). Both call sites (LMB DOWN and drag-off UP) now resolve and pass the appropriate normal/onclick bracket colors from the bounds entry.
+- **Dialog button rendering** — all three dialogs (Quit, Time, Move) compute `$dlgBracketWidth` and conditionally render `[`/`]` around each button. Button `$contentX` offsets and `$btn2X` include the bracket width.
+- **Dialog padding** — `$bottomLinePadding` / `$buttonPadding` formulas updated to subtract `2 * $dlgBracketWidth` so the border column is still reached in all combinations of icon and bracket settings.
+- **Dialog click bounds** — `$updateButtonStartX/EndX` and `$cancelButtonStartX/EndX` (and their resize-handler counterparts) now include `$dlgBracketWidth` / `$_moveDlgBW` so click detection remains accurate regardless of icon and bracket settings.
+- **`modify_(m)ovement` hotkey changed** — was previously mapped differently; `m` now opens the Settings dialog (which contains movement) when not in hidden mode, and works in full and minimal output modes (previously full only).
+- **`(o)utput` mode button hotkey** — changed from `v` to `o`; button label changed from `(m)ode` to `(o)utput`.
+- **Settings dialog width** — reduced from 35 to 24 columns for a tighter visual fit.
+- **`o` (output toggle) blocked in incognito mode** — adding `$Output -ne "hidden"` guard prevents `o` from exiting incognito; only `i` can do so.
+- **Info dialog hotkey `i` removed** — `i` is now the incognito toggle. Info dialog remains accessible via `?`, `/`, mJig logo click, and the `[?]` help button.
+
+### Fixed
+- **Dialog clear area off-by-one** — clear loops in `Show-TimeChangeDialog`, `Show-MovementModifyDialog`, `Show-QuitConfirmationDialog`, and `Show-InfoDialog` now use `$i -le $dialogHeight` (was `$i -lt`), ensuring the bottom border row is always cleared when a dialog closes.
+
+
+### Added (UI Layout & Theming overhaul)
+
+- **`$script:BorderPadV`** (`3`) — replaces `$script:BorderPad` for the **top/bottom** blank-row border count. Minimum 1. Controls how many rows of padding appear above the header and below the menu bar. Only the innermost row of each group receives the `HeaderBg` / `FooterBg` color; extra rows beyond 1 stay transparent (default background, ANSI 49).
+- **`$script:BorderPadH`** (`3`) — new companion variable for the **left/right** column border width. Minimum 1. Governs how many columns of padding appear on each side of every chrome row. Only the innermost column (`X = $_bpH - 1` and `X = $HostWidth - $_bpH`) carries the group background; outer columns are transparent.
+- **`$script:HeaderBg`** — background color applied to the 3-row header group: the top blank, the header content row, and the top separator.
+- **`$script:FooterBg`** — background color applied to the 3-row footer group: the bottom separator, the menu bar content row, and the bottom blank.
+- **`$script:HeaderRowBg`** (`"DarkGray"`) — background color applied **only** to the header content row, inset by `$_bpH` on each side so it does not bleed into the padding columns.
+- **`$script:MenuRowBg`** (`"DarkGray"`) — background color applied **only** to the menu bar content row, with the same inset logic.
+- **`Write-Buffer -NoWrap` switch** — disables ANSI auto-wrap (`\e[?7l`) before the segment and re-enables it (`\e[?7h`) after. Used when writing to the last character of the last console row to prevent an unwanted scroll. Stored as a `NoWrap` flag in each `RenderQueue` entry.
+- **2-char inner row padding** — header and menu bar rows now include 2 explicit row-bg spaces (`$_hrBg` / `$_mrBg`) just inside the group-bg char on each side, so content is not flush against the background boundary.
+
+### Changed (UI Layout & Theming overhaul)
+
+- **`$script:BorderPad` removed** — replaced by `$script:BorderPadV` and `$script:BorderPadH`. Local render variable `$_bp` split into `$_bpV` (vertical calculations) and `$_bpH` (horizontal calculations).
+- **Header content start X** — "mJig(" and all subsequent header elements now begin at `X = $_bpH + 2` (group-bg char + 2-char inner padding). `$headerLeftWidth` updated to exclude the removed leading spaces; `$remainingSpace` reduced by `2 * ($_bpH + 2)` to keep clock centering accurate.
+- **`$script:HeaderLogoBounds.startX`** updated to `$_bpH + 2` to match the new content position.
+- **Menu bar content start X** — `$currentMenuX` now starts at `$_bpH + 2`; the leading `"  "` write removed. Quit button anchored to `$HostWidth - $_bpH - 2 - $quitWidth`.
+- **Transparent outer padding on all chrome rows** — all coloured rows (header blank, header content, top separator, bottom separator, menu content, footer blank) now write `$_bpH - 1` transparent-bg spaces on each outer side instead of filling the full `$_bpH` columns with group background. This matches the existing top/bottom blank-row transparency behaviour.
+- **Log area respects `$_bpH`** — `$logWidth` reduced by `2 * $_bpH` (plus `+1` right-side extension to reach the group-bg char column). `$logStartX = $_bpH - 2` (flush with the group-bg char). `$availableWidth = $logWidth + 2`. Stats-box separator X = `$_bpH + $logWidth + 1`. `$showStatsBox` minimum-width threshold increased by `2 * $_bpH`.
+- **`$Rows` formula** — uses `$_bpV` instead of the removed `$_bp`. `$Rows = [math]::Max(1, $HostHeight - 4 - 2 * $_bpV)`.
+- **Footer blank NoWrap path** — when `$_bpV = 1` **and** `$_bpH > 1`, each side of the footer blank is written as separate segments (transparent left, group-bg centre, transparent right with `-NoWrap` on the last segment) to prevent the console scroll while still achieving full-width background coverage.
+
+---
+
+## [bb04ba8] - 2026-02-27
+
+Changes since last commit (ccb6b63 - "Cleaning things up."):
 
 ### Added
 - **`Show-StartupScreen` function** - Initial "Initializing..." loading screen shown at script start (skipped in `-DebugMode` and `-Output hidden`). Runs before VT100 is fully set up so it uses `Write-Host`. Shows a decorative box with "mJig is starting up..." messaging.

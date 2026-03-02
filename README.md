@@ -8,12 +8,13 @@ A feature-rich PowerShell mouse jiggler with a console-based TUI, designed to ke
 - **User Input Detection**: Automatically pauses when you're actively using mouse/keyboard
 - **Auto-Resume Delay**: Configurable cooldown timer after user input before resuming automation
 - **Scheduled Stop Time**: Set a specific end time with optional variance for natural patterns
-- **Multiple View Modes**: Full, minimal, or hidden interface
-- **Interactive Dialogs**: Modify settings on-the-fly without restarting
+- **Multiple View Modes**: Full, minimal, or incognito (hidden) interface
+- **Interactive Dialogs**: Modify settings on-the-fly without restarting via the consolidated Settings dialog
 - **Mouse Stutter Prevention**: Waits for mouse to settle before starting next movement cycle
 - **Startup Screen**: Loading and initialization-complete screens on startup; auto-continues after 7 seconds if parameters were passed, otherwise waits for a keypress
 - **Unified Window Resize Handling**: Centered logo with playful quotes during resize from any screen (startup, main loop, hidden mode); stays open while the mouse button is held so the UI never dismisses mid-drag
-- **Themeable UI**: Centralized color variables for easy customization
+- **Themeable UI**: Centralized color variables including configurable border padding (`BorderPadV` / `BorderPadH`) and layered group/row background colors for the header and footer chrome
+- **Info / About Dialog**: Version info and GitHub update check accessible via `?`, `/`, or clicking the mJig logo in the header
 - **Stats Box**: Real-time display of detected input categories (Mouse, Keyboard, mouse buttons, Scroll/Other) and movement statistics
 - **Polished Click Interactions**: Buttons highlight on press (mouse down), fire on release (mouse up); dragging off before releasing cancels the click
 - **Per-Button Color Theming**: Each button carries its own normal and onclick color set; pressed-state colors are resolved per-button at render time
@@ -80,26 +81,37 @@ While running, use these keyboard shortcuts:
 | Key | Action |
 |-----|--------|
 | `q` | Open quit confirmation dialog |
-| `t` | Set/change end time |
-| `v` | Toggle between full/min view |
-| `h` | Toggle hidden mode |
-| `m` | Open movement settings dialog (full view only) |
+| `s` | Open Settings dialog (end time, movement, output mode, debug toggle) |
+| `t` | Set/change end time (also accessible via Settings) |
+| `m` | Open movement settings (also accessible via Settings) |
+| `o` | Toggle between full/min output view |
+| `i` | Toggle incognito (hidden) mode |
+| `?` or `/` | Open Info/About dialog |
 
-You can also click menu buttons with your mouse. Buttons respond visually on press (onclick highlight color) and fire the action on release. Dragging the mouse off a button before releasing cancels the action. When a button opens a dialog, it stays highlighted for the duration of that dialog to indicate which menu is active.
+You can also click menu buttons with your mouse. Buttons respond visually on press (onclick highlight color) and fire the action on release. Dragging the mouse off a button before releasing cancels the action. When a button opens a dialog, it stays highlighted for the duration of that dialog to indicate which menu is active. Clicking the mJig logo in the header opens the Info dialog.
 
 ### Dialogs
 
-**Modify Movement Settings** (`m` key in full view):
+**Settings** (`s` key) — slide-up dialog above the menu bar:
+- `end_(t)ime` — open end-time picker
+- `mouse_(m)ovement` — open movement settings
+- `(o)utput: Full/Min` — inline toggle between full and minimal view
+- `(d)ebug: On/Off` — inline toggle for debug mode
+
+**Modify Movement Settings** (`m` key or via Settings):
 - Interval timing and variance
-- Travel distance and variance  
+- Travel distance and variance
 - Movement speed and variance
 - Auto-resume delay timer
 
-**Set End Time** (`t` key):
+**Set End Time** (`t` key or via Settings):
 - Enter time in HHmm format (e.g., 1730 for 5:30 PM)
 
 **Quit Confirmation** (`q` key):
 - Displays runtime statistics before exiting
+
+**Info / About** (`?` or `/` key, or click the mJig logo):
+- Current version, GitHub link, and configuration summary
 
 ## View Modes
 
@@ -113,10 +125,10 @@ You can also click menu buttons with your mouse. Buttons respond visually on pre
 - Header with essential info
 - Menu bar only (no log or stats)
 
-### Hidden Mode
-- Minimal display: status line and clickable `(h)` button in bottom-right corner
-- Hotkeys still functional
-- Click `(h)` or press `h` to return to previous view
+### Hidden / Incognito Mode
+- Minimal display: status line and clickable `(i)` button in bottom-right corner
+- Only `i` (exit incognito) and `q` (quit) are processed; all other hotkeys blocked
+- Click `(i)` or press `i` to return to the previous view
 - Perfect for background operation
 
 ## Configuration
@@ -127,13 +139,17 @@ Movement and timing can be adjusted via:
 
 ### Theme Customization
 
-Colors are defined as `$script:` variables in the Theme Colors section (around line 214). Groups include:
-- Menu bar colors — normal state (`MenuButtonBg`, `MenuButtonText`, `MenuButtonHotkey`, `MenuButtonPipe`) and pressed/onclick state (`MenuButtonOnClickBg`, `MenuButtonOnClickFg`, `MenuButtonOnClickHotkey`)
-- Header colors
-- Stats box colors
-- Dialog colors (Quit, Time, Movement)
-- Resize screen colors
-- General UI colors
+Colors and layout are defined as `$script:` variables in the Theme Colors section (around line 134). Groups include:
+
+- **Menu bar** — normal state (`MenuButtonBg`, `MenuButtonText`, `MenuButtonHotkey`) and pressed/onclick state (`MenuButtonOnClickBg`, `MenuButtonOnClickFg`, `MenuButtonOnClickHotkey`)
+- **Chrome padding** — `$script:BorderPadV` (blank rows above/below, min 1) and `$script:BorderPadH` (blank columns left/right, min 1) control the space around the main content area
+- **Header group bg** — `$script:HeaderBg` colors the 3-row strip at the top (blank + header row + separator); only the innermost padding column on each side carries this color
+- **Footer group bg** — `$script:FooterBg` colors the 3-row strip at the bottom (separator + menu row + blank); same transparency rules
+- **Row backgrounds** — `$script:HeaderRowBg` and `$script:MenuRowBg` color only the content row within each group, inset by `BorderPadH` so they do not bleed into the side padding
+- **Stats box** — `StatsBox*` colors
+- **Dialogs** — `QuitDialog*`, `SettingsDialog*`, `TimeDialog*`, `MoveDialog*`
+- **Resize screen** — `Resize*`
+- **General UI** — `Text*`
 
 ## How It Works
 
@@ -153,10 +169,11 @@ Colors are defined as `$script:` variables in the Theme Colors section (around l
 
 ## Diagnostics
 
-Enable with `-Diag` flag. Creates log files in `_diag/` (same directory as the script):
+Enable with `-Diag` flag. Creates log files in `_diag/` at the **project root** (`c:\Projects\mJigg\_diag\`):
 - `startup.txt` - Initialization diagnostics
 - `settle.txt` - Mouse settle detection logs
 - `input.txt` - Input detection logs (PeekConsoleInput + GetLastInputInfo)
+- `welcome.txt` - Welcome-screen resize diagnostics (**always written** even without `-Diag`)
 
 ## License
 
