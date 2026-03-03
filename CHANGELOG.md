@@ -6,6 +6,29 @@ All notable changes to `start-mjig.ps1` are documented in this file.
 
 ## [Latest] - Unreleased
 
+Changes since last commit (3ee5163 - "Configurable border padding, layered chrome backgrounds, log/menu layout refinements"):
+
+### Performance
+- **`$LogArray` ring buffer** — replaced the plain `@()` array (fully rebuilt every frame via 40+ `+=` operations) with a `System.Collections.Generic.List[object]`. Per-frame update now calls `RemoveAt(0)` + `Add()` instead of cloning and rebuilding the entire array. Eliminates ~40 array copies and ~40 `PSCustomObject` allocations per main loop iteration. A defensive re-wrap converts any plain array (e.g., from dialog `+=` usage) back to a List at the top of each render cycle.
+- **`$points` pre-allocation in `Get-SmoothMovementPath`** — replaced `$points = @()` + `+=` in the easing loop with a fixed-size `[object[]]::new($numPoints + 1)` array. Eliminates ~100 array-copy operations per movement cycle.
+- **Hot-loop object hoisting** — pre-allocated `$_waitPeekBuffer` (32-element `INPUT_RECORD[]`), `$lii` (`LASTINPUTINFO`), and `$pressedMenuKeys` before the main loop; cleared/reused each iteration instead of reallocating every 50ms tick. Replaced `$intervalMouseInputs` plain `@()` array with a `System.Collections.Generic.HashSet[string]`; all `-notcontains` + `+=` patterns replaced with `HashSet.Add()` (O(1), no reallocation).
+- **`TimeZoneInfo.ClearCachedData()` rate-limited** — moved from every main loop iteration to at most once per hour via a `$lastTzCacheClear` timestamp check. Eliminates unnecessary OS timezone re-queries every 2-4 seconds.
+- **`$script:MenuItemsBounds` converted to `List[hashtable]`** — `.Clear()` and `.Add()` replace the `= @()` + `+=` pattern on every render frame, eliminating per-frame array reallocations for menu click bounds.
+- **`$date` refreshed in wait loop** — `$date = Get-Date` now runs at the top of each 50ms `:waitLoop` tick. All duplicate `(Get-Date).ToString("HH:mm:ss")` pairs in the main loop body now use `$date.ToString("HH:mm:ss")`, eliminating redundant DateTime allocations.
+
+### Added
+- **`Start-mJig.psm1`** — the script has been converted to a true PowerShell module. `start-mjig.ps1` is replaced by `Start-mJig.psm1` (same content, new format). Load with `Import-Module .\Start-mJig\Start-mJig.psm1` then call `Start-mJig`.
+- **`Start-mJig.psd1`** — module manifest declaring version `1.0.0`, GUID, `FunctionsToExport = @('Start-mJig')`, `RequiredAssemblies = @('System.Windows.Forms')`, and PSData tags.
+- **Module Runspace Provisioner** (lines ~71-100 of `Start-mJig.psm1`) — on every call from the user's session, `Start-mJig` transparently provisions a fresh `InitialSessionState::CreateDefault2()` runspace (no profile, no PSModulePath modules, no user aliases/variables) with the caller's `$Host` passed through for console TUI access and `ApartmentState = STA`. The function re-invokes itself inside that runspace with all parameters forwarded, then `return`s. The provisioned runspace is disposed in a `finally` block on exit.
+- **`[switch]$_InModuleRunspace`** — hidden private parameter (`[Parameter(DontShow = $true)]`) added to `Start-mJig`. Set to `$true` only by the provisioner on re-entry. Prevents recursive provisioning with no global scope usage and no cleanup required.
+
+### Removed
+- **`start-mjig.ps1`** — replaced by `Start-mJig.psm1`. A backup was saved to `.backups/start-mjig.ps1.bak4`.
+
+---
+
+## [3ee5163] - 2026-02-28
+
 Changes since last commit (bb04ba8 - "Startup screen, unified resize handler, mouse click UP with per-button colors"):
 
 ### Added

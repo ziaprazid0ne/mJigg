@@ -1,4 +1,4 @@
-﻿function Start-mJig {
+function Start-mJig {
 
 	#############################################################
 	## mJig - An overly complex powershell mouse jiggling tool ##
@@ -63,8 +63,41 @@
 		[Parameter(Mandatory = $false)]
 		[double]$TravelVariance = 5,  # Maximum random variance in travel distance (in pixels)
 		[Parameter(Mandatory = $false)]
-		[double]$AutoResumeDelaySeconds = 0  # Timer in seconds that resets on user input detection. When > 0, coordinate updates and simulated key presses are skipped.
+		[double]$AutoResumeDelaySeconds = 0,  # Timer in seconds that resets on user input detection. When > 0, coordinate updates and simulated key presses are skipped.
+		[Parameter(Mandatory = $false, DontShow = $true)]
+		[switch]$_InModuleRunspace  # Internal: set by the provisioner on re-entry. Never passed by users.
 	)
+
+	# ---- Module Runspace Provisioner ------------------------------------------------
+	# Ensures Start-mJig always runs inside a fresh, isolated runspace provisioned by
+	# this module — separate from the caller's session state, profile, and loaded modules.
+	# $_InModuleRunspace is a hidden parameter passed only by this block on re-entry;
+	# it is never visible to or settable by users (DontShow + underscore convention).
+	if (-not $_InModuleRunspace) {
+		$_modPath = Join-Path $PSScriptRoot 'Start-mJig.psm1'
+		$_iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+		$_rs  = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($Host, $_iss)
+		$_rs.ApartmentState = [System.Threading.ApartmentState]::STA
+		$_rs.Open()
+		$_ps = [System.Management.Automation.PowerShell]::Create()
+		$_ps.Runspace = $_rs
+		try {
+			$null = $_ps.AddScript("Import-Module '$_modPath'")
+			$null = $_ps.AddStatement().AddCommand('Start-mJig')
+			$null = $_ps.AddParameter('_InModuleRunspace', $true)
+			foreach ($_kvp in $PSBoundParameters.GetEnumerator()) {
+				$null = $_ps.AddParameter($_kvp.Key, $_kvp.Value)
+			}
+			$_ps.Invoke()
+			if ($_ps.HadErrors) { $_ps.Streams.Error | ForEach-Object { Write-Error $_ } }
+		} finally {
+			$_ps.Dispose()
+			$_rs.Close()
+			$_rs.Dispose()
+		}
+		return
+	}
+	# ---- End Module Runspace Provisioner --------------------------------------------
 
 	############
 	## Preparing ##
@@ -92,7 +125,7 @@
 	$script:PendingForceRedraw = $false
 	$PreviousView = $null  # Store the view before hiding to restore it later
 	$PosUpdate = $false
-	$LogArray = @()
+	$LogArray = New-Object 'System.Collections.Generic.List[object]'
 	$HostWidth = 0
 	$HostHeight = 0
 	$OutputLine = 0
@@ -133,6 +166,7 @@
 	$script:PendingDialogCheck = $false  # set on confirmed click; render loop uses it to decide whether to clear pressed state
 	$script:LButtonWasDown    = $false   # tracks previous LMB state from console events for UP-transition detection
 	$script:RenderQueue = New-Object 'System.Collections.Generic.List[hashtable]'
+	$script:MenuItemsBounds = New-Object 'System.Collections.Generic.List[hashtable]'
 	
 	# Box-drawing characters (using Unicode code points to avoid encoding issues)
 	$script:BoxTopLeft = [char]0x250C      # ┌
@@ -996,7 +1030,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 	}
 	try {
 		if ($Output -ne "hidden") {
-			$LogArray = @()
+			$LogArray = New-Object 'System.Collections.Generic.List[object]'
 			if ($DebugMode) {
 				Write-Host "  [OK] Output mode: $Output" -ForegroundColor $script:TextSuccess
 			}
@@ -1757,10 +1791,10 @@ namespace mJiggAPI {
 			$bodyCurveType   = Get-Random -Maximum 2  # 0 = U, 1 = S
 		}
 
-		# Generate points with acceleration/deceleration curve and optional path curve
-		# Use ease-in-out-cubic: accelerates in first half, decelerates in second half
-		$points = @()
-		for ($i = 0; $i -le $numPoints; $i++) {
+	# Generate points with acceleration/deceleration curve and optional path curve
+	# Use ease-in-out-cubic: accelerates in first half, decelerates in second half
+	$points = [object[]]::new($numPoints + 1)
+	for ($i = 0; $i -le $numPoints; $i++) {
 			# Normalized progress (0 to 1)
 			$t = $i / $numPoints
 			
@@ -1804,11 +1838,8 @@ namespace mJiggAPI {
 			$x = [Math]::Round($baseX)
 			$y = [Math]::Round($baseY)
 			
-			$points += [PSCustomObject]@{
-				X = $x
-				Y = $y
-			}
-		}
+		$points[$i] = [PSCustomObject]@{ X = $x; Y = $y }
+	}
 			
 			return @{
 				Points = $points
@@ -5192,6 +5223,16 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 	$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
 	$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
 
+	# Timezone cache invalidation: call ClearCachedData() at most once per hour
+	$lastTzCacheClear = $null
+
+	# Pre-allocate hot-path objects that are reused every iteration of the main loop
+	$intervalMouseInputs = New-Object 'System.Collections.Generic.HashSet[string]'
+	$pressedMenuKeys     = @{}
+	$_waitPeekBuffer     = New-Object 'mJiggAPI.INPUT_RECORD[]' 32
+	$lii                 = New-Object mJiggAPI.LASTINPUTINFO
+	$lii.cbSize          = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf([type][mJiggAPI.LASTINPUTINFO])
+
 	# Main Processing Loop
 	:process while ($true) {
 			$script:LoopIteration++
@@ -5201,14 +5242,17 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			$script:userInputDetected = $false
 			$keyboardInputDetected = $false
 			$mouseInputDetected = $false
-			$scrollDetectedInInterval = $false
-			$waitExecuted = $false
-			$intervalMouseInputs = @()
-			$interval = 0
+		$scrollDetectedInInterval = $false
+		$waitExecuted = $false
+		$intervalMouseInputs.Clear()
+		$interval = 0
 			$math = 0
+	if ($null -eq $lastTzCacheClear -or (Get-TimeSinceMs -startTime $lastTzCacheClear) -gt 3600000) {
 		[System.TimeZoneInfo]::ClearCachedData()
-		$date = Get-Date
-		$currentTime = $date.ToString("HHmm")
+		$lastTzCacheClear = Get-Date
+	}
+	$date = Get-Date
+	$currentTime = $date.ToString("HHmm")
 	$forceRedraw = $false
 	# If a sub-dialog was used inside settings, keep forceRedraw so the main
 	# render uses ClearFirst and we get a pristine background before reopening.
@@ -5220,7 +5264,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			$directionArrow = ""  # Track direction arrow for log display
 			$lastKeyPress = $null  # Reset key press tracking
 			$lastKeyInfo = $null  # Reset key info tracking
-			$pressedMenuKeys = @{}  # Track which menu keys are currently pressed (to detect key up)
+			$pressedMenuKeys.Clear()  # Reset per-iteration key-up tracking
 			
 			# Calculate interval and wait BEFORE doing movement (skip on first run or if forceRedraw)
 			if ($null -ne $LastMovementTime -and -not $forceRedraw) {
@@ -5252,10 +5296,11 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 				# Wait Loop - Check window/buffer size changes, menu hotkeys, and keyboard input
 				# Menu hotkeys checked every 200ms (every 4th iteration), keyboard input checked every 50ms for maximum reliability
 				$x = 0
-				:waitLoop while ($true) {
-					$x++
-					
-					# Check for system-wide keyboard input every 50ms for maximum reliability
+			:waitLoop while ($true) {
+				$x++
+				$date = Get-Date  # keep $date fresh each 50ms tick for accurate timestamps
+
+				# Check for system-wide keyboard input every 50ms for maximum reliability
 					# Skip checking if we recently sent a simulated key press (within last 300ms)
 					$shouldCheckKeyboard = (Get-TimeSinceMs -startTime $LastSimulatedKeyPress) -ge 300
 					if ($shouldCheckKeyboard) {
@@ -5285,15 +5330,12 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 								if (Test-MouseMoved -currentPos $currentCheckPos -lastPos $script:lastMousePosCheck -threshold 2) {
 									$script:LastMouseMovementTime = Get-Date
 									$mouseInputDetected = $true
-									$mouseMoveText = "Mouse"
-									if ($intervalMouseInputs -notcontains $mouseMoveText) {
-										$intervalMouseInputs += $mouseMoveText
-									}
-									if ($script:AutoResumeDelaySeconds -gt 0) {
-										$LastUserInputTime = Get-Date
-									}
+						$null = $intervalMouseInputs.Add("Mouse")
+								if ($script:AutoResumeDelaySeconds -gt 0) {
+									$LastUserInputTime = Get-Date
 								}
-								$script:lastMousePosCheck = $currentCheckPos
+							}
+							$script:lastMousePosCheck = $currentCheckPos
 							} elseif ($script:DiagEnabled) {
 								"$(Get-Date -Format 'HH:mm:ss.fff') - MOUSEPOS: Get-MousePosition returned NULL" | Out-File $script:InputDiagFile -Append
 							}
@@ -5305,11 +5347,11 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 						# Keyboard events are only peeked (not consumed) so the menu hotkey handler can still read them
 						$scrollDetected = $false
 						$script:ConsoleClickCoords = $null
-						try {
-							$peekBuffer = New-Object 'mJiggAPI.INPUT_RECORD[]' 32
-							$peekEvents = [uint32]0
-							$hStdIn = [mJiggAPI.Mouse]::GetStdHandle(-10)  # STD_INPUT_HANDLE
-							if ([mJiggAPI.Mouse]::PeekConsoleInput($hStdIn, $peekBuffer, 32, [ref]$peekEvents) -and $peekEvents -gt 0) {
+					try {
+						$peekBuffer = $_waitPeekBuffer
+						$peekEvents = [uint32]0
+						$hStdIn = [mJiggAPI.Mouse]::GetStdHandle(-10)  # STD_INPUT_HANDLE
+						if ([mJiggAPI.Mouse]::PeekConsoleInput($hStdIn, $peekBuffer, 32, [ref]$peekEvents) -and $peekEvents -gt 0) {
 								$hasScrollEvent = $false
 								$hasKeyboardEvent = $false
 								$lastScrollIdx = -1
@@ -5403,10 +5445,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 								if ($hasScrollEvent) {
 									$scrollDetected = $true
 									$scrollDetectedInInterval = $true
-									$otherText = "Scroll/Other"
-									if ($intervalMouseInputs -notcontains $otherText) {
-										$intervalMouseInputs += $otherText
-									}
+								$null = $intervalMouseInputs.Add("Scroll/Other")
 									$mouseInputDetected = $true
 									$script:userInputDetected = $true
 									if ($script:AutoResumeDelaySeconds -gt 0) {
@@ -5431,10 +5470,8 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 						# Keyboard and scroll are evidence-based (PeekConsoleInput).
 						# If GetLastInputInfo sees activity that wasn't classified as keyboard or scroll,
 						# it's almost certainly mouse movement.
-						try {
-							$lii = New-Object mJiggAPI.LASTINPUTINFO
-							$lii.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf([type][mJiggAPI.LASTINPUTINFO])
-							$liiResult = [mJiggAPI.Mouse]::GetLastInputInfo([ref]$lii)
+					try {
+						$liiResult = [mJiggAPI.Mouse]::GetLastInputInfo([ref]$lii)
 							if ($liiResult) {
 								$tickNow = [uint64][mJiggAPI.Mouse]::GetTickCount64()
 								$lastInputTick = [uint64]$lii.dwTime
@@ -5453,10 +5490,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 									if (-not $keyboardInputDetected -and -not $scrollDetectedInInterval -and -not $mouseInputDetected) {
 										$mouseInputDetected = $true
 										$script:LastMouseMovementTime = Get-Date
-										$mouseMoveText = "Mouse"
-										if ($intervalMouseInputs -notcontains $mouseMoveText) {
-											$intervalMouseInputs += $mouseMoveText
-										}
+										$null = $intervalMouseInputs.Add("Mouse")
 										if ($script:DiagEnabled) { "  >> userInput=TRUE idleMs=$systemIdleMs -> mouse (no kb/scroll/click evidence)" | Out-File $script:InputDiagFile -Append }
 									} else {
 										if ($script:DiagEnabled) { "  >> userInput=TRUE idleMs=$systemIdleMs (already classified: kb=$keyboardInputDetected ms=$mouseInputDetected scroll=$scrollDetectedInInterval)" | Out-File $script:InputDiagFile -Append }
@@ -5529,8 +5563,8 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 								$LogArray += [PSCustomObject]@{
 									logRow = $true
 									components = @(
-										@{ priority = 1; text = (Get-Date).ToString("HH:mm:ss"); shortText = (Get-Date).ToString("HH:mm:ss") },
-										@{ priority = 2; text = " - [DEBUG] LButton click at console ($consoleX,$consoleY), target: $clickTarget"; shortText = " - [DEBUG] Click ($consoleX,$consoleY) -> $clickTarget" }
+									@{ priority = 1; text = $date.ToString("HH:mm:ss"); shortText = $date.ToString("HH:mm:ss") },
+									@{ priority = 2; text = " - [DEBUG] LButton click at console ($consoleX,$consoleY), target: $clickTarget"; shortText = " - [DEBUG] Click ($consoleX,$consoleY) -> $clickTarget" }
 									)
 								}
 							}
@@ -5553,9 +5587,8 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 									0x05 { "XButton1" }
 									0x06 { "XButton2" }
 								}
-								if ($mouseButtonName -and $intervalMouseInputs -notcontains $mouseButtonName) {
-									$intervalMouseInputs += $mouseButtonName
-									$script:userInputDetected = $true
+							if ($mouseButtonName -and $intervalMouseInputs.Add($mouseButtonName)) {
+								$script:userInputDetected = $true
 									$mouseInputDetected = $true
 									if ($script:AutoResumeDelaySeconds -gt 0) {
 										$LastUserInputTime = Get-Date
@@ -5671,13 +5704,13 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 										logRow = $true
 										components = @(
 											@{
-												priority = 1
-												text = (Get-Date).ToString("HH:mm:ss")
-												shortText = (Get-Date).ToString("HH:mm:ss")
-											},
-											@{
-												priority = 2
-												text = " - [DEBUG] Quit dialog opened"
+										priority = 1
+											text = $date.ToString("HH:mm:ss")
+											shortText = $date.ToString("HH:mm:ss")
+										},
+										@{
+											priority = 2
+											text = " - [DEBUG] Quit dialog opened"
 												shortText = " - [DEBUG] Quit opened"
 											}
 										)
@@ -5705,13 +5738,13 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 											logRow = $true
 											components = @(
 												@{
-													priority = 1
-													text = (Get-Date).ToString("HH:mm:ss")
-													shortText = (Get-Date).ToString("HH:mm:ss")
-												},
-												@{
-													priority = 2
-													text = " - [DEBUG] Quit confirmed"
+											priority = 1
+												text = $date.ToString("HH:mm:ss")
+												shortText = $date.ToString("HH:mm:ss")
+											},
+											@{
+												priority = 2
+												text = " - [DEBUG] Quit confirmed"
 													shortText = " - [DEBUG] Quit confirmed"
 												}
 											)
@@ -5754,13 +5787,13 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 											logRow = $true
 											components = @(
 												@{
-													priority = 1
-													text = (Get-Date).ToString("HH:mm:ss")
-													shortText = (Get-Date).ToString("HH:mm:ss")
-												},
-												@{
-													priority = 2
-													text = " - [DEBUG] Quit canceled"
+												priority = 1
+												text = $date.ToString("HH:mm:ss")
+												shortText = $date.ToString("HH:mm:ss")
+											},
+											@{
+												priority = 2
+												text = " - [DEBUG] Quit canceled"
 													shortText = " - [DEBUG] Quit canceled"
 												}
 											)
@@ -5789,8 +5822,8 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 								components = @(
 									@{
 										priority = 1
-										text = (Get-Date).ToString("HH:mm:ss")
-										shortText = (Get-Date).ToString("HH:mm:ss")
+										text = $date.ToString("HH:mm:ss")
+										shortText = $date.ToString("HH:mm:ss")
 									},
 									@{
 										priority = [int]2
@@ -5814,9 +5847,9 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 						}
 						$PreviousView = $null
 					} else {
-						$PreviousView = $Output
-						$Output = "hidden"
-						$script:MenuItemsBounds = @()
+					$PreviousView = $Output
+					$Output = "hidden"
+					$script:MenuItemsBounds.Clear()
 					}
 					$script:Output = $Output
 						# Debug: Log incognito toggle
@@ -5829,8 +5862,8 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 								components = @(
 									@{
 										priority = 1
-										text = (Get-Date).ToString("HH:mm:ss")
-										shortText = (Get-Date).ToString("HH:mm:ss")
+										text = $date.ToString("HH:mm:ss")
+										shortText = $date.ToString("HH:mm:ss")
 									},
 									@{
 										priority = [int]2
@@ -5878,13 +5911,13 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 										logRow = $true
 										components = @(
 											@{
-												priority = 1
-												text = (Get-Date).ToString("HH:mm:ss")
-												shortText = (Get-Date).ToString("HH:mm:ss")
-											},
-											@{
-												priority = 2
-												text = " - [DEBUG] Movement dialog opened"
+										priority = 1
+											text = $date.ToString("HH:mm:ss")
+											shortText = $date.ToString("HH:mm:ss")
+										},
+										@{
+											priority = 2
+											text = " - [DEBUG] Movement dialog opened"
 												shortText = " - [DEBUG] Movement opened"
 											}
 										)
@@ -5906,13 +5939,13 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 										logRow = $true
 										components = @(
 											@{
-												priority = 1
-												text = (Get-Date).ToString("HH:mm:ss")
-												shortText = (Get-Date).ToString("HH:mm:ss")
-											},
-											@{
-												priority = 2
-												text = " - [DEBUG] Movement dialog closed"
+										priority = 1
+											text = $date.ToString("HH:mm:ss")
+											shortText = $date.ToString("HH:mm:ss")
+										},
+										@{
+											priority = 2
+											text = " - [DEBUG] Movement dialog closed"
 												shortText = " - [DEBUG] Movement closed"
 											}
 										)
@@ -5974,13 +6007,13 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 										logRow = $true
 										components = @(
 											@{
-												priority = 1
-												text = (Get-Date).ToString("HH:mm:ss")
-												shortText = (Get-Date).ToString("HH:mm:ss")
-											},
-											@{
-												priority = 2
-												text = " - [DEBUG] Time dialog opened"
+										priority = 1
+											text = $date.ToString("HH:mm:ss")
+											shortText = $date.ToString("HH:mm:ss")
+										},
+										@{
+											priority = 2
+											text = " - [DEBUG] Time dialog opened"
 												shortText = " - [DEBUG] Time opened"
 											}
 										)
@@ -6002,13 +6035,13 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 										logRow = $true
 										components = @(
 											@{
-												priority = 1
-												text = (Get-Date).ToString("HH:mm:ss")
-												shortText = (Get-Date).ToString("HH:mm:ss")
-											},
-											@{
-												priority = 2
-												text = " - [DEBUG] Time dialog closed"
+										priority = 1
+											text = $date.ToString("HH:mm:ss")
+											shortText = $date.ToString("HH:mm:ss")
+										},
+										@{
+											priority = 2
+											text = " - [DEBUG] Time dialog closed"
 												shortText = " - [DEBUG] Time closed"
 											}
 										)
@@ -6186,10 +6219,8 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			
 			# Safety net: detect user input via GetLastInputInfo after wait loop.
 			# Same inference as wait-loop: unclassified activity → mouse movement.
-			try {
-				$lii = New-Object mJiggAPI.LASTINPUTINFO
-				$lii.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf([type][mJiggAPI.LASTINPUTINFO])
-				if ([mJiggAPI.Mouse]::GetLastInputInfo([ref]$lii)) {
+		try {
+			if ([mJiggAPI.Mouse]::GetLastInputInfo([ref]$lii)) {
 					$tickNow = [uint64][mJiggAPI.Mouse]::GetTickCount64()
 					$lastInputTick = [uint64]$lii.dwTime
 					$systemIdleMs = $tickNow - $lastInputTick
@@ -6204,16 +6235,13 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 						if (-not $keyboardInputDetected -and -not $scrollDetectedInInterval -and -not $mouseInputDetected) {
 							$mouseInputDetected = $true
 							$script:LastMouseMovementTime = Get-Date
-							$mouseMoveText = "Mouse"
-							if ($intervalMouseInputs -notcontains $mouseMoveText) {
-								$intervalMouseInputs += $mouseMoveText
-							}
-						}
+						$null = $intervalMouseInputs.Add("Mouse")
 					}
 				}
-			} catch {
-				# GetLastInputInfo not available, skip
 			}
+		} catch {
+			# GetLastInputInfo not available, skip
+		}
 			
 			# Check for window size changes outside the wait loop (catches resizes that happen during rendering)
 		if (-not $forceRedraw) {
@@ -6336,82 +6364,32 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 		# Each bpV beyond 1 adds 2 rows (1 top plain + 1 explicit bottom blank).
 		$Rows = [math]::Max(1, $HostHeight - 4 - 2 * $_bpV)
 			
-			# Save current log array BEFORE building new one (this preserves the previous iteration's logs)
-			# On first run, $LogArray might be null or empty, so handle that case
-			if ($null -eq $LogArray -or $LogArray.Count -eq 0) {
-				$tempOldLogArray = @()
+		# Ensure $LogArray is a List for efficient in-place mutation.
+		# Dialogs may convert it back to a plain array via +=; re-wrap if needed.
+		if ($LogArray -isnot [System.Collections.Generic.List[object]]) {
+			$_newList = New-Object 'System.Collections.Generic.List[object]'
+			if ($null -ne $LogArray) { foreach ($_e in $LogArray) { $_newList.Add($_e) } }
+			$LogArray = $_newList
+		}
+
+		# Handle resize: adjust List size to match the new $Rows value
+		if ($oldRows -ne $Rows) {
+			if ($oldRows -lt $Rows) {
+				# Window got taller — prepend blank entries at the front
+				$_insertCount = $Rows - $oldRows
+				for ($i = 0; $i -lt $_insertCount; $i++) {
+					$LogArray.Insert(0, [PSCustomObject]@{ logRow = $true; components = @() })
+				}
 			} else {
-				$tempOldLogArray = $LogArray.Clone()
+				# Window got shorter — discard oldest entries from the front
+				$_trimCount = [math]::Min($oldRows - $Rows, $LogArray.Count)
+				if ($_trimCount -gt 0) { $LogArray.RemoveRange(0, $_trimCount) }
 			}
-			
-			# Handle log array resizing when window height changes
-			if ($oldRows -ne $Rows) {
-				if ($oldRows -lt $Rows) {
-					# Window got taller - add empty entries at the beginning
-					$insertArray = @()
-					$row = [PSCustomObject]@{
-						logRow = $true
-						components = @()
-					}
-					for ($i = 0; $i -lt ($Rows - $oldRows); $i++) {
-						$insertArray += $row
-					}
-					$tempOldLogArray = $insertArray + $tempOldLogArray
-				} else {
-					# Window got shorter - trim old entries from the beginning
-					$trimCount = $oldRows - $Rows
-					if ($tempOldLogArray.Count -gt $trimCount) {
-						$tempOldLogArray = $tempOldLogArray[$trimCount..($tempOldLogArray.Count - 1)]
-					} else {
-						$tempOldLogArray = @()
-					}
-				}
-			}
-			
-			# Build new log array: take all entries from old array (they scroll up)
-			# The old array already has the previous logs, we just need to keep them
-			$LogArray = @()
-			
-			# Copy all old log entries (they will scroll up by one position)
-			# We keep up to $Rows entries from the old array (we'll add a new one, then trim to $Rows)
-			$maxOldEntries = $Rows
-			$startIndex = [math]::Max(0, $tempOldLogArray.Count - $maxOldEntries)
-			
-			for ($i = $startIndex; $i -lt $tempOldLogArray.Count; $i++) {
-				# Preserve components if they exist, otherwise create empty entry
-				if ($tempOldLogArray[$i].components) {
-					$LogArray += [PSCustomObject]@{
-						logRow = $true
-						components = $tempOldLogArray[$i].components
-					}
-				} else {
-					# Legacy format - convert to components if needed
-					if ($tempOldLogArray[$i].value) {
-						$LogArray += [PSCustomObject]@{
-							logRow = $true
-							components = @(@{
-								priority = 1
-								text = $tempOldLogArray[$i].value
-								shortText = $tempOldLogArray[$i].value
-							})
-						}
-					} else {
-						$LogArray += [PSCustomObject]@{
-							logRow = $true
-							components = @()
-						}
-					}
-				}
-			}
-			
-			# Fill remaining slots with empty entries if we don't have enough old entries
-			# We fill up to $Rows entries (before adding the new one)
-			while ($LogArray.Count -lt $Rows) {
-				$LogArray += [PSCustomObject]@{
-					logRow = $true
-					components = @()
-				}
-			}
+		}
+
+		# First-run and safety: ensure List has exactly $Rows entries
+		while ($LogArray.Count -lt $Rows) { $LogArray.Insert(0, [PSCustomObject]@{ logRow = $true; components = @() }) }
+		while ($LogArray.Count -gt $Rows) { $LogArray.RemoveAt(0) }
 			
 			# Check current mouse position to detect user movement (simple approach - only check at end of interval)
 			# Compare end position to start position to detect if user moved mouse during the interval
@@ -6454,11 +6432,8 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 						if ($script:AutoResumeDelaySeconds -gt 0) {
 							$LastUserInputTime = Get-Date
 						}
-						$mouseMoveText = "Mouse"
-						if ($intervalMouseInputs -notcontains $mouseMoveText) {
-							$intervalMouseInputs += $mouseMoveText
-						}
-						$LastPos = $currentPos
+					$null = $intervalMouseInputs.Add("Mouse")
+					$LastPos = $currentPos
 						$automatedMovementPos = $null  # Clear automated position since user moved
 					}
 					# If it matches our automated position, ignore it (it's from our movement)
@@ -6488,13 +6463,13 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 								logRow = $true
 								components = @(
 									@{
-										priority = 1
-										text = (Get-Date).ToString("HH:mm:ss")
-										shortText = (Get-Date).ToString("HH:mm:ss")
-									},
-									@{
-										priority = 2
-										text = " - [DEBUG] Auto-resume delay expired, resuming"
+								priority = 1
+									text = $date.ToString("HH:mm:ss")
+									shortText = $date.ToString("HH:mm:ss")
+								},
+								@{
+									priority = 2
+									text = " - [DEBUG] Auto-resume delay expired, resuming"
 										shortText = " - [DEBUG] Resumed"
 									}
 								)
@@ -6608,14 +6583,11 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 									$SkipUpdate = $true
 									$script:userInputDetected = $true
 									$mouseInputDetected = $true
-									$mouseMoveText = "Mouse"
-									if ($intervalMouseInputs -notcontains $mouseMoveText) {
-										$intervalMouseInputs += $mouseMoveText
-									}
-									if ($script:AutoResumeDelaySeconds -gt 0) {
-										$LastUserInputTime = Get-Date
-									}
-									$LastPos = $actualPos
+								$null = $intervalMouseInputs.Add("Mouse")
+								if ($script:AutoResumeDelaySeconds -gt 0) {
+									$LastUserInputTime = Get-Date
+								}
+								$LastPos = $actualPos
 									$automatedMovementPos = $null
 									if ($script:DiagEnabled) {
 										"$(Get-Date -Format 'HH:mm:ss.fff') - Loop $($script:LoopIteration): Movement aborted at step $i/$($movementPoints.Count) - user moved mouse (drift: $driftX,$driftY)" | Out-File $script:SettleDiagFile -Append
@@ -6817,68 +6789,11 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 					}
 				}
 				
-				# Add current log entry to array with components (append to end)
-				$LogArray += [PSCustomObject]@{
-					logRow = $true
-					components = $logComponents
-				}
-				
-				# Ensure we always have exactly $Rows entries
-				# If we have more than $Rows, trim to keep the last $Rows entries (newest at bottom)
-				if ($LogArray.Count -gt $Rows) {
-					$LogArray = $LogArray[($LogArray.Count - $Rows)..($LogArray.Count - 1)]
-				}
-				# If we have fewer than $Rows, prepend empty entries at the beginning
-				# This ensures the newest entry is always at the bottom (last index = $Rows - 1)
-				while ($LogArray.Count -lt $Rows) {
-					$LogArray = @([PSCustomObject]@{
-						logRow = $true
-						components = @()
-					}) + $LogArray
-				}
-			} else {
-				# No log entry created - ensure we have $Rows empty entries
-				# Add empty entries at the beginning so existing entries stay at the bottom
-				while ($LogArray.Count -lt $Rows) {
-					$LogArray = @([PSCustomObject]@{
-						logRow = $true
-						components = @()
-					}) + $LogArray
-				}
-			}
-			
-			# Final check: ensure we always have exactly $Rows entries before rendering
-			# This handles edge cases where the array might not be properly sized
-			# Initialize logArray if it's null or empty
-			if ($null -eq $LogArray) {
-				$LogArray = @()
-			}
-			# Ensure we have exactly $Rows entries
-			while ($LogArray.Count -lt $Rows) {
-				$LogArray = @([PSCustomObject]@{
-					logRow = $true
-					components = @()
-				}) + $LogArray
-			}
-			# Trim if we somehow have more than $Rows (keep the last $Rows entries)
-			if ($LogArray.Count -gt $Rows) {
-				$LogArray = $LogArray[($LogArray.Count - $Rows)..($LogArray.Count - 1)]
-			}
-			# Final verification: logArray must have exactly $Rows entries at this point
-			# If it doesn't, something went wrong - rebuild it with empty entries
-			# This is a safety net to ensure we always have the correct structure
-			if ($null -eq $LogArray -or $LogArray.Count -ne $Rows) {
-				# Rebuild the array with exactly $Rows empty entries
-				$LogArray = @()
-				for ($fillIdx = 0; $fillIdx -lt $Rows; $fillIdx++) {
-					$LogArray += [PSCustomObject]@{
-						logRow = $true
-						components = @()
-					}
-				}
-				# If we had a log entry that was created, try to preserve it at the last index
-				# (This shouldn't normally happen, but it's a safety check)
-			}
+			# Shift the window: evict oldest entry, append new one at the end
+			$LogArray.RemoveAt(0)
+			$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $logComponents })
+		}
+		# List is maintained at exactly $Rows entries; no further trim/pad needed
 
 			# Output Handling
 			# Skip console updates if mouse movement was recently detected (every 50ms check) to prevent stutter
@@ -6902,11 +6817,9 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 		$Outputline++
 
 			# Output header
-			# Refresh current time. ClearCachedData() is required so that timezone changes
-			# (e.g. via the Windows date/time settings) are picked up immediately — .NET
-			# caches timezone info and won't reflect a changed timezone without this call.
-			[System.TimeZoneInfo]::ClearCachedData()
-			$currentTime = (Get-Date).ToString("HHmm")
+		# Refresh current time. The hourly ClearCachedData() call earlier in the loop
+		# ensures timezone changes are picked up without invalidating the cache every frame.
+		$currentTime = $date.ToString("HHmm")
 			# Calculate widths for centering times between mJig title and view tag
 			# Left part: "mJig(`u{1F400})" = 5 + 2 + 1 = 8 (content only; $_bpH+2 left margin handled separately)
 			$headerLeftWidth = 5 + 2 + 1  # "mJig(" + emoji + ")"
@@ -7385,8 +7298,8 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 		$menuY = $Outputline
 		$script:MenuBarY = $menuY  # stored for quit dialog positioning
 	$currentMenuX = $_bpH + 2  # Start after group-bg + 2-char inner padding
-				
-				$script:MenuItemsBounds = @()
+
+	$script:MenuItemsBounds.Clear()
 				$itemsBeforeQuit = $menuItems.Count - 1
 				for ($mi = 0; $mi -lt $itemsBeforeQuit; $mi++) {
 					$item = $menuItems[$mi]
@@ -7487,30 +7400,30 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 	if ($item.isSettingsButton -eq $true) {
 		$script:SettingsButtonStartX = $itemStartX   # for dialog positioning
 		$script:SettingsButtonEndX   = $itemEndX     # for close-on-reclick detection
-		$script:MenuItemsBounds += @{
-			startX           = $itemStartX
-			endX             = $itemEndX
-			y                = $menuY
-			hotkey           = $hotkey
-			isSettingsButton = $true
-			index            = $mi
-			displayText      = $itemText
-			format           = $menuFormat
-			fg               = $script:SettingsButtonText
-			bg               = $script:SettingsButtonBg
-			hotkeyFg         = $script:SettingsButtonHotkey
-			pipeFg           = $script:SettingsButtonSeparatorFg
-			bracketFg        = $script:SettingsButtonBracketFg
-			bracketBg        = $script:SettingsButtonBracketBg
-			onClickFg        = $script:SettingsButtonOnClickFg
-			onClickBg        = $script:SettingsButtonOnClickBg
-			onClickHotkeyFg  = $script:SettingsButtonOnClickHotkey
-			onClickPipeFg    = $script:SettingsButtonOnClickSeparatorFg
-			onClickBracketFg = $script:SettingsButtonOnClickBracketFg
-			onClickBracketBg = $script:SettingsButtonOnClickBracketBg
-		}
-	} else {
-		$script:MenuItemsBounds += @{
+	$null = $script:MenuItemsBounds.Add(@{
+		startX           = $itemStartX
+		endX             = $itemEndX
+		y                = $menuY
+		hotkey           = $hotkey
+		isSettingsButton = $true
+		index            = $mi
+		displayText      = $itemText
+		format           = $menuFormat
+		fg               = $script:SettingsButtonText
+		bg               = $script:SettingsButtonBg
+		hotkeyFg         = $script:SettingsButtonHotkey
+		pipeFg           = $script:SettingsButtonSeparatorFg
+		bracketFg        = $script:SettingsButtonBracketFg
+		bracketBg        = $script:SettingsButtonBracketBg
+		onClickFg        = $script:SettingsButtonOnClickFg
+		onClickBg        = $script:SettingsButtonOnClickBg
+		onClickHotkeyFg  = $script:SettingsButtonOnClickHotkey
+		onClickPipeFg    = $script:SettingsButtonOnClickSeparatorFg
+		onClickBracketFg = $script:SettingsButtonOnClickBracketFg
+		onClickBracketBg = $script:SettingsButtonOnClickBracketBg
+	})
+} else {
+	$null = $script:MenuItemsBounds.Add(@{
 			startX      = $itemStartX
 			endX        = $itemEndX
 			y           = $menuY
@@ -7528,12 +7441,12 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			onClickBg          = $script:MenuButtonOnClickBg
 			onClickHotkeyFg    = $script:MenuButtonOnClickHotkey
 			onClickPipeFg      = $script:MenuButtonOnClickSeparatorFg
-			onClickBracketFg   = $script:MenuButtonOnClickBracketFg
-			onClickBracketBg   = $script:MenuButtonOnClickBracketBg
-		}
-	}
-					
-					# Advance position statically
+		onClickBracketFg   = $script:MenuButtonOnClickBracketFg
+		onClickBracketBg   = $script:MenuButtonOnClickBracketBg
+	})
+}
+				
+				# Advance position statically
 					$currentMenuX = $itemStartX + $itemDisplayWidth
 					
 				if ($menuFormat -eq 2) {
@@ -7573,14 +7486,14 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 					Write-Buffer -Text "]" -FG $hBracketFg -BG $hBracketBg
 				}
 				$helpEndX = $helpStartX + $helpButtonWidth - 1
-				$script:MenuItemsBounds += @{
-					startX           = $helpStartX
-					endX             = $helpEndX
-					y                = $menuY
-					hotkey           = $helpHotkey
-					isHelpButton     = $true
-					index            = -1
-					displayText      = "?"
+			$null = $script:MenuItemsBounds.Add(@{
+				startX           = $helpStartX
+				endX             = $helpEndX
+				y                = $menuY
+				hotkey           = $helpHotkey
+				isHelpButton     = $true
+				index            = -1
+				displayText      = "?"
 					format           = $menuFormat
 					fg               = $script:MenuButtonText
 					bg               = $script:MenuButtonBg
@@ -7592,10 +7505,10 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 					onClickBg        = $script:MenuButtonOnClickBg
 					onClickHotkeyFg  = $script:MenuButtonOnClickHotkey
 					onClickPipeFg    = $script:MenuButtonOnClickSeparatorFg
-					onClickBracketFg = $script:MenuButtonOnClickBracketFg
-					onClickBracketBg = $script:MenuButtonOnClickBracketBg
-				}
-			$currentMenuX = $helpStartX + $helpButtonWidth
+				onClickBracketFg = $script:MenuButtonOnClickBracketFg
+				onClickBracketBg = $script:MenuButtonOnClickBracketBg
+			})
+		$currentMenuX = $helpStartX + $helpButtonWidth
 			Write-Buffer -Text "  " -BG $_mrBg
 			$currentMenuX += 2
 		}
@@ -7672,10 +7585,10 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			
 	# Store quit item bounds (computed statically)
 	$quitEndX = $quitStartX + $quitWidth - 1
-	$script:MenuItemsBounds += @{
-		startX      = $quitStartX
-		endX        = $quitEndX
-		y           = $menuY
+	$null = $script:MenuItemsBounds.Add(@{
+	startX      = $quitStartX
+	endX        = $quitEndX
+	y           = $menuY
 	hotkey      = $quitHotkey
 	index       = $menuItems.Count - 1
 	displayText = $itemText
@@ -7692,7 +7605,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 	onClickPipeFg      = $script:QuitButtonOnClickSeparatorFg
 	onClickBracketFg   = $script:QuitButtonOnClickBracketFg
 	onClickBracketBg   = $script:QuitButtonOnClickBracketBg
-}
+	})
 				
 		# Clear remaining (inner right padding + group-bg handled by inset writes below)
 		$menuEndX = $quitStartX + $quitWidth
@@ -7768,27 +7681,28 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			
 			if ($forceRedraw) { Flush-Buffer -ClearFirst } else { Flush-Buffer }
 			
-		$script:MenuItemsBounds = @(@{
-			startX      = $hBtnX
-			endX        = $hBtnX + 2
-			y           = $hBtnY
-		hotkey      = "i"
-		index       = 0
-		displayText = "(i)"
-				format      = 1
-				fg          = $script:MenuButtonText
-				bg          = $script:MenuButtonBg
-				hotkeyFg    = $script:MenuButtonHotkey
-				pipeFg      = $script:MenuButtonSeparatorFg
-				bracketFg   = $script:MenuButtonBracketFg
-				bracketBg   = $script:MenuButtonBracketBg
-				onClickFg          = $script:MenuButtonOnClickFg
-				onClickBg          = $script:MenuButtonOnClickBg
-				onClickHotkeyFg    = $script:MenuButtonOnClickHotkey
-				onClickPipeFg      = $script:MenuButtonOnClickSeparatorFg
-				onClickBracketFg   = $script:MenuButtonOnClickBracketFg
-				onClickBracketBg   = $script:MenuButtonOnClickBracketBg
-			})
+	$script:MenuItemsBounds.Clear()
+	$null = $script:MenuItemsBounds.Add(@{
+		startX      = $hBtnX
+		endX        = $hBtnX + 2
+		y           = $hBtnY
+	hotkey      = "i"
+	index       = 0
+	displayText = "(i)"
+			format      = 1
+			fg          = $script:MenuButtonText
+			bg          = $script:MenuButtonBg
+			hotkeyFg    = $script:MenuButtonHotkey
+			pipeFg      = $script:MenuButtonSeparatorFg
+			bracketFg   = $script:MenuButtonBracketFg
+			bracketBg   = $script:MenuButtonBracketBg
+			onClickFg          = $script:MenuButtonOnClickFg
+			onClickBg          = $script:MenuButtonOnClickBg
+			onClickHotkeyFg    = $script:MenuButtonOnClickHotkey
+			onClickPipeFg      = $script:MenuButtonOnClickSeparatorFg
+			onClickBracketFg   = $script:MenuButtonOnClickBracketFg
+			onClickBracketBg   = $script:MenuButtonOnClickBracketBg
+		})
 			}
 		}
 			# If skipConsoleUpdate is true and Output is not "hidden", don't render anything (prevents stutter)
@@ -7855,3 +7769,5 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			}
 		} # end :process
 }
+
+Export-ModuleMember -Function 'Start-mJig'

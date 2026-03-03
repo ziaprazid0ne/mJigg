@@ -28,7 +28,7 @@ A feature-rich PowerShell mouse jiggler with a console-based TUI, designed to ke
 
 ## Installation
 
-1. Download `start-mjig.ps1`
+1. Download the `Start-mJig` folder (contains `Start-mJig.psm1` and `Start-mJig.psd1`)
 2. Ensure PowerShell execution policy allows scripts:
    ```powershell
    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
@@ -39,8 +39,10 @@ A feature-rich PowerShell mouse jiggler with a console-based TUI, designed to ke
 ### Basic Usage
 
 ```powershell
+# Import the module (do this once per session)
+Import-Module C:\Projects\mJigg\Start-mJig\Start-mJig.psm1
+
 # Run with defaults (no end time, minimal view)
-.\start-mjig.ps1
 Start-mJig
 
 # Run with full interface
@@ -52,10 +54,12 @@ Start-mJig -EndTime 1730
 # Run hidden in background
 Start-mJig -Output hidden
 
-# Debugging one-liner: launch in a new PowerShell session with full output and debug mode
-$mJig = "C:\Path\To\start-mjig.ps1"
-powershell -Command ". `"$mJig`"; Start-mJig -Output full -DebugMode"
+# Debugging one-liner: isolated session with full output and debug mode
+$mJig = "C:\Projects\mJigg\Start-mJig\Start-mJig.psm1"
+powershell -NoProfile -Command "Import-Module '$mJig'; Start-mJig -Output full -DebugMode"
 ```
+
+> **Note:** mJig automatically runs inside its own isolated, controlled runspace — separate from your session's profile, aliases, and loaded modules. No manual session management is needed.
 
 ### Parameters
 

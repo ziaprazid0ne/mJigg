@@ -1,8 +1,8 @@
 # mJig Code Context for AI Agents
 
-This document provides deep context for AI agents working on the `start-mjig.ps1` codebase.
+This document provides deep context for AI agents working on the `Start-mJig.psm1` codebase.
 
-> **IMPORTANT FOR AI AGENTS**: When modifying `start-mjig.ps1`, you must also update this `AGENTS.md` file and `README.md` to reflect any changes. This includes:
+> **IMPORTANT FOR AI AGENTS**: When modifying `Start-mJig.psm1`, you must also update this `AGENTS.md` file and `README.md` to reflect any changes. This includes:
 > - New or modified parameters
 > - New or renamed functions
 > - Changes to line number ranges in the code structure
@@ -29,43 +29,58 @@ This document provides deep context for AI agents working on the `start-mjig.ps1
 
 ## Architecture Overview
 
-The script is a single-file PowerShell application (~7,800 lines) implementing a console-based TUI mouse jiggler. It uses Win32 API calls via P/Invoke for low-level mouse/keyboard interaction.
+The module is a single-file PowerShell module (~7,900 lines) implementing a console-based TUI mouse jiggler. It uses Win32 API calls via P/Invoke for low-level mouse/keyboard interaction. Every invocation automatically runs inside a fresh, isolated runspace provisioned by the module itself (see Module Runspace Provisioner below).
 
 ### High-Level Flow
 
 ```
-1. Load assemblies (System.Windows.Forms)
-2. Define P/Invoke types (mJiggAPI namespace)
-3. Initialize variables and theme colors
-4. Define helper functions (including Invoke-ResizeHandler)
-5. Parse and validate parameters
-6. Show-StartupScreen  (skipped in -DebugMode / -Output hidden)
-7. Show-StartupComplete (skipped in -DebugMode / -Output hidden)
-   └── Calls Invoke-ResizeHandler if window is resized during the screen
-8. Initialize $oldWindowSize / $OldBufferSize to current state
-9. Enter main processing loop
-   ├── Wait for interval (with input monitoring)
-   ├── Check for user input / hotkeys
-   ├── Detect window resize → Invoke-ResizeHandler (any context)
-   ├── Wait for mouse to settle (stutter prevention)
-   ├── Perform automated mouse movement
-   ├── Send simulated keypress
-   ├── Render UI (header, logs, stats, menu)
-   └── Handle window resize
-10. Cleanup on exit
+1. Import-Module Start-mJig  (loads module, defines Start-mJig function)
+2. Caller invokes Start-mJig [...params...]
+3. Module Runspace Provisioner fires (if not already inside the module runspace):
+   a. Create InitialSessionState::CreateDefault2() — no profile, no PSModulePath modules
+   b. Create Runspace with current $Host (preserves console TUI access), ApartmentState=STA
+   c. Import-Module into the new runspace; call Start-mJig -_InModuleRunspace $true + forwarded params
+   d. Invoke() blocks; finally disposes runspace on exit
+4. Inside the provisioned runspace, $_InModuleRunspace=$true skips the provisioner
+5. Load assemblies (System.Windows.Forms)
+6. Define P/Invoke types (mJiggAPI namespace)
+7. Initialize variables and theme colors
+8. Define helper functions (including Invoke-ResizeHandler)
+9. Parse and validate parameters
+10. Show-StartupScreen  (skipped in -DebugMode / -Output hidden)
+11. Show-StartupComplete (skipped in -DebugMode / -Output hidden)
+    └── Calls Invoke-ResizeHandler if window is resized during the screen
+12. Initialize $oldWindowSize / $OldBufferSize to current state
+13. Enter main processing loop
+    ├── Wait for interval (with input monitoring)
+    ├── Check for user input / hotkeys
+    ├── Detect window resize → Invoke-ResizeHandler (any context)
+    ├── Wait for mouse to settle (stutter prevention)
+    ├── Perform automated mouse movement
+    ├── Send simulated keypress
+    ├── Render UI (header, logs, stats, menu)
+    └── Handle window resize
+14. Cleanup on exit; provisioner's finally block disposes the runspace
 ```
 
 ### Code Structure Map
 
 ```
-start-mjig.ps1
+Start-mJig.psm1
 └── Start-mJig function (lines 1-end)
     │
     ├── ASCII Art Banner (lines 88-120)
     │   └── Decorative mouse ASCII art in comment block
     │
-    ├── Parameters (lines 122-148)
-    │   ├── $Output - View mode (min/full/hidden/dib)
+    ├── Module Runspace Provisioner (lines 71-100)
+    │   ├── Fires when $_InModuleRunspace is not set (first call from caller's session)
+    │   ├── Creates InitialSessionState::CreateDefault2() — isolated from profile/PSModulePath
+    │   ├── Creates Runspace with $Host passthrough (preserves console TUI) + ApartmentState=STA
+    │   ├── Imports this module into the runspace; calls Start-mJig -_InModuleRunspace $true
+    │   └── Invoke() blocks until mJig exits; finally disposes runspace
+    │
+    ├── Parameters (lines 41-69)
+    │   ├── $Output - View mode (min/full/hidden)
     │   ├── $DebugMode - Verbose logging switch
     │   ├── $Diag - File-based diagnostics switch
     │   ├── $EndTime - Stop time in HHmm format
@@ -76,7 +91,8 @@ start-mjig.ps1
     │   ├── $MoveVariance - Random variance for speed
     │   ├── $TravelDistance - Cursor travel distance in pixels
     │   ├── $TravelVariance - Random variance for distance
-    │   └── $AutoResumeDelaySeconds - Cooldown after user input
+    │   ├── $AutoResumeDelaySeconds - Cooldown after user input
+    │   └── $_InModuleRunspace [DontShow] - Internal re-entry guard; never passed by users
     │
     ├── Initialization Variables (lines 150-212)
     │   ├── Script-scoped copies of parameters
@@ -214,7 +230,7 @@ These can be modified at runtime via the Modify Movement dialog. When accessing 
 - `$script:HeaderRowBg`, `$script:MenuRowBg` - Per-row background colors (inset by `$_bpH`, do not bleed into padding)
 - `$script:DiagEnabled` - Diagnostics flag
 - `$script:LoopIteration` - Main loop counter
-- `$script:MenuItemsBounds` - Click detection bounds array; each entry now also carries `displayText`, `format`, `fg`, `bg`, `hotkeyFg`, `onClickFg`, `onClickBg`, `onClickHotkeyFg`
+- `$script:MenuItemsBounds` - `System.Collections.Generic.List[hashtable]` for click detection bounds; each entry carries `displayText`, `format`, `fg`, `bg`, `hotkeyFg`, `onClickFg`, `onClickBg`, `onClickHotkeyFg`. Use `.Clear()` and `.Add()` — never `= @()` or `+=`.
 - `$script:MenuClickHotkey` - Menu item hotkey triggered by mouse click
 - `$script:ConsoleClickCoords` - Character cell X/Y from last PeekConsoleInput left-click event
 - `$script:PressedMenuButton` - Hotkey of the menu button currently held down (LMB pressed); cleared when pressed state is restored
@@ -665,7 +681,7 @@ Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minim
 - Registers a single entry in `$script:MenuItemsBounds` with `hotkey = "i"`
 - Clears `$script:ModeButtonBounds`, `$script:HeaderEndTimeBounds`, `$script:HeaderCurrentTimeBounds`, `$script:HeaderLogoBounds` since those regions aren't rendered
 
-**Entering incognito**: `$PreviousView = $Output; $Output = "hidden"; $script:MenuItemsBounds = @()`
+**Entering incognito**: `$PreviousView = $Output; $Output = "hidden"; $script:MenuItemsBounds.Clear()`
 **Exiting incognito**: `$Output = $PreviousView` (or `"min"` if `$PreviousView` is null); `$PreviousView = $null`
 
 ### 8a. Settings Dialog
@@ -704,8 +720,8 @@ Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minim
 For mouse click detection, menu items track their console coordinates:
 
 ```powershell
-$script:MenuItemsBounds = @()
-$script:MenuItemsBounds += @{
+$script:MenuItemsBounds.Clear()
+$null = $script:MenuItemsBounds.Add(@{
     startX = $itemStartX      # Left edge X coordinate
     endX = $itemEndX          # Right edge X coordinate  
     y = $menuY                # Row number
@@ -772,10 +788,12 @@ $emojiMouse = [char]::ConvertFromUtf32(0x1F400)      # 🐀
 
 ### 11. Log Array Structure
 
+`$LogArray` is a `System.Collections.Generic.List[object]` that always contains exactly `$Rows` entries (one per visible log row). It is maintained as a ring buffer: each new log entry calls `$LogArray.RemoveAt(0)` (evicts oldest) then `$null = $LogArray.Add(...)` (appends newest). **Never use `= @()` or `+=` on `$LogArray`** — those convert the List to a plain array. If dialog code must append, use `.Add()`. If the List is accidentally converted to an array, the render-cycle guard at the top of the log section automatically re-wraps it.
+
 Log entries use a component-based structure for dynamic truncation:
 
 ```powershell
-$LogArray += [PSCustomObject]@{
+$null = $LogArray.Add([PSCustomObject]@{
     logRow = $true
     components = @(
         @{ 
@@ -789,7 +807,7 @@ $LogArray += [PSCustomObject]@{
             shortText = " - msg"
         }
     )
-}
+})
 ```
 
 Priority determines display order when truncating. Components with lower priority numbers are shown first.
@@ -826,6 +844,7 @@ $wasJustPressed = ($state -band 0x0001) -ne 0
 - `$mouseInputDetected` - Boolean, set by mouse movement (Test-MouseMoved or GetLastInputInfo inference) or button clicks
 - `$scrollDetectedInInterval` - Boolean, set by `PeekConsoleInput` scroll events, persists across wait loop iterations
 - `$script:userInputDetected` - Boolean, set by any detection mechanism, triggers jiggler pause
+- `$intervalMouseInputs` - `System.Collections.Generic.HashSet[string]` — cleared at the start of each main-loop iteration via `.Clear()`. Use `$null = $intervalMouseInputs.Add("Mouse")` etc. — **never `+=`** (would convert to plain array).
 
 ### 13. Movement Animation
 
@@ -851,6 +870,28 @@ for ($i = 1; $i -lt $movementPoints.Count; $i++) {
 ```
 
 **User input during animation**: After each `SetCursorPos` + sleep, the loop reads the actual cursor position and compares it to where the cursor was just placed. If the position has drifted by more than 3 pixels in either axis, the user is moving the mouse and the animation aborts immediately. On abort: `$script:userInputDetected` and `$mouseInputDetected` are set, the simulated keypress is skipped, and the auto-resume delay timer is started (if configured).
+
+---
+
+## Performance Guidelines
+
+### Hot-Path Allocation Rules
+
+The following objects are pre-allocated before the main `:process` loop and must be **cleared/reused, never recreated**:
+
+| Variable | Type | Per-iteration reset |
+|---|---|---|
+| `$intervalMouseInputs` | `HashSet[string]` | `.Clear()` |
+| `$pressedMenuKeys` | `hashtable` | `.Clear()` |
+| `$_waitPeekBuffer` | `INPUT_RECORD[]` (32) | Reused as-is |
+| `$lii` | `LASTINPUTINFO` | Reused; `cbSize` set once |
+| `$script:MenuItemsBounds` | `List[hashtable]` | `.Clear()` then `.Add()` |
+
+**Never use `+=` on `$intervalMouseInputs`** — it converts the HashSet to a plain array. Use `$null = $intervalMouseInputs.Add(...)`.
+
+**`$date = Get-Date`** is refreshed at the top of every 50ms `:waitLoop` tick. Use `$date.ToString("HH:mm:ss")` for log entry timestamps inside the main loop instead of calling `(Get-Date)` again.
+
+**`TimeZoneInfo.ClearCachedData()`** is rate-limited to once per hour via `$lastTzCacheClear`. Do not add additional calls in the hot path.
 
 ---
 
@@ -1134,7 +1175,8 @@ Windows Terminal has a setting "Automatically adjust lightness of indistinguisha
 
 | File | Purpose |
 |------|---------|
-| `start-mjig.ps1` | Main script (single file) |
+| `Start-mJig/Start-mJig.psm1` | Module root — contains `Start-mJig` function + Module Runspace Provisioner |
+| `Start-mJig/Start-mJig.psd1` | Module manifest — version, GUID, exports, `RequiredAssemblies` |
 | `README.md` | User documentation |
 | `resources/AGENTS.md` | AI agent context (this file) |
 | `resources/test-logs.ps1` | Temporary test script for log rendering (git-ignored) |
@@ -1161,6 +1203,32 @@ Get-Content ".\_diag\welcome.txt"   # always present, no -Diag flag needed
 Get-Content "c:\Projects\mJigg\_diag\welcome.txt"
 ```
 
+### Module Runspace Provisioner
+
+The provisioner is a ~30-line block at the top of `Start-mJig` (immediately after `param()`). It runs on every call from the user's session and is skipped on re-entry inside the provisioned runspace.
+
+**How it works:**
+- Checks `$_InModuleRunspace` — a `[switch]` parameter with `[Parameter(DontShow = $true)]`
+- If not set: creates `InitialSessionState::CreateDefault2()`, opens a new `Runspace` with `$Host` passthrough and `ApartmentState = STA`, imports `Start-mJig.psm1` into it, calls `Start-mJig` again with `-_InModuleRunspace $true` plus all `$PSBoundParameters` forwarded via `AddParameter()`
+- `Invoke()` blocks synchronously until mJig exits; `finally` block disposes the runspace
+- If set (`$_InModuleRunspace` is `$true`): provisioner is skipped entirely, execution falls through to the normal program body
+
+**Internal variable naming convention:** All provisioner-local variables use the `$_` prefix (e.g. `$_modPath`, `$_iss`, `$_rs`, `$_ps`, `$_kvp`) to avoid any collision with the program's own variable namespace below the provisioner block.
+
+**What `CreateDefault2()` provides vs. what it excludes:**
+- Provides: all built-in cmdlets (`Write-Host`, `Start-Sleep`, `Add-Type`, `Get-Date`, `Out-File`, `New-Object`, etc.)
+- Excludes: `$PROFILE` execution, PSModulePath auto-imports, user aliases, user functions, user variables
+- `System.Windows.Forms` is listed in `Start-mJig.psd1`'s `RequiredAssemblies` so it is pre-loaded before the module runs
+
+**Why `$Host` must be passed to `CreateRunspace`:**
+- Without it the runspace gets a default automation host with no console
+- Passing the caller's `$Host` gives the provisioned runspace access to `$Host.UI.RawUI.ReadKey`, `WindowSize`, `KeyAvailable`, and all VT100/`[Console]::Write()` output — everything the TUI depends on
+
+**`$_InModuleRunspace` is never user-facing:**
+- `DontShow = $true` on `[Parameter()]` hides it from tab-completion and `Get-Help`
+- Leading `_` signals internal/private by convention
+- It is only ever passed by the provisioner's own `AddParameter('_InModuleRunspace', $true)` call
+
 No external dependencies - the script is fully self-contained.
 
 ---
@@ -1169,13 +1237,14 @@ No external dependencies - the script is fully self-contained.
 
 | Component | Approximate Lines |
 |-----------|------------------|
-| Parameters | 41-120 |
-| Box Characters | 124-132 |
-| Theme Colors (incl. BorderPadV/H, HeaderBg, FooterBg, HeaderRowBg, MenuRowBg) | 134-210 |
-| Show-StartupScreen | ~220-252 |
-| Show-StartupComplete | ~253-355 |
-| Invoke-ResizeHandler | ~341-382 |
-| Find-WindowHandle | ~384-470 |
+| Module Runspace Provisioner | 71-100 |
+| Parameters | 41-69 |
+| Box Characters | ~155-165 |
+| Theme Colors (incl. BorderPadV/H, HeaderBg, FooterBg, HeaderRowBg, MenuRowBg) | ~167-245 |
+| Show-StartupScreen | ~253-285 |
+| Show-StartupComplete | ~286-390 |
+| Invoke-ResizeHandler | ~375-415 |
+| Find-WindowHandle | ~417-505 |
 | P/Invoke Types | ~700-980 |
 | Buffered Rendering (Write-Buffer w/ -NoWrap, Flush-Buffer, Write-ButtonImmediate) | ~1920-1980 |
 | Draw-DialogShadow / Clear-DialogShadow | ~1985-2030 |
