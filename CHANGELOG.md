@@ -6,6 +6,32 @@ All notable changes to `start-mjig.ps1` are documented in this file.
 
 ## [Latest] - Unreleased
 
+Changes since last commit (0653dd2 - "Memory optimizations: ring buffer, pre-alloc, hoisted objects, rate-limited TZ cache"):
+
+### Added
+- **IPC Background Worker Architecture** — `Start-mJig` now spawns a hidden background worker process by default. The worker handles mouse jiggling, key simulation, and input detection via a named pipe (`\\.\pipe\mJig_IPC`). The caller's terminal becomes a viewer that renders the TUI from IPC state updates. Closing the terminal no longer stops mJig; reconnect from any terminal by running `Start-mJig` again.
+- **`-Inline` parameter** — run in legacy single-process mode (no background worker). Useful for debugging or environments where background processes are undesirable.
+- **`-_WorkerMode` parameter** [DontShow] — internal entry point for the hidden background worker process. Never called by users.
+- **`-_PipeName` parameter** [DontShow] — internal named pipe identifier (default `'mJig_IPC'`).
+- **`Start-WorkerLoop` function** — headless jiggling loop with `NamedPipeServerStream` IPC server. Accepts one viewer at a time. Sends `welcome`, `state` (every 500ms), `log`, and `stopped` messages. Processes `settings`, `endtime`, `output`, and `quit` commands from the viewer. Resilient pipe reconnection: if `BeginWaitForConnection` fails after a viewer disconnect, the pipe server is disposed and recreated from scratch.
+- **`Connect-WorkerPipe` function** — connection-only function that connects to the worker's named pipe as a client, performs the welcome handshake, and returns the pipe client/reader/writer (or `$null` on failure). The viewer then falls through into the main `:process` loop with `$_isViewerMode = $true`.
+- **`Send-PipeMessage` / `Read-PipeMessage` helper functions** — JSON-line serialization/deserialization over `StreamWriter`/`StreamReader`. `Read-PipeMessage` uses asynchronous `ReadLineAsync()` with a `[ref]$PendingTask` pattern to prevent blocking on named pipes when no data is available.
+- **Log Replay Buffer** — worker maintains a circular buffer of the last 30 log messages. On viewer connect, all buffered entries are replayed so the viewer has immediate context.
+- **Worker spawn via WMI** — first instance: releases mutex, spawns the worker via `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` so the worker is not part of the terminal's job object and survives when the viewer terminal is closed. Falls back to `Start-Process` if WMI is unavailable, then to inline mode on complete spawn failure. Uses the same PowerShell executable as the caller (`[System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName`).
+- **Viewer reconnect** — when mutex is already held (worker running), the script enters viewer mode directly without spawning.
+- **Viewer main loop integration** — the viewer reuses the existing main `:process` loop's rendering and input handling. The loop checks `$_isViewerMode` at key points to skip movement/timing logic while keeping the full TUI. State variables (`$script:IntervalSeconds`, `$script:LoopIteration`, `$cooldownActive`, `$mouseInputDetected`, `$keyboardInputDetected`, `$PreviousIntervalKeys`, etc.) are updated from worker IPC `state` messages so the stats box and UI reflect the worker's live state.
+- **Detected inputs in viewer stats** — worker's periodic `state` messages now include `mouseInputDetected`, `keyboardInputDetected`, and `userInputDetected` flags. The viewer applies these to `$PreviousIntervalKeys` so the "Detected Inputs" stats box shows live input detection from the worker. Cooldown status (`cooldownActive`, `cooldownRemaining`) is also computed live in each state message.
+- **Worker input detection bootstrap** — `GetLastInputInfo` and mouse position tracking in the worker are guarded with `if ($null -ne $workerLastAutomatedMouseMovement)` to skip input detection until the first movement completes, preventing a permanent "User input skip" deadlock.
+
+### Changed
+- **Mutex check** — no longer errors when another instance is running. Instead, connects as a viewer to the existing worker.
+- **Console setup** — guarded with `-not $_WorkerMode` to skip VT100/cursor/buffer setup for the headless worker process.
+- **Startup screen** — skipped for viewer reconnect (only shown for first-run inline mode).
+
+---
+
+## [0653dd2] - 2026-03-03
+
 Changes since last commit (3ee5163 - "Configurable border padding, layered chrome backgrounds, log/menu layout refinements"):
 
 ### Performance

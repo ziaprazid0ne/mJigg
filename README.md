@@ -40,7 +40,7 @@ A feature-rich PowerShell mouse jiggler with a console-based TUI, designed to ke
 
 ```powershell
 # Import the module (do this once per session)
-Import-Module C:\Projects\mJigg\Start-mJig\Start-mJig.psm1
+Import-Module C:\Projects\mJig\Start-mJig\Start-mJig.psm1
 
 # Run with defaults (no end time, minimal view)
 Start-mJig
@@ -55,11 +55,27 @@ Start-mJig -EndTime 1730
 Start-mJig -Output hidden
 
 # Debugging one-liner: isolated session with full output and debug mode
-$mJig = "C:\Projects\mJigg\Start-mJig\Start-mJig.psm1"
+$mJig = "C:\Projects\mJig\Start-mJig\Start-mJig.psm1"
 powershell -NoProfile -Command "Import-Module '$mJig'; Start-mJig -Output full -DebugMode"
 ```
 
 > **Note:** mJig automatically runs inside its own isolated, controlled runspace — separate from your session's profile, aliases, and loaded modules. No manual session management is needed.
+
+### Background Worker Mode (Default)
+
+By default, `Start-mJig` spawns a hidden background worker process that performs the actual jiggling. Your terminal becomes a viewer that displays the worker's status. This means:
+
+- **Closing the terminal does not stop mJig** — the background worker continues running
+- **Reconnect from any terminal** — run `Start-mJig` again to connect a new viewer to the running worker
+- **Use `-Inline`** to run in legacy single-process mode where closing the terminal stops mJig
+
+```powershell
+# Default: spawns background worker + viewer
+Start-mJig
+
+# Legacy mode: single process, dies with terminal
+Start-mJig -Inline
+```
 
 ### Parameters
 
@@ -75,6 +91,7 @@ powershell -NoProfile -Command "Import-Module '$mJig'; Start-mJig -Output full -
 | `-TravelDistance` | double | `100` | Base cursor travel distance in pixels |
 | `-TravelVariance` | double | `5` | Random variance for travel distance |
 | `-AutoResumeDelaySeconds` | double | `0` | Cooldown after user input before resuming |
+| `-Inline` | switch | `$false` | Run without background worker (legacy single-process mode) |
 | `-DebugMode` | switch | `$false` | Enable debug logging |
 | `-Diag` | switch | `$false` | Enable diagnostic file output |
 
@@ -173,7 +190,7 @@ Colors and layout are defined as `$script:` variables in the Theme Colors sectio
 
 ## Diagnostics
 
-Enable with `-Diag` flag. Creates log files in `_diag/` at the **project root** (`c:\Projects\mJigg\_diag\`):
+Enable with `-Diag` flag. Creates log files in `_diag/` at the **project root** (`c:\Projects\mJig\_diag\`):
 - `startup.txt` - Initialization diagnostics
 - `settle.txt` - Mouse settle detection logs
 - `input.txt` - Input detection logs (PeekConsoleInput + GetLastInputInfo)

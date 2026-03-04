@@ -64,6 +64,12 @@ function Start-mJig {
 		[double]$TravelVariance = 5,  # Maximum random variance in travel distance (in pixels)
 		[Parameter(Mandatory = $false)]
 		[double]$AutoResumeDelaySeconds = 0,  # Timer in seconds that resets on user input detection. When > 0, coordinate updates and simulated key presses are skipped.
+		[Parameter(Mandatory = $false)]
+		[switch]$Inline,  # Run without background worker (legacy single-process mode)
+		[Parameter(Mandatory = $false, DontShow = $true)]
+		[switch]$_WorkerMode,  # Internal: background worker entry point
+		[Parameter(Mandatory = $false, DontShow = $true)]
+		[string]$_PipeName = 'mJig_IPC',  # Internal: named pipe identifier
 		[Parameter(Mandatory = $false, DontShow = $true)]
 		[switch]$_InModuleRunspace  # Internal: set by the provisioner on re-entry. Never passed by users.
 	)
@@ -73,14 +79,64 @@ function Start-mJig {
 	# this module — separate from the caller's session state, profile, and loaded modules.
 	# $_InModuleRunspace is a hidden parameter passed only by this block on re-entry;
 	# it is never visible to or settable by users (DontShow + underscore convention).
+	#
+	# What IS isolated:  PowerShell variables, functions, modules, aliases, drives.
+	# What is NOT isolated (process-global):  $Host / console handles, Add-Type .NET
+	# types, console mode flags, window title, cursor state.  The finally block below
+	# saves and restores the process-global state so the caller's session is clean.
 	if (-not $_InModuleRunspace) {
 		$_modPath = Join-Path $PSScriptRoot 'Start-mJig.psm1'
+
+		# -- Save process-global console state before the child touches anything ------
+		$_savedTitle = try { $Host.UI.RawUI.WindowTitle } catch { $null }
+		$_k32Loaded = $false
+		try {
+			try { [void][_mJigProv._K32] } catch {
+				Add-Type -Name '_K32' -Namespace '_mJigProv' -ErrorAction Stop -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+'@
+			}
+			$_hIn  = [_mJigProv._K32]::GetStdHandle(-10)
+			$_hOut = [_mJigProv._K32]::GetStdHandle(-11)
+			$_savedInMode = [uint32]0; $_savedOutMode = [uint32]0
+			$null = [_mJigProv._K32]::GetConsoleMode($_hIn,  [ref]$_savedInMode)
+			$null = [_mJigProv._K32]::GetConsoleMode($_hOut, [ref]$_savedOutMode)
+			$_k32Loaded = $true
+		} catch { }
+
+		# -- Build minimal ISS --------------------------------------------------------
+		# CreateDefault2 loads Core + Utility + Management without profiles or snap-ins.
+		# Format XMLs are cleared — all rendering goes through Write-Buffer / Flush-Buffer,
+		# never Format-Table / Format-List, so the XML parsing cost is pure waste.
 		$_iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+		$_iss.Formats.Clear()
+		$_iss.ThrowOnRunspaceOpenError = $true
+
 		$_rs  = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($Host, $_iss)
 		$_rs.ApartmentState = [System.Threading.ApartmentState]::STA
 		$_rs.Open()
 		$_ps = [System.Management.Automation.PowerShell]::Create()
 		$_ps.Runspace = $_rs
+
+		# -- Diagnostics (DebugMode only) ---------------------------------------------
+		if ($DebugMode) {
+			$_parentRsId = if ([System.Management.Automation.Runspaces.Runspace]::DefaultRunspace) {
+				[System.Management.Automation.Runspaces.Runspace]::DefaultRunspace.Id } else { '(none)' }
+			Write-Host "[RUNSPACE] Provisioner: launching isolated child" -ForegroundColor Cyan
+			Write-Host "  Parent Runspace  : ID $_parentRsId"  -ForegroundColor Gray
+			Write-Host "  Child  Runspace  : ID $($_rs.Id)"    -ForegroundColor Gray
+			Write-Host "  Thread           : $([System.Threading.Thread]::CurrentThread.ManagedThreadId)" -ForegroundColor Gray
+			Write-Host "  ApartmentState   : $($_rs.ApartmentState)" -ForegroundColor Gray
+			Write-Host "  ISS base         : CreateDefault2 (Core + Utility + Management)" -ForegroundColor Gray
+			Write-Host "  ISS Formats      : $($_iss.Formats.Count) (cleared)" -ForegroundColor Gray
+			Write-Host "  Console IN mode  : 0x$($_savedInMode.ToString('X4'))  $(if ($_k32Loaded) {'(saved)'} else {'(save failed)'})" -ForegroundColor Gray
+			Write-Host "  Console OUT mode : 0x$($_savedOutMode.ToString('X4'))  $(if ($_k32Loaded) {'(saved)'} else {'(save failed)'})" -ForegroundColor Gray
+			Write-Host "  Window title     : $_savedTitle (saved)" -ForegroundColor Gray
+			Write-Host ""
+		}
+
 		try {
 			$null = $_ps.AddScript("Import-Module '$_modPath'")
 			$null = $_ps.AddStatement().AddCommand('Start-mJig')
@@ -94,6 +150,30 @@ function Start-mJig {
 			$_ps.Dispose()
 			$_rs.Close()
 			$_rs.Dispose()
+
+			# -- Restore process-global console state ---------------------------------
+			# VT100: show cursor, re-enable auto-wrap, reset text attributes
+			try { [Console]::Write("$([char]27)[?25h$([char]27)[?7h$([char]27)[0m") } catch {}
+			# Console input/output mode flags (Quick Edit, Mouse Input, VT100 processing)
+			if ($_k32Loaded) {
+				try { $null = [_mJigProv._K32]::SetConsoleMode($_hIn,  $_savedInMode)  } catch {}
+				try { $null = [_mJigProv._K32]::SetConsoleMode($_hOut, $_savedOutMode) } catch {}
+			}
+			if ($null -ne $_savedTitle) {
+				try { $Host.UI.RawUI.WindowTitle = $_savedTitle } catch {}
+			}
+			if ($DebugMode) {
+				Write-Host ""
+				Write-Host "[RUNSPACE] Child exited - console state restored" -ForegroundColor Cyan
+				if ($_k32Loaded) {
+					$_finalIn = [uint32]0; $_finalOut = [uint32]0
+					$null = [_mJigProv._K32]::GetConsoleMode($_hIn,  [ref]$_finalIn)
+					$null = [_mJigProv._K32]::GetConsoleMode($_hOut, [ref]$_finalOut)
+					Write-Host "  Console IN mode  : 0x$($_finalIn.ToString('X4'))"  -ForegroundColor Gray
+					Write-Host "  Console OUT mode : 0x$($_finalOut.ToString('X4'))" -ForegroundColor Gray
+				}
+				Write-Host "  Window title     : $($Host.UI.RawUI.WindowTitle)" -ForegroundColor Gray
+			}
 		}
 		return
 	}
@@ -115,6 +195,7 @@ function Start-mJig {
 	$script:EndVariance = $EndVariance
 	$script:Output = $Output
 	$script:DebugMode = [bool]$DebugMode
+	$script:PipeName = $_PipeName
 
 	# Initialize Variables
 	$LastPos = $null
@@ -153,7 +234,7 @@ function Start-mJig {
 	$script:ScreenHeight = $null
 	$script:DialogButtonBounds = $null  # Store dialog button bounds when dialog is open {buttonRowY, updateStartX, updateEndX, cancelStartX, cancelEndX}
 	$script:LastClickLogTime = $null  # Track when we last logged a click to prevent duplicate logs
-	$script:WindowTitle = "mJig - mJigg"  # Fixed window title (same for all instances to enable duplicate detection)
+	$script:WindowTitle = "mJig - mJigg"
 	$script:MenuClickHotkey = $null  # Menu item hotkey triggered by mouse click
 	$script:ModeButtonBounds           = $null  # Header mode button click bounds {y, startX, endX}
 	$script:HeaderEndTimeBounds        = $null  # Header "End⏳/..." hidden click region {y, startX, endX}
@@ -165,7 +246,8 @@ function Start-mJig {
 	$script:ButtonClickedAt   = $null   # timestamp of confirmed click (LMB UP over button); used to time color restoration
 	$script:PendingDialogCheck = $false  # set on confirmed click; render loop uses it to decide whether to clear pressed state
 	$script:LButtonWasDown    = $false   # tracks previous LMB state from console events for UP-transition detection
-	$script:RenderQueue = New-Object 'System.Collections.Generic.List[hashtable]'
+	$script:RenderQueue = New-Object 'System.Collections.Generic.List[object[]]'
+	$script:FrameBuilder = New-Object System.Text.StringBuilder (8192)
 	$script:MenuItemsBounds = New-Object 'System.Collections.Generic.List[hashtable]'
 	
 	# Box-drawing characters (using Unicode code points to avoid encoding issues)
@@ -691,78 +773,7 @@ function Start-mJig {
 		}
 	}
 
-	# Function to find window handle using EnumWindows (like Get-ProcessWindow.ps1)
-	function Find-WindowHandle {
-		param(
-			[int]$ProcessId = $PID
-		)
-		
-		$foundHandle = [IntPtr]::Zero
-		
-		# First, try to find by window title (most reliable for our case)
-		try {
-			$hasFindWindow = [mJiggAPI.Mouse].GetMethod("FindWindow") -ne $null
-			if ($hasFindWindow -and $null -ne $script:WindowTitle) {
-				# Try exact title match
-				$handle = [mJiggAPI.Mouse]::FindWindow($null, $script:WindowTitle)
-				if ($handle -eq [IntPtr]::Zero -and $DebugMode) {
-					# Try with DEBUGMODE suffix
-					$handle = [mJiggAPI.Mouse]::FindWindow($null, "$script:WindowTitle - DEBUGMODE")
-				}
-				if ($handle -ne [IntPtr]::Zero) {
-					# Verify it belongs to our process
-					$hasGetWindowThreadProcessId = [mJiggAPI.Mouse].GetMethod("GetWindowThreadProcessId") -ne $null
-					if ($hasGetWindowThreadProcessId) {
-						$windowProcessId = 0
-						[mJiggAPI.Mouse]::GetWindowThreadProcessId($handle, [ref]$windowProcessId) | Out-Null
-						if ($windowProcessId -eq $ProcessId -or $windowProcessId -eq $PID) {
-							return $handle
-						}
-					} else {
-						# Can't verify, but return it anyway
-						return $handle
-					}
-				}
-			}
-		} catch {
-			# FindWindow by title failed
-		}
-		
-		# Use the C# EnumWindows-based method (fallback)
-		try {
-			$hasFindWindowByProcessId = [mJiggAPI.Mouse].GetMethod("FindWindowByProcessId") -ne $null
-			if ($hasFindWindowByProcessId) {
-				$foundHandle = [mJiggAPI.Mouse]::FindWindowByProcessId($ProcessId)
-				if ($foundHandle -ne [IntPtr]::Zero) {
-					return $foundHandle
-				}
-			}
-		} catch {
-			# FindWindowByProcessId failed or not available
-		}
-		
-		# Fallback: Try parent process if current process has no window
-		try {
-			$currentProcess = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-			if ($null -ne $currentProcess -and $null -ne $currentProcess.Parent) {
-				$parentId = $currentProcess.Parent.Id
-				$hasFindWindowByProcessId = [mJiggAPI.Mouse].GetMethod("FindWindowByProcessId") -ne $null
-				if ($hasFindWindowByProcessId) {
-					$foundHandle = [mJiggAPI.Mouse]::FindWindowByProcessId($parentId)
-					if ($foundHandle -ne [IntPtr]::Zero) {
-						return $foundHandle
-					}
-				}
-			}
-		} catch {
-			# Parent process lookup failed
-		}
-		
-		return [IntPtr]::Zero
-	}
-
 	# Prep the Host Console
-	# Set window title FIRST so we can be found by duplicate detection
 	try {
 		$Host.UI.RawUI.WindowTitle = if ($DebugMode) { "$script:WindowTitle - DEBUGMODE" } else { $script:WindowTitle }
 		if ($DebugMode) {
@@ -773,111 +784,39 @@ function Start-mJig {
 			Write-Host "  [WARN] Failed to set window title: $($_.Exception.Message)" -ForegroundColor $script:TextWarning
 		}
 	}
-	
-	# Check for duplicate windows - FAIL if another instance is running
+
+	# Duplicate instance detection via named mutex (process-global, works reliably
+	# regardless of terminal host — unlike FindWindow which reports the terminal's
+	# PID, not the PowerShell process PID, causing false positives).
 	if ($DebugMode) {
-		Write-Host "[DEBUG] Checking for duplicate mJig instances..." -ForegroundColor $script:TextHighlight
+		Write-Host "[DEBUG] Checking for duplicate mJig instances (mutex)..." -ForegroundColor $script:TextHighlight
 	}
-	
-	$duplicateFound = $false
-	$duplicateProcessId = 0
-	$duplicateProcessName = "Unknown"
-	
-	# Search for any windows with our window title (excluding our own PID)
+	$script:InstanceMutex = $null
+	$mutexAcquired = $false
 	try {
-		$hasFindWindowByTitlePattern = [mJiggAPI.Mouse].GetMethod("FindWindowByTitlePattern") -ne $null
-		if ($hasFindWindowByTitlePattern) {
-			# Search for windows with our exact title, excluding our own PID
-			$duplicateHandle = [mJiggAPI.Mouse]::FindWindowByTitlePattern($script:WindowTitle, $PID)
-			if ($duplicateHandle -eq [IntPtr]::Zero -and $DebugMode) {
-				# Try with DEBUGMODE suffix
-				$duplicateHandle = [mJiggAPI.Mouse]::FindWindowByTitlePattern("$script:WindowTitle - DEBUGMODE", $PID)
-			}
-			
-			if ($duplicateHandle -ne [IntPtr]::Zero) {
-				# Found a window with matching title - verify the process is actually running
-				$hasGetWindowThreadProcessId = [mJiggAPI.Mouse].GetMethod("GetWindowThreadProcessId") -ne $null
-				if ($hasGetWindowThreadProcessId) {
-					$windowProcessId = 0
-					[mJiggAPI.Mouse]::GetWindowThreadProcessId($duplicateHandle, [ref]$windowProcessId) | Out-Null
-					if ($windowProcessId -ne 0) {
-						# Verify the process actually exists and is running
-						try {
-							$otherProcess = Get-Process -Id $windowProcessId -ErrorAction Stop
-							if ($null -ne $otherProcess) {
-								# Process exists - this is a real duplicate
-								$duplicateFound = $true
-								$duplicateProcessId = $windowProcessId
-								$duplicateProcessName = $otherProcess.ProcessName
-							}
-						} catch {
-							# Process doesn't exist - window handle is stale, ignore it
-							if ($DebugMode) {
-								Write-Host "  [INFO] Found window handle for PID $windowProcessId but process doesn't exist (stale handle)" -ForegroundColor Gray
-							}
-						}
-					}
-				}
-			}
-		} else {
-			# Fallback: Try FindWindow with exact title match
-			$hasFindWindow = [mJiggAPI.Mouse].GetMethod("FindWindow") -ne $null
-			if ($hasFindWindow) {
-				$testHandle = [mJiggAPI.Mouse]::FindWindow($null, $script:WindowTitle)
-				if ($testHandle -eq [IntPtr]::Zero -and $DebugMode) {
-					$testHandle = [mJiggAPI.Mouse]::FindWindow($null, "$script:WindowTitle - DEBUGMODE")
-				}
-				if ($testHandle -ne [IntPtr]::Zero) {
-					$hasGetWindowThreadProcessId = [mJiggAPI.Mouse].GetMethod("GetWindowThreadProcessId") -ne $null
-					if ($hasGetWindowThreadProcessId) {
-						$windowProcessId = 0
-						[mJiggAPI.Mouse]::GetWindowThreadProcessId($testHandle, [ref]$windowProcessId) | Out-Null
-						if ($windowProcessId -ne 0 -and $windowProcessId -ne $PID) {
-							# Verify the process actually exists and is running
-							try {
-								$otherProcess = Get-Process -Id $windowProcessId -ErrorAction Stop
-								if ($null -ne $otherProcess) {
-									# Process exists - this is a real duplicate
-									$duplicateFound = $true
-									$duplicateProcessId = $windowProcessId
-									$duplicateProcessName = $otherProcess.ProcessName
-								}
-							} catch {
-								# Process doesn't exist - window handle is stale, ignore it
-								if ($DebugMode) {
-									Write-Host "  [INFO] Found window handle for PID $windowProcessId but process doesn't exist (stale handle)" -ForegroundColor Gray
-								}
-							}
-						}
-					}
-				}
-			}
-		}
+		$script:InstanceMutex = New-Object System.Threading.Mutex($false, 'Global\mJig_SingleInstance')
+		$mutexAcquired = $script:InstanceMutex.WaitOne(0)
+	} catch [System.Threading.AbandonedMutexException] {
+		$mutexAcquired = $true
 	} catch {
 		if ($DebugMode) {
-			Write-Host "  [WARN] Could not check for duplicates: $($_.Exception.Message)" -ForegroundColor $script:TextWarning
+			Write-Host "  [WARN] Mutex check failed: $($_.Exception.Message)" -ForegroundColor $script:TextWarning
 		}
 	}
-	
-	# If duplicate found, exit with error
-	if ($duplicateFound) {
-		Write-Host ""
-		Write-Host "ERROR: Another instance of mJig is already running!" -ForegroundColor $script:TextError
-		Write-Host "  Process ID: $duplicateProcessId" -ForegroundColor $script:TextError
-		Write-Host "  Process Name: $duplicateProcessName" -ForegroundColor $script:TextError
-		Write-Host "  Window Title: $script:WindowTitle" -ForegroundColor $script:TextError
-		Write-Host ""
-		Write-Host "Please close the other instance before starting a new one." -ForegroundColor $script:TextWarning
-		Write-Host ""
-		exit 1
-	} else {
-		if ($DebugMode) {
-			Write-Host "  [OK] No duplicate instances found" -ForegroundColor $script:TextSuccess
-		}
+	$_viewerReconnect = $false
+	if (-not $mutexAcquired -and -not $_WorkerMode) {
+		# Another instance holds the mutex — will connect as a viewer after initialization
+		if ($null -ne $script:InstanceMutex) { $script:InstanceMutex.Dispose() }
+		$_viewerReconnect = $true
+	}
+	if ($DebugMode -and -not $_viewerReconnect) {
+		Write-Host "  [OK] Mutex acquired — no other instance running" -ForegroundColor $script:TextSuccess
 	}
 	
 	# Show initializing screen (or plain clear for DebugMode)
-	if ($Output -ne "hidden") {
+	# Worker mode skips all console rendering setup — it runs headless
+	if (-not $_WorkerMode) {
+	if (-not $_viewerReconnect -and $Output -ne "hidden") {
 		if (-not $DebugMode) {
 			Show-StartupScreen
 		} else {
@@ -888,8 +827,14 @@ function Start-mJig {
 	if ($DebugMode) {
 		Write-Host "Initialization Debug" -ForegroundColor $script:HeaderAppName
 		Write-Host ""
+		$_childRsId = if ([System.Management.Automation.Runspaces.Runspace]::DefaultRunspace) {
+			[System.Management.Automation.Runspaces.Runspace]::DefaultRunspace.Id } else { '(unknown)' }
+		Write-Host "[RUNSPACE] Confirmed: running inside isolated runspace" -ForegroundColor Cyan
+		Write-Host "  Runspace ID : $_childRsId"  -ForegroundColor Gray
+		Write-Host "  Thread ID   : $([System.Threading.Thread]::CurrentThread.ManagedThreadId)" -ForegroundColor Gray
+		Write-Host "  Modules     : $((Get-Module | ForEach-Object { $_.Name }) -join ', ')" -ForegroundColor Gray
+		Write-Host ""
 		Write-Host "[DEBUG] Initializing console..." -ForegroundColor $script:TextHighlight
-		# Window title already set above, just log it
 		Write-Host "[DEBUG] Window title: $($Host.UI.RawUI.WindowTitle)" -ForegroundColor $script:TextHighlight
 		Write-Host "[DEBUG] DebugMode is ENABLED - click detection will be logged" -ForegroundColor $script:TextWarning
 		Write-Host ""
@@ -1046,11 +991,13 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 		throw  # Re-throw as this is critical
 	}
 
+	} # end if (-not $_WorkerMode) — console setup guard
+	
 	###############################
 	## Calculating the End Times ##
 	###############################
 	
-	if ($DebugMode) {
+	if ($DebugMode -and -not $_WorkerMode) {
 		Write-Host "[DEBUG] Calculating end times..." -ForegroundColor $script:TextHighlight
 	}
 	
@@ -1129,11 +1076,15 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 			$script:InputDiagFile = Join-Path $script:DiagFolder "input.txt"
 			
 			$diagTimestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+			$_diagRsId = if ([System.Management.Automation.Runspaces.Runspace]::DefaultRunspace) {
+				[System.Management.Automation.Runspaces.Runspace]::DefaultRunspace.Id } else { '(unknown)' }
 			"=== mJig Startup Diag: $diagTimestamp ===" | Out-File $script:StartupDiagFile
 			"$(Get-Date -Format 'HH:mm:ss.fff') - CHECKPOINT 1: Starting initialization" | Out-File $script:StartupDiagFile -Append
 			"  Diag enabled, folder: $script:DiagFolder" | Out-File $script:StartupDiagFile -Append
-			"=== mJig Settle Diag: $diagTimestamp ===" | Out-File $script:SettleDiagFile
-			"$(Get-Date -Format 'HH:mm:ss.fff') - Settle diagnostics started" | Out-File $script:SettleDiagFile -Append
+			"  Runspace ID: $_diagRsId  Thread: $([System.Threading.Thread]::CurrentThread.ManagedThreadId)  Modules: $((Get-Module | ForEach-Object { $_.Name }) -join ', ')" | Out-File $script:StartupDiagFile -Append
+		$script:IpcDiagFile = Join-Path $script:DiagFolder "ipc.txt"
+		"=== mJig Settle Diag: $diagTimestamp ===" | Out-File $script:SettleDiagFile
+		"$(Get-Date -Format 'HH:mm:ss.fff') - Settle diagnostics started" | Out-File $script:SettleDiagFile -Append
 			"=== mJig Input Diag: $diagTimestamp ===" | Out-File $script:InputDiagFile
 			"$(Get-Date -Format 'HH:mm:ss.fff') - Input diagnostics started (PeekConsoleInput + GetLastInputInfo)" | Out-File $script:InputDiagFile -Append
 		}
@@ -1181,21 +1132,14 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 			if ($null -ne $existingMouse) {
 				$hasGetCursorPos = $existingMouse.GetMethod("GetCursorPos") -ne $null
 				$hasGetForegroundWindow = $existingMouse.GetMethod("GetForegroundWindow") -ne $null
-				$hasFindWindow = $existingMouse.GetMethod("FindWindow") -ne $null
-				$hasFindWindowByProcessId = $existingMouse.GetMethod("FindWindowByProcessId") -ne $null
-				$hasFindWindowByTitlePattern = $existingMouse.GetMethod("FindWindowByTitlePattern") -ne $null
-				if (-not $hasGetCursorPos -or -not $hasGetForegroundWindow -or -not $hasFindWindow -or -not $hasFindWindowByProcessId -or -not $hasFindWindowByTitlePattern) {
-					# Type exists but missing required methods - need to reload
-					# Note: PowerShell cannot remove types once loaded, so Add-Type will fail silently
-					# User may need to restart PowerShell session to get updated types
+				if (-not $hasGetCursorPos -or -not $hasGetForegroundWindow) {
 					$typesNeedReload = $true
 					if ($DebugMode) {
 						Write-Host "  [WARN] Existing types found but missing required methods" -ForegroundColor $script:TextWarning
-						Write-Host "  [WARN] Missing: GetCursorPos=$(-not $hasGetCursorPos), GetForegroundWindow=$(-not $hasGetForegroundWindow), FindWindow=$(-not $hasFindWindow), FindWindowByProcessId=$(-not $hasFindWindowByProcessId), FindWindowByTitlePattern=$(-not $hasFindWindowByTitlePattern)" -ForegroundColor $script:TextWarning
+						Write-Host "  [WARN] Missing: GetCursorPos=$(-not $hasGetCursorPos), GetForegroundWindow=$(-not $hasGetForegroundWindow)" -ForegroundColor $script:TextWarning
 						Write-Host "  [WARN] Attempting reload (may fail if types already exist - restart PowerShell if needed)" -ForegroundColor $script:TextWarning
 					}
 				} else {
-					# Types exist and have required methods - skip reload
 					if ($DebugMode) {
 						Write-Host "  [INFO] Types already loaded from previous run (with required methods)" -ForegroundColor Gray
 					}
@@ -1953,6 +1897,7 @@ namespace mJiggAPI {
 		# ============================================
 
 		$script:ESC = [char]27
+		$script:CSI = "$([char]27)["
 		$script:CursorVisible = $false
 		$script:AnsiFG = @{
 			[ConsoleColor]::Black = 30; [ConsoleColor]::DarkBlue = 34; [ConsoleColor]::DarkGreen = 32; [ConsoleColor]::DarkCyan = 36
@@ -1975,38 +1920,48 @@ namespace mJiggAPI {
 			[object]$FG = $null,
 			[object]$BG = $null,
 			[switch]$Wide,
-			[switch]$NoWrap  # Disable auto-wrap for this segment (use for last row to avoid scroll)
+			[switch]$NoWrap
 		)
 		if ($Wide -and $null -ne $BG) { $Text = $Text + " " }
-		$script:RenderQueue.Add(@{ X = $X; Y = $Y; Text = $Text; FG = $FG; BG = $BG; NoWrap = $NoWrap.IsPresent })
+		$fgCode = if ($null -ne $FG) { $script:AnsiFG[[ConsoleColor]$FG] } else { 39 }
+		$bgCode = if ($null -ne $BG) { $script:AnsiBG[[ConsoleColor]$BG] } else { 49 }
+		$nw = $NoWrap.IsPresent
+		$rq = $script:RenderQueue
+		if (-not $nw -and $X -eq -1 -and $Y -eq -1 -and $rq.Count -gt 0) {
+			$prev = $rq[$rq.Count - 1]
+			if ($prev[3] -eq $fgCode -and $prev[4] -eq $bgCode -and -not $prev[5]) {
+				$prev[2] = $prev[2] + $Text
+				return
+			}
+		}
+		$rq.Add([object[]]@($X, $Y, $Text, $fgCode, $bgCode, $nw))
 		}
 
 		function Flush-Buffer {
 			param([switch]$ClearFirst)
 			if ($script:RenderQueue.Count -eq 0) { return }
-			$csi = "$($script:ESC)["
-			$sb = New-Object System.Text.StringBuilder (8192)
-			[void]$sb.Append("${csi}?25l")
-			if ($ClearFirst) { [void]$sb.Append("${csi}2J") }
-			$lastFGCode = -1
-			$lastBGCode = -1
+			$c = $script:CSI
+			$sb = $script:FrameBuilder
+			[void]$sb.Clear()
+			[void]$sb.Append($c).Append('?25l')
+			if ($ClearFirst) { [void]$sb.Append($c).Append('2J') }
+			$lastFG = -1
+			$lastBG = -1
 		foreach ($seg in $script:RenderQueue) {
-			$fgCode = if ($null -ne $seg.FG) { $script:AnsiFG[[ConsoleColor]$seg.FG] } else { 39 }
-			$bgCode = if ($null -ne $seg.BG) { $script:AnsiBG[[ConsoleColor]$seg.BG] } else { 49 }
-			if ($seg.NoWrap) { [void]$sb.Append("${csi}?7l") }  # disable auto-wrap
-			if ($seg.X -ge 0 -and $seg.Y -ge 0) {
-				[void]$sb.Append("${csi}$($seg.Y + 1);$($seg.X + 1)H")
+			if ($seg[5]) { [void]$sb.Append($c).Append('?7l') }
+			if ($seg[0] -ge 0 -and $seg[1] -ge 0) {
+				[void]$sb.Append($c).Append($seg[1] + 1).Append(';').Append($seg[0] + 1).Append('H')
 			}
-			if ($fgCode -ne $lastFGCode -or $bgCode -ne $lastBGCode) {
-				[void]$sb.Append("${csi}${fgCode};${bgCode}m")
-				$lastFGCode = $fgCode
-				$lastBGCode = $bgCode
+			if ($seg[3] -ne $lastFG -or $seg[4] -ne $lastBG) {
+				[void]$sb.Append($c).Append($seg[3]).Append(';').Append($seg[4]).Append('m')
+				$lastFG = $seg[3]
+				$lastBG = $seg[4]
 			}
-			[void]$sb.Append($seg.Text)
-			if ($seg.NoWrap) { [void]$sb.Append("${csi}?7h") }  # re-enable auto-wrap
+			[void]$sb.Append($seg[2])
+			if ($seg[5]) { [void]$sb.Append($c).Append('?7h') }
 		}
-			[void]$sb.Append("${csi}0m")
-			if ($script:CursorVisible) { [void]$sb.Append("${csi}?25h") }
+			[void]$sb.Append($c).Append('0m')
+			if ($script:CursorVisible) { [void]$sb.Append($c).Append('?25h') }
 			[Console]::Write($sb.ToString())
 			$script:RenderQueue.Clear()
 		}
@@ -3037,6 +2992,558 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 			param([ref]$x, [ref]$y)
 			$x.Value = [Math]::Max(0, [Math]::Min($x.Value, $script:ScreenWidth - 1))
 			$y.Value = [Math]::Max(0, [Math]::Min($y.Value, $script:ScreenHeight - 1))
+		}
+		
+		# ============================================
+		# IPC Helper Functions (Named Pipe communication)
+		# ============================================
+		
+		function Send-PipeMessage {
+			param(
+				[System.IO.StreamWriter]$Writer,
+				[hashtable]$Message
+			)
+			$json = $Message | ConvertTo-Json -Compress -Depth 3
+			$Writer.WriteLine($json)
+			$Writer.Flush()
+		}
+		
+		function Read-PipeMessage {
+			param(
+				[System.IO.StreamReader]$Reader,
+				[ref]$PendingTask
+			)
+			try {
+				if ($null -eq $PendingTask.Value) {
+					$PendingTask.Value = $Reader.ReadLineAsync()
+				}
+				if (-not $PendingTask.Value.IsCompleted) {
+					return $null
+				}
+				$line = $PendingTask.Value.GetAwaiter().GetResult()
+				$PendingTask.Value = $null
+				if ($null -ne $line -and $line.Length -gt 0) {
+					return $line | ConvertFrom-Json
+				}
+			} catch {
+				$PendingTask.Value = $null
+				throw
+			}
+			return $null
+		}
+		
+		function Start-WorkerLoop {
+			$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
+				$script:PipeName,
+				[System.IO.Pipes.PipeDirection]::InOut,
+				1,
+				[System.IO.Pipes.PipeTransmissionMode]::Byte,
+				[System.IO.Pipes.PipeOptions]::Asynchronous
+			)
+			$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+			
+			$pipeReader = $null
+			$pipeWriter = $null
+			$viewerConnected = $false
+			
+			$script:LogReplayBuffer = New-Object 'System.Collections.Generic.Queue[hashtable]' 30
+			
+			$workerLastPos = Get-MousePosition
+			$workerLastMovementTime = $null
+			$workerLastMovementDurationMs = 0
+			$workerLastSimulatedKeyPress = $null
+			$workerLastAutomatedMouseMovement = $null
+			$workerLastUserInputTime = $null
+			$workerLoopIteration = 0
+			$workerStateTicks = 0
+			
+			$lii = New-Object mJiggAPI.LASTINPUTINFO
+			$lii.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf([type][mJiggAPI.LASTINPUTINFO])
+			$_workerReadTask = $null
+			
+			try {
+				:workerLoop while ($true) {
+					$workerLoopIteration++
+					$script:LoopIteration = $workerLoopIteration
+					
+					$userInputDetected = $false
+					$mouseInputDetected = $false
+					$keyboardInputDetected = $false
+					$cooldownActive = $false
+					$secondsRemaining = 0
+					$date = Get-Date
+					$currentTime = $date.ToString("HHmm")
+					
+					# Interval calculation (same as main loop)
+					$intervalMs = 1000
+					if ($null -ne $workerLastMovementTime) {
+						$intervalSecondsMs = $script:IntervalSeconds * 1000
+						$intervalVarianceMs = $script:IntervalVariance * 1000
+						$intervalMs = Get-ValueWithVariance -baseValue $intervalSecondsMs -variance $intervalVarianceMs
+						$intervalMs = $intervalMs - $workerLastMovementDurationMs
+						if ($intervalMs -lt 1000) { $intervalMs = 1000 }
+					}
+				$tickCount = [math]::Max(1, [math]::Floor($intervalMs / 50))
+				$workerLastPos = Get-MousePosition
+				
+				# Wait loop - 50ms ticks
+				for ($tick = 0; $tick -lt $tickCount; $tick++) {
+						$date = Get-Date
+						
+						# Check for new viewer connection
+						if (-not $viewerConnected -and $connectResult.IsCompleted) {
+							try {
+								$pipeServer.EndWaitForConnection($connectResult)
+								$pipeReader = New-Object System.IO.StreamReader($pipeServer, [System.Text.Encoding]::UTF8)
+								$pipeWriter = New-Object System.IO.StreamWriter($pipeServer, [System.Text.Encoding]::UTF8)
+								$viewerConnected = $true
+								
+								Send-PipeMessage -Writer $pipeWriter -Message @{
+									type = 'welcome'
+									pid = $PID
+									version = $script:Version
+								}
+							Send-PipeMessage -Writer $pipeWriter -Message @{
+								type = 'state'
+								intervalSeconds = $script:IntervalSeconds
+								intervalVariance = $script:IntervalVariance
+								moveSpeed = $script:MoveSpeed
+								moveVariance = $script:MoveVariance
+								travelDistance = $script:TravelDistance
+								travelVariance = $script:TravelVariance
+								autoResumeDelaySeconds = $script:AutoResumeDelaySeconds
+								loopIteration = $workerLoopIteration
+								cooldownActive = $cooldownActive
+								cooldownRemaining = $secondsRemaining
+								endTimeStr = $endTimeStr
+								endTimeInt = $endTimeInt
+								end = $end
+								output = $script:Output
+								mouseInputDetected = $mouseInputDetected
+								keyboardInputDetected = $keyboardInputDetected
+								userInputDetected = $userInputDetected
+							}
+						foreach ($replayMsg in $script:LogReplayBuffer) {
+								Send-PipeMessage -Writer $pipeWriter -Message $replayMsg
+							}
+						} catch {
+							$viewerConnected = $false
+							try { $pipeServer.Disconnect() } catch {}
+							try {
+								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+							} catch {
+								try { $pipeServer.Dispose() } catch {}
+								$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
+									$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
+									[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous)
+								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+							}
+						}
+					}
+						
+						# Check viewer disconnection
+					if ($viewerConnected -and -not $pipeServer.IsConnected) {
+						$_workerReadTask = $null
+						$viewerConnected = $false
+						if ($null -ne $pipeReader) { try { $pipeReader.Dispose() } catch {} }
+						if ($null -ne $pipeWriter) { try { $pipeWriter.Dispose() } catch {} }
+						$pipeReader = $null
+						$pipeWriter = $null
+						try { $pipeServer.Disconnect() } catch {}
+						try {
+							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+						} catch {
+							try { $pipeServer.Dispose() } catch {}
+							$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
+								$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
+								[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous)
+							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+						}
+						}
+						
+						# Read viewer commands
+						if ($viewerConnected) {
+							try {
+								$msg = Read-PipeMessage -Reader $pipeReader -PendingTask ([ref]$_workerReadTask)
+								while ($null -ne $msg) {
+									switch ($msg.type) {
+										'settings' {
+											if ($null -ne $msg.intervalSeconds) { $script:IntervalSeconds = [double]$msg.intervalSeconds }
+											if ($null -ne $msg.intervalVariance) { $script:IntervalVariance = [double]$msg.intervalVariance }
+											if ($null -ne $msg.moveSpeed) { $script:MoveSpeed = [double]$msg.moveSpeed }
+											if ($null -ne $msg.moveVariance) { $script:MoveVariance = [double]$msg.moveVariance }
+											if ($null -ne $msg.travelDistance) { $script:TravelDistance = [double]$msg.travelDistance }
+											if ($null -ne $msg.travelVariance) { $script:TravelVariance = [double]$msg.travelVariance }
+											if ($null -ne $msg.autoResumeDelaySeconds) { $script:AutoResumeDelaySeconds = [double]$msg.autoResumeDelaySeconds }
+										}
+										'endtime' {
+											if ($null -ne $msg.endTime) {
+												$endTimeInt = [int]$msg.endTime
+												$endTimeStr = $endTimeInt.ToString().PadLeft(4, '0')
+												if ($null -ne $msg.endVariance) { $script:EndVariance = [int]$msg.endVariance }
+												if ($endTimeInt -ne -1) {
+													$ct = Get-Date -Format "HHmm"
+													if ($endTimeInt -le [int]$ct) {
+														$endDate = Get-Date (Get-Date).AddDays(1) -Format "MMdd"
+													} else {
+														$endDate = Get-Date -Format "MMdd"
+													}
+													$end = "$endDate$endTimeStr"
+												} else {
+													$end = ""
+												}
+											}
+										}
+										'output' {
+											if ($null -ne $msg.mode) { $script:Output = $msg.mode }
+										}
+										'quit' {
+											if ($viewerConnected) {
+												try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
+											}
+											return
+										}
+									}
+									$msg = Read-PipeMessage -Reader $pipeReader -PendingTask ([ref]$_workerReadTask)
+								}
+						} catch {
+							$_workerReadTask = $null
+							$viewerConnected = $false
+							try { $pipeReader.Dispose() } catch {}
+							try { $pipeWriter.Dispose() } catch {}
+							$pipeReader = $null
+							$pipeWriter = $null
+							try { $pipeServer.Disconnect() } catch {}
+							try {
+								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+							} catch {
+								try { $pipeServer.Dispose() } catch {}
+								$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
+									$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
+									[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous)
+								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+							}
+						}
+					}
+						
+						# GetLastInputInfo idle check (system-wide)
+						# Only check after the first movement completes — before that,
+						# we have no baseline to distinguish real user input from system noise,
+						# and the null simulated/autoMove filters cause a permanent skip deadlock.
+						if ($null -ne $workerLastAutomatedMouseMovement) {
+						try {
+							if ([mJiggAPI.Mouse]::GetLastInputInfo([ref]$lii)) {
+								$tickNow = [uint64][mJiggAPI.Mouse]::GetTickCount64()
+								$systemIdleMs = $tickNow - [uint64]$lii.dwTime
+								$recentSimulated = ($null -ne $workerLastSimulatedKeyPress) -and ((Get-TimeSinceMs -startTime $workerLastSimulatedKeyPress) -lt 500)
+								$recentAutoMove = (Get-TimeSinceMs -startTime $workerLastAutomatedMouseMovement) -lt 500
+								if ($systemIdleMs -lt 300 -and -not $recentSimulated -and -not $recentAutoMove) {
+									$userInputDetected = $true
+									if ($script:AutoResumeDelaySeconds -gt 0) {
+										$workerLastUserInputTime = Get-Date
+									}
+								}
+							}
+						} catch {}
+						}
+						
+						# Mouse position tracking for auto-resume
+						# Only flag as user input after the first movement completes
+						# (same deadlock avoidance as GetLastInputInfo above).
+						try {
+							$currentCheckPos = Get-MousePosition
+							if ($null -ne $currentCheckPos -and $null -ne $workerLastPos) {
+								if (Test-MouseMoved -currentPos $currentCheckPos -lastPos $workerLastPos -threshold 2) {
+									if ($null -ne $workerLastAutomatedMouseMovement) {
+										$recentAutoMove2 = (Get-TimeSinceMs -startTime $workerLastAutomatedMouseMovement) -lt 500
+										if (-not $recentAutoMove2) {
+											$mouseInputDetected = $true
+											$userInputDetected = $true
+											if ($script:AutoResumeDelaySeconds -gt 0) {
+												$workerLastUserInputTime = Get-Date
+											}
+										}
+									}
+									$workerLastPos = $currentCheckPos
+								}
+							}
+						} catch {}
+						
+						# Send state every 500ms (every 10th tick)
+						$workerStateTicks++
+						if ($viewerConnected -and ($workerStateTicks % 10) -eq 0) {
+							try {
+							$_stateCooldown = $false
+								$_stateCooldownSecs = 0
+								if ($script:AutoResumeDelaySeconds -gt 0 -and $null -ne $workerLastUserInputTime) {
+									$_sinceInput = ((Get-Date) - $workerLastUserInputTime).TotalSeconds
+									if ($_sinceInput -lt $script:AutoResumeDelaySeconds) {
+										$_stateCooldown = $true
+										$_stateCooldownSecs = [Math]::Ceiling($script:AutoResumeDelaySeconds - $_sinceInput)
+									}
+								}
+								Send-PipeMessage -Writer $pipeWriter -Message @{
+								type = 'state'
+								intervalSeconds = $script:IntervalSeconds
+								intervalVariance = $script:IntervalVariance
+								moveSpeed = $script:MoveSpeed
+								moveVariance = $script:MoveVariance
+								travelDistance = $script:TravelDistance
+								travelVariance = $script:TravelVariance
+								autoResumeDelaySeconds = $script:AutoResumeDelaySeconds
+								loopIteration = $workerLoopIteration
+								cooldownActive = $_stateCooldown
+								cooldownRemaining = $_stateCooldownSecs
+								endTimeStr = $endTimeStr
+								endTimeInt = $endTimeInt
+								end = $end
+								output = $script:Output
+								mouseInputDetected = $mouseInputDetected
+								keyboardInputDetected = $keyboardInputDetected
+								userInputDetected = $userInputDetected
+							}
+					} catch {
+						$viewerConnected = $false
+						try { $pipeServer.Disconnect() } catch {}
+						try {
+							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+						} catch {
+							try { $pipeServer.Dispose() } catch {}
+							$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
+								$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
+								[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous)
+							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+						}
+					}
+					}
+						
+						Start-Sleep -Milliseconds 50
+					}
+					
+					# Auto-resume delay check
+					if ($script:AutoResumeDelaySeconds -gt 0 -and $null -ne $workerLastUserInputTime) {
+						$timeSinceInput = ((Get-Date) - $workerLastUserInputTime).TotalSeconds
+						if ($timeSinceInput -lt $script:AutoResumeDelaySeconds) {
+							$cooldownActive = $true
+							$secondsRemaining = [Math]::Ceiling($script:AutoResumeDelaySeconds - $timeSinceInput)
+						}
+					}
+					
+					$SkipUpdate = $userInputDetected -or $cooldownActive
+					
+					if (-not $SkipUpdate) {
+						# Movement execution (same logic as main loop)
+						$pos = Get-MousePosition
+						if ($null -eq $pos) { $pos = $workerLastPos }
+						
+						$baseDistance = $script:TravelDistance
+						$varianceAmount = Get-Random -Minimum 0.0 -Maximum ($script:TravelVariance + 0.0001)
+						if ((Get-Random -Maximum 2) -eq 0) {
+							$distance = $baseDistance - $varianceAmount
+						} else {
+							$distance = $baseDistance + $varianceAmount
+						}
+						if ($distance -lt 1) { $distance = 1 }
+						
+						$angle = Get-Random -Minimum 0 -Maximum ([Math]::PI * 2)
+						$x = [Math]::Round($pos.X + ($distance * [Math]::Cos($angle)))
+						$y = [Math]::Round($pos.Y + ($distance * [Math]::Sin($angle)))
+						
+						$vScreen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+						$sLeft   = $vScreen.Left
+						$sTop    = $vScreen.Top
+						$sRight  = $vScreen.Right  - 1
+						$sBottom = $vScreen.Bottom - 1
+						if ($x -lt $sLeft)   { $x = $sLeft   + ($sLeft   - $x) }
+						if ($x -gt $sRight)  { $x = $sRight  - ($x - $sRight)  }
+						if ($y -lt $sTop)    { $y = $sTop    + ($sTop    - $y)  }
+						if ($y -gt $sBottom) { $y = $sBottom - ($y - $sBottom)  }
+						$x = [Math]::Max($sLeft, [Math]::Min($x, $sRight))
+						$y = [Math]::Max($sTop,  [Math]::Min($y, $sBottom))
+						
+						$deltaX = $x - $pos.X
+						$deltaY = $y - $pos.Y
+						$directionArrow = Get-DirectionArrow -deltaX $deltaX -deltaY $deltaY -style "simple"
+						
+						$movementPath = Get-SmoothMovementPath -startX $pos.X -startY $pos.Y -endX $x -endY $y -baseSpeedSeconds $script:MoveSpeed -varianceSeconds $script:MoveVariance
+						$movementPoints = $movementPath.Points
+						$workerLastMovementDurationMs = $movementPath.TotalTimeMs
+						
+						$movementAborted = $false
+						if ($movementPoints.Count -gt 1) {
+							$stepIntervalMs = 5
+							Start-Sleep -Milliseconds 1
+							for ($i = 1; $i -lt $movementPoints.Count; $i++) {
+								$point = $movementPoints[$i]
+								[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point ($point.X, $point.Y)
+								if ($i -lt $movementPoints.Count - 1) {
+									Start-Sleep -Milliseconds $stepIntervalMs
+									$actualPos = Get-MousePosition
+									if ($null -ne $actualPos) {
+										$driftX = [Math]::Abs($actualPos.X - $point.X)
+										$driftY = [Math]::Abs($actualPos.Y - $point.Y)
+										if ($driftX -gt 3 -or $driftY -gt 3) {
+											$movementAborted = $true
+											$workerLastPos = $actualPos
+											break
+										}
+									}
+								}
+							}
+						} else {
+							[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point ($x, $y)
+						}
+						
+						if (-not $movementAborted) {
+							$newPos = Get-MousePosition
+							if ($null -ne $newPos) { $workerLastPos = $newPos }
+							$workerLastAutomatedMouseMovement = Get-Date
+							
+							# Simulate Right Alt keypress
+							try {
+								$vkCode = [byte]0xA5
+								[mJiggAPI.Keyboard]::keybd_event($vkCode, [byte]0, [uint32]0, [int]0)
+								Start-Sleep -Milliseconds 10
+								[mJiggAPI.Keyboard]::keybd_event($vkCode, [byte]0, [uint32]0x0002, [int]0)
+								$workerLastSimulatedKeyPress = Get-Date
+								Start-Sleep -Milliseconds 50
+							} catch {}
+							
+							# Build and send log message
+							$logMsg = @{
+								type = 'log'
+								components = @(
+									@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
+									@{ priority = 2; text = " - Coordinates updated $directionArrow"; shortText = " - Updated $directionArrow" }
+									@{ priority = 3; text = " x${x}/y${y}"; shortText = " x${x}/y${y}" }
+								)
+							}
+							if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
+							$null = $script:LogReplayBuffer.Enqueue($logMsg)
+							if ($viewerConnected) {
+								try { Send-PipeMessage -Writer $pipeWriter -Message $logMsg } catch {}
+							}
+						}
+						
+						$workerLastMovementTime = Get-Date
+					} else {
+						# Skipped -- send log for skip
+						$logMsg = @{
+							type = 'log'
+							components = @(
+								@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
+								@{ priority = 2; text = " - User input skip"; shortText = " - Skipped" }
+							)
+						}
+						if ($cooldownActive) {
+							$logMsg.components = @(
+								@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
+								@{ priority = 2; text = " - Auto-Resume Delay"; shortText = " - Auto-Resume Delay" }
+								@{ priority = 4; text = " [Resume: ${secondsRemaining}s]"; shortText = " [R: ${secondsRemaining}s]" }
+							)
+						}
+						if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
+						$null = $script:LogReplayBuffer.Enqueue($logMsg)
+						if ($viewerConnected) {
+							try { Send-PipeMessage -Writer $pipeWriter -Message $logMsg } catch {}
+						}
+						
+						if ($null -eq $workerLastMovementTime) { $workerLastMovementTime = Get-Date }
+					}
+					
+					# End time check
+					if ($endTimeInt -ne -1 -and -not [string]::IsNullOrEmpty($end)) {
+						try {
+							$currentDateTimeInt = [int]($date.ToString("MMddHHmm"))
+							$endDateTimeInt = [int]$end
+							if ($currentDateTimeInt -ge $endDateTimeInt) {
+								if ($viewerConnected) {
+									try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'endtime' } } catch {}
+								}
+								return
+							}
+						} catch {}
+					}
+				}
+			} finally {
+				if ($null -ne $pipeReader) { try { $pipeReader.Dispose() } catch {} }
+				if ($null -ne $pipeWriter) { try { $pipeWriter.Dispose() } catch {} }
+				if ($null -ne $pipeServer) { try { $pipeServer.Dispose() } catch {} }
+				if ($null -ne $script:InstanceMutex) {
+					try { $script:InstanceMutex.ReleaseMutex() } catch {}
+					$script:InstanceMutex.Dispose()
+					$script:InstanceMutex = $null
+				}
+			}
+		}
+		
+		function Connect-WorkerPipe {
+			param(
+				[string]$PipeName,
+				[int]$ConnectTimeoutMs = 5000
+			)
+			
+			$pipeClient = $null
+			$pipeReader = $null
+			$pipeWriter = $null
+			
+			$connectDeadline = (Get-Date).AddMilliseconds($ConnectTimeoutMs)
+			$connected = $false
+			while (-not $connected -and (Get-Date) -lt $connectDeadline) {
+				try {
+					$pipeClient = New-Object System.IO.Pipes.NamedPipeClientStream(
+						'.', $PipeName,
+						[System.IO.Pipes.PipeDirection]::InOut,
+						[System.IO.Pipes.PipeOptions]::Asynchronous
+					)
+					$remainingMs = [int][Math]::Max(500, ($connectDeadline - (Get-Date)).TotalMilliseconds)
+					$pipeClient.Connect($remainingMs)
+					$connected = $true
+				} catch {
+					if ($null -ne $pipeClient) { try { $pipeClient.Dispose() } catch {} }
+					$pipeClient = $null
+					if ((Get-Date) -ge $connectDeadline) { break }
+					Start-Sleep -Milliseconds 500
+				}
+			}
+			
+			if (-not $connected) {
+				Write-Host ""
+				Write-Host "ERROR: Could not connect to mJig worker process." -ForegroundColor $script:TextError
+				Write-Host "  Pipe: $PipeName  (timed out after $($ConnectTimeoutMs)ms)" -ForegroundColor $script:TextWarning
+				Write-Host ""
+				return $null
+			}
+			
+			try {
+				$pipeReader = New-Object System.IO.StreamReader($pipeClient, [System.Text.Encoding]::UTF8)
+				$pipeWriter = New-Object System.IO.StreamWriter($pipeClient, [System.Text.Encoding]::UTF8)
+			} catch {
+				Write-Host ""
+				Write-Host "ERROR: Connected to pipe but failed to create streams." -ForegroundColor $script:TextError
+				Write-Host "  $($_.Exception.Message)" -ForegroundColor Gray
+				Write-Host ""
+				if ($null -ne $pipeClient) { try { $pipeClient.Dispose() } catch {} }
+				return $null
+			}
+			
+			$welcome = $null
+			try {
+				$welcomeLine = $pipeReader.ReadLine()
+				if ($null -ne $welcomeLine) { $welcome = $welcomeLine | ConvertFrom-Json }
+			} catch {}
+			if ($null -eq $welcome -or $welcome.type -ne 'welcome') {
+				Write-Host "ERROR: Invalid response from worker." -ForegroundColor $script:TextError
+				try { $pipeClient.Dispose() } catch {}
+				return $null
+			}
+			
+			return @{
+				Client    = $pipeClient
+				Reader    = $pipeReader
+				Writer    = $pipeWriter
+				WorkerPid = $welcome.pid
+			}
 		}
 		
 		
@@ -5158,15 +5665,111 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 		return @{ NeedsRedraw = $needsRedraw }
 	}
 
-	# Show startup complete screen (non-debug, non-hidden modes only)
-	if (-not $DebugMode -and $Output -ne "hidden") {
+	# ---- IPC Mode Branching --------------------------------------------------------
+	# Worker mode: enter headless jiggling loop with IPC server (no console UI)
+	if ($_WorkerMode) {
+		Start-WorkerLoop
+		return
+	}
+	
+	# Viewer mode state — set when connecting to a background worker's pipe.
+	# When true, the main :process loop reads state from IPC instead of doing
+	# its own movement/timing, but runs the full rendering code unchanged.
+	$_isViewerMode = $false
+	$_viewerPipeClient = $null
+	$_viewerPipeReader = $null
+	$_viewerPipeWriter = $null
+	$_viewerReadTask = $null
+	$_viewerStopped = $false
+	$_viewerStopReason = ''
+	
+	# Viewer reconnect: another instance already running, connect as viewer
+	if ($_viewerReconnect) {
+		$_pipeResult = Connect-WorkerPipe -PipeName $script:PipeName -ConnectTimeoutMs 5000
+		if ($null -eq $_pipeResult) { return }
+		$_isViewerMode = $true
+		$_viewerPipeClient = $_pipeResult.Client
+		$_viewerPipeReader = $_pipeResult.Reader
+		$_viewerPipeWriter = $_pipeResult.Writer
+	}
+	
+	# Non-Inline mode with mutex acquired: spawn hidden background worker, then become viewer
+	if (-not $Inline -and $mutexAcquired -and -not $_isViewerMode) {
+		$_modPath = Join-Path $PSScriptRoot 'Start-mJig.psm1'
+		$workerCmd = "Import-Module '$_modPath'; Start-mJig -_WorkerMode -_InModuleRunspace -_PipeName '$($script:PipeName)'"
+		
+		# Forward movement/timing parameters to the worker
+		if ($PSBoundParameters.ContainsKey('IntervalSeconds')) { $workerCmd += " -IntervalSeconds $IntervalSeconds" }
+		if ($PSBoundParameters.ContainsKey('IntervalVariance')) { $workerCmd += " -IntervalVariance $IntervalVariance" }
+		if ($PSBoundParameters.ContainsKey('MoveSpeed')) { $workerCmd += " -MoveSpeed $MoveSpeed" }
+		if ($PSBoundParameters.ContainsKey('MoveVariance')) { $workerCmd += " -MoveVariance $MoveVariance" }
+		if ($PSBoundParameters.ContainsKey('TravelDistance')) { $workerCmd += " -TravelDistance $TravelDistance" }
+		if ($PSBoundParameters.ContainsKey('TravelVariance')) { $workerCmd += " -TravelVariance $TravelVariance" }
+		if ($PSBoundParameters.ContainsKey('AutoResumeDelaySeconds')) { $workerCmd += " -AutoResumeDelaySeconds $AutoResumeDelaySeconds" }
+		if ($PSBoundParameters.ContainsKey('EndTime')) { $workerCmd += " -EndTime '$EndTime'" }
+		if ($PSBoundParameters.ContainsKey('EndVariance')) { $workerCmd += " -EndVariance $EndVariance" }
+		if ($PSBoundParameters.ContainsKey('Output')) { $workerCmd += " -Output '$Output'" }
+		
+		# Use the same PowerShell executable that's running now (pwsh.exe on PS 7, powershell.exe on 5.1)
+		$_psExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+		
+		# Release the mutex before spawning — the worker will acquire its own
+		if ($null -ne $script:InstanceMutex) {
+			try { $script:InstanceMutex.ReleaseMutex() } catch {}
+			$script:InstanceMutex.Dispose()
+			$script:InstanceMutex = $null
+		}
+		
+		# Spawn via WMI so the worker is not part of the terminal's job object
+		# and survives when the viewer terminal is closed.
+		try {
+			$_cmdLine = "`"$_psExe`" -NoProfile -NoLogo -WindowStyle Hidden -Command `"$workerCmd`""
+			$_cimResult = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $_cmdLine }
+			if ($_cimResult.ReturnValue -ne 0) { throw "WMI return code $($_cimResult.ReturnValue)" }
+			$workerProcess = Get-Process -Id $_cimResult.ProcessId -ErrorAction Stop
+		} catch {
+			# Fallback to Start-Process if WMI is unavailable
+			try {
+				$workerArgs = @('-NoProfile', '-NoLogo', '-WindowStyle', 'Hidden', '-Command', $workerCmd)
+				$workerProcess = Start-Process -FilePath $_psExe -ArgumentList $workerArgs -WindowStyle Hidden -PassThru
+			} catch {
+				Write-Host "WARNING: Could not spawn background worker. Falling back to inline mode." -ForegroundColor $script:TextWarning
+				Write-Host "  $($_.Exception.Message)" -ForegroundColor Gray
+				try {
+					$script:InstanceMutex = New-Object System.Threading.Mutex($false, 'Global\mJig_SingleInstance')
+					$mutexAcquired = $script:InstanceMutex.WaitOne(0)
+				} catch { $mutexAcquired = $true }
+				$Inline = $true
+			}
+		}
+		
+		if (-not $Inline) {
+			$_pipeResult = Connect-WorkerPipe -PipeName $script:PipeName -ConnectTimeoutMs 15000
+			if ($null -eq $_pipeResult) { return }
+			$_isViewerMode = $true
+			$_viewerPipeClient = $_pipeResult.Client
+			$_viewerPipeReader = $_pipeResult.Reader
+			$_viewerPipeWriter = $_pipeResult.Writer
+		}
+	}
+	# ---- End IPC Mode Branching ----------------------------------------------------
+	
+	if ($script:DiagEnabled -and $_isViewerMode) {
+		"=== mJig IPC Viewer Diag: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') ===" | Out-File $script:IpcDiagFile
+		"  _isViewerMode=$_isViewerMode  _viewerReconnect=$_viewerReconnect  Inline=$Inline" | Out-File $script:IpcDiagFile -Append
+		"  PipeClient.IsConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append
+		"  HostWidth=$HostWidth  HostHeight=$HostHeight  Output=$Output  Rows=$Rows" | Out-File $script:IpcDiagFile -Append
+	}
+
+	# Show startup complete screen (non-debug, non-hidden modes only; skip for viewer)
+	if (-not $DebugMode -and $Output -ne "hidden" -and -not $_isViewerMode) {
 		Show-StartupComplete -HasParams ($PSBoundParameters.Count -gt 0)
 	}
 
 	# Pause to read debug output if in debug mode
 	if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - CHECKPOINT 4: Before debug mode check (DebugMode=$DebugMode)" | Out-File $script:StartupDiagFile -Append }
 	
-	if ($DebugMode) {
+	if ($DebugMode -and -not $_isViewerMode) {
 		if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - ENTERED DEBUG MODE KEY WAIT LOOP" | Out-File $script:StartupDiagFile -Append }
 
 		Write-Host "`nPress any key to start mJig..." -ForegroundColor $script:TextWarning
@@ -5233,6 +5836,13 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 	$lii                 = New-Object mJiggAPI.LASTINPUTINFO
 	$lii.cbSize          = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf([type][mJiggAPI.LASTINPUTINFO])
 
+	if ($script:DiagEnabled -and $_isViewerMode) {
+		"$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER ENTERING MAIN LOOP" | Out-File $script:IpcDiagFile -Append
+		"  HostWidth=$HostWidth  HostHeight=$HostHeight  Rows=$Rows  Output=$Output" | Out-File $script:IpcDiagFile -Append
+		"  oldWindowSize=$($oldWindowSize.Width)x$($oldWindowSize.Height)  forceRedraw=$($script:PendingForceRedraw)" | Out-File $script:IpcDiagFile -Append
+		"  LogArray.Count=$($LogArray.Count)  PipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append
+	}
+
 	# Main Processing Loop
 	:process while ($true) {
 			$script:LoopIteration++
@@ -5265,41 +5875,203 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			$lastKeyPress = $null  # Reset key press tracking
 			$lastKeyInfo = $null  # Reset key info tracking
 			$pressedMenuKeys.Clear()  # Reset per-iteration key-up tracking
+	
+	# ---- Viewer IPC: read state/log messages from the background worker --------
+	if ($_isViewerMode) {
+		if ($script:DiagEnabled -and $script:LoopIteration -le 5) {
+			"$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER LOOP iter=$($script:LoopIteration) forceRedraw=$forceRedraw PipeConnected=$($_viewerPipeClient.IsConnected) HostWidth=$HostWidth Rows=$Rows LogArray=$($LogArray.Count)" | Out-File $script:IpcDiagFile -Append
+		}
+		if ($_viewerPipeClient.IsConnected) {
+			try {
+				$msg = Read-PipeMessage -Reader $_viewerPipeReader -PendingTask ([ref]$_viewerReadTask)
+				while ($null -ne $msg) {
+					switch ($msg.type) {
+						'state' {
+							$script:IntervalSeconds = [double]$msg.intervalSeconds
+							$script:IntervalVariance = [double]$msg.intervalVariance
+							$script:MoveSpeed = [double]$msg.moveSpeed
+							$script:MoveVariance = [double]$msg.moveVariance
+							$script:TravelDistance = [double]$msg.travelDistance
+							$script:TravelVariance = [double]$msg.travelVariance
+							$script:AutoResumeDelaySeconds = [double]$msg.autoResumeDelaySeconds
+							$script:LoopIteration = [int]$msg.loopIteration
+							$endTimeStr = [string]$msg.endTimeStr
+							$endTimeInt = [int]$msg.endTimeInt
+							$end = [string]$msg.end
+							$cooldownActive = [bool]$msg.cooldownActive
+							$secondsRemaining = if ($null -ne $msg.cooldownRemaining) { [int]$msg.cooldownRemaining } else { 0 }
+							$mouseInputDetected = [bool]$msg.mouseInputDetected
+							$keyboardInputDetected = [bool]$msg.keyboardInputDetected
+							$_detInputs = @()
+							if ([bool]$msg.mouseInputDetected) { $_detInputs += "Mouse" }
+							if ([bool]$msg.keyboardInputDetected) { $_detInputs += "Keyboard" }
+							$PreviousIntervalKeys = $_detInputs
+							$SkipUpdate = [bool]$msg.userInputDetected -or $cooldownActive
+						}
+						'log' {
+							if ($null -ne $LogArray) {
+								$components = @()
+								foreach ($c in $msg.components) {
+									$components += @{
+										priority = [int]$c.priority
+										text = [string]$c.text
+										shortText = [string]$c.shortText
+									}
+								}
+								if ($LogArray.Count -gt 0 -and $LogArray.Count -ge $Rows) {
+									$LogArray.RemoveAt(0)
+								}
+								$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $components })
+							}
+						}
+						'stopped' {
+							$_viewerStopped = $true
+							$_viewerStopReason = if ($null -ne $msg.reason) { $msg.reason } else { 'unknown' }
+						}
+					}
+					if ($_viewerStopped) { break }
+					$msg = Read-PipeMessage -Reader $_viewerPipeReader -PendingTask ([ref]$_viewerReadTask)
+				}
+			} catch {
+				$_viewerReadTask = $null
+				$_viewerStopped = $true
+				$_viewerStopReason = 'pipe_error'
+			}
+		} else {
+			$_viewerStopped = $true
+			$_viewerStopReason = 'disconnected'
+		}
+		if ($_viewerStopped) {
+			try { [Console]::Write("$([char]27)[?25h") } catch {}
+			Write-Host ""
+			if ($_viewerStopReason -eq 'endtime') {
+				Write-Host "       END TIME REACHED: " -NoNewline -ForegroundColor $script:TextError
+				Write-Host "Worker stopped."
+			} elseif ($_viewerStopReason -eq 'quit') {
+				Write-Host "mJig stopped." -ForegroundColor $script:TextSuccess
+			} else {
+				Write-Host "Worker process exited. Restart with Start-mJig." -ForegroundColor $script:TextWarning
+			}
+			Write-Host ""
+			break process
+		}
+	}
+	# ---- End Viewer IPC -----------------------------------------------------------
+	if ($script:DiagEnabled -and $_isViewerMode -and $script:LoopIteration -le 5) {
+		"$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER IPC READ DONE iter=$($script:LoopIteration) stopped=$_viewerStopped LogArray=$($LogArray.Count)" | Out-File $script:IpcDiagFile -Append
+	}
 			
 			# Calculate interval and wait BEFORE doing movement (skip on first run or if forceRedraw)
-			if ($null -ne $LastMovementTime -and -not $forceRedraw) {
+			if ($_isViewerMode) {
+				# Viewer: 500ms per frame (10 ticks of 50ms) — no movement timing needed
+				$math = 10
+				$waitExecuted = $false
+			}
+			if (-not $_isViewerMode -and $null -ne $LastMovementTime -and -not $forceRedraw) {
 				# Calculate random interval with variance
 				# Convert to milliseconds for calculation
 				$intervalSecondsMs = $script:IntervalSeconds * 1000
 				$intervalVarianceMs = $script:IntervalVariance * 1000
 				$intervalMs = Get-ValueWithVariance -baseValue $intervalSecondsMs -variance $intervalVarianceMs
-				
+
 				# Subtract the previous movement duration from the interval
 				$intervalMs = $intervalMs - $LastMovementDurationMs
-				
+
 				# Ensure minimum interval of 1 second (variance can be larger than base interval)
 				$minIntervalMs = 1000  # 1 second in milliseconds
 				if ($intervalMs -lt $minIntervalMs) {
 					$intervalMs = $minIntervalMs
 				}
-				
+
 				# Convert back to seconds and round to 1 decimal place for display
 				$interval = [math]::Round($intervalMs / 1000, 1)
-				
+
 				# Calculate number of 50ms iterations needed (1000ms / 50ms = 20 iterations per second)
 				# Use the millisecond value for accurate calculation
 				$math = [math]::Max(1, [math]::Floor($intervalMs / 50))
-				
+
 				$waitExecuted = $true
 				$mousePosAtStart = Get-MousePosition
+			} # end inline interval calculation
 				
-				# Wait Loop - Check window/buffer size changes, menu hotkeys, and keyboard input
+			# Wait Loop - runs for both inline (movement interval) and viewer (500ms frame timer)
+			# Viewer always enters; inline enters when $math > 0 (after first movement)
+			if ($math -gt 0) {
+				if ($script:DiagEnabled -and $_isViewerMode -and $script:LoopIteration -le 3) {
+					"$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER ENTERING WAIT LOOP iter=$($script:LoopIteration) math=$math" | Out-File $script:IpcDiagFile -Append
+				}
 				# Menu hotkeys checked every 200ms (every 4th iteration), keyboard input checked every 50ms for maximum reliability
 				$x = 0
 			:waitLoop while ($true) {
 				$x++
 				$date = Get-Date  # keep $date fresh each 50ms tick for accurate timestamps
 
+			# Viewer: read IPC messages each tick for real-time state/log updates
+			if ($_isViewerMode) {
+				if ($_viewerPipeClient.IsConnected) {
+					try {
+						$msg = Read-PipeMessage -Reader $_viewerPipeReader -PendingTask ([ref]$_viewerReadTask)
+						while ($null -ne $msg) {
+							switch ($msg.type) {
+								'state' {
+									$script:IntervalSeconds = [double]$msg.intervalSeconds
+									$script:IntervalVariance = [double]$msg.intervalVariance
+									$script:MoveSpeed = [double]$msg.moveSpeed
+									$script:MoveVariance = [double]$msg.moveVariance
+									$script:TravelDistance = [double]$msg.travelDistance
+									$script:TravelVariance = [double]$msg.travelVariance
+									$script:AutoResumeDelaySeconds = [double]$msg.autoResumeDelaySeconds
+									$script:LoopIteration = [int]$msg.loopIteration
+									$endTimeStr = [string]$msg.endTimeStr
+									$endTimeInt = [int]$msg.endTimeInt
+									$end = [string]$msg.end
+									$cooldownActive = [bool]$msg.cooldownActive
+									$secondsRemaining = if ($null -ne $msg.cooldownRemaining) { [int]$msg.cooldownRemaining } else { 0 }
+									$mouseInputDetected = [bool]$msg.mouseInputDetected
+									$keyboardInputDetected = [bool]$msg.keyboardInputDetected
+									$_detInputs = @()
+									if ([bool]$msg.mouseInputDetected) { $_detInputs += "Mouse" }
+									if ([bool]$msg.keyboardInputDetected) { $_detInputs += "Keyboard" }
+									$PreviousIntervalKeys = $_detInputs
+									$SkipUpdate = [bool]$msg.userInputDetected -or $cooldownActive
+								}
+									'log' {
+										if ($null -ne $LogArray) {
+											$components = @()
+											foreach ($c in $msg.components) {
+												$components += @{
+													priority = [int]$c.priority
+													text = [string]$c.text
+													shortText = [string]$c.shortText
+												}
+											}
+											if ($LogArray.Count -gt 0 -and $LogArray.Count -ge $Rows) {
+												$LogArray.RemoveAt(0)
+											}
+											$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $components })
+										}
+									}
+									'stopped' {
+										$_viewerStopped = $true
+										$_viewerStopReason = if ($null -ne $msg.reason) { $msg.reason } else { 'unknown' }
+									}
+								}
+								if ($_viewerStopped) { break }
+								$msg = Read-PipeMessage -Reader $_viewerPipeReader -PendingTask ([ref]$_viewerReadTask)
+							}
+						} catch {
+							$_viewerReadTask = $null
+							$_viewerStopped = $true
+							$_viewerStopReason = 'pipe_error'
+						}
+					} else {
+						$_viewerStopped = $true
+						$_viewerStopReason = 'disconnected'
+					}
+					if ($_viewerStopped) { break waitLoop }
+				}
+
+				if (-not $_isViewerMode) {
 				# Check for system-wide keyboard input every 50ms for maximum reliability
 					# Skip checking if we recently sent a simulated key press (within last 300ms)
 					$shouldCheckKeyboard = (Get-TimeSinceMs -startTime $LastSimulatedKeyPress) -ge 300
@@ -5342,7 +6114,10 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 						} catch {
 							if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - MOUSEPOS ERROR: $($_.Exception.Message)" | Out-File $script:InputDiagFile -Append }
 						}
+					} # end if ($shouldCheckKeyboard) — movement-specific section
+				} # end if (-not $_isViewerMode) — movement-specific per-tick checks
 						
+					if (-not $_isViewerMode -and $shouldCheckKeyboard -or $_isViewerMode) {
 						# Detect scroll, keyboard, and mouse clicks via PeekConsoleInput (works when console is focused)
 						# Keyboard events are only peeked (not consumed) so the menu hotkey handler can still read them
 						$scrollDetected = $false
@@ -5663,6 +6438,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 								break
 							}
 							if ($quitResult.Result -eq $true) {
+								if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'quit' } } catch {} }
 								Clear-Host
 								$runtime = (Get-Date) - $ScriptStartTime
 								$hours = [math]::Floor($runtime.TotalHours)
@@ -5729,6 +6505,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 									break
 								}
 								if ($quitResult.Result -eq $true) {
+									if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'quit' } } catch {} }
 									# Debug: Log quit confirmed
 									if ($DebugMode) {
 										if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
@@ -5812,6 +6589,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 						$Output = "full"
 					}
 					$script:Output = $Output
+					if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output } } catch {} }
 						# Debug: Log view toggle
 						if ($DebugMode) {
 							if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
@@ -5852,6 +6630,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 					$script:MenuItemsBounds.Clear()
 					}
 					$script:Output = $Output
+					if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output } } catch {} }
 						# Debug: Log incognito toggle
 						if ($DebugMode) {
 							if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
@@ -5892,6 +6671,22 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			$end        = $endRef.Value;        $LogArray   = $logArrayRef.Value
 			$Output    = $script:Output
 			$DebugMode = $script:DebugMode
+			if ($_isViewerMode) {
+				try {
+					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{
+						type = 'settings'
+						intervalSeconds = $script:IntervalSeconds
+						intervalVariance = $script:IntervalVariance
+						moveSpeed = $script:MoveSpeed
+						moveVariance = $script:MoveVariance
+						travelDistance = $script:TravelDistance
+						travelVariance = $script:TravelVariance
+						autoResumeDelaySeconds = $script:AutoResumeDelaySeconds
+					}
+					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance }
+					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output }
+				} catch {}
+			}
 			if ($settingsResult.ReopenSettings) {
 					# Sub-dialog was used — flag so the main loop reopens settings
 					# after it has repainted the full screen cleanly.
@@ -5991,6 +6786,20 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 											@{priority = 2; text = $changeMessage; shortText = $changeShortMessage}
 										)
 										$LogArray += [PSCustomObject]@{logRow = $true; components = $changeLogComponents}
+									}
+									if ($_isViewerMode) {
+										try {
+											Send-PipeMessage -Writer $_viewerPipeWriter -Message @{
+												type = 'settings'
+												intervalSeconds = $script:IntervalSeconds
+												intervalVariance = $script:IntervalVariance
+												moveSpeed = $script:MoveSpeed
+												moveVariance = $script:MoveVariance
+												travelDistance = $script:TravelDistance
+												travelVariance = $script:TravelVariance
+												autoResumeDelaySeconds = $script:AutoResumeDelaySeconds
+											}
+										} catch {}
 									}
 								}
 								$SkipUpdate = $true
@@ -6093,6 +6902,9 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 											@{priority = 2; text = $changeMessage; shortText = $changeShortMessage}
 										)
 										$LogArray += [PSCustomObject]@{logRow = $true; components = $changeLogComponents}
+									}
+									if ($_isViewerMode) {
+										try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance } } catch {}
 									}
 								}
 							$SkipUpdate = $true
@@ -6217,6 +7029,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			# Keyboard and mouse input checking is now done every 200ms in the wait loop above
 			# This provides more reliable detection compared to checking once per interval
 			
+		if (-not $_isViewerMode) {
 			# Safety net: detect user input via GetLastInputInfo after wait loop.
 			# Same inference as wait-loop: unclassified activity → mouse movement.
 		try {
@@ -6242,6 +7055,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 		} catch {
 			# GetLastInputInfo not available, skip
 		}
+		} # end if (-not $_isViewerMode) — safety net
 			
 			# Check for window size changes outside the wait loop (catches resizes that happen during rendering)
 		if (-not $forceRedraw) {
@@ -6293,6 +7107,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			# Check if this is the first run (before we modify lastMovementTime)
 			$isFirstRun = ($null -eq $LastMovementTime)
 			
+		if (-not $_isViewerMode) {
 			# Wait for mouse to stop moving before proceeding
 			# This prevents stutter by ensuring the mouse is settled before we do expensive operations
 			# Only do this if we actually waited (not on first run or force redraw)
@@ -6349,6 +7164,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 				# Only set skipUpdate to false if we're not forcing a redraw
 				$SkipUpdate = $false
 			}
+		} # end if (-not $_isViewerMode) — mouse settle + skip determination
 			
 			# Prepare UI dimensions
 			$outputline = 0
@@ -6391,6 +7207,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 		while ($LogArray.Count -lt $Rows) { $LogArray.Insert(0, [PSCustomObject]@{ logRow = $true; components = @() }) }
 		while ($LogArray.Count -gt $Rows) { $LogArray.RemoveAt(0) }
 			
+		if (-not $_isViewerMode) {
 			# Check current mouse position to detect user movement (simple approach - only check at end of interval)
 			# Compare end position to start position to detect if user moved mouse during the interval
 			# This is simpler and doesn't interfere with mouse movement like checking during the wait loop
@@ -6794,11 +7611,16 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $logComponents })
 		}
 		# List is maintained at exactly $Rows entries; no further trim/pad needed
+		} # end if (-not $_isViewerMode) — post-wait movement + log building
+
+	if ($script:DiagEnabled -and $_isViewerMode -and $script:LoopIteration -le 5) {
+		"$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER PRE-RENDER iter=$($script:LoopIteration) HostWidth=$HostWidth HostHeight=$HostHeight Rows=$Rows Output=$Output forceRedraw=$forceRedraw SkipUpdate=$SkipUpdate LogArray=$($LogArray.Count)" | Out-File $script:IpcDiagFile -Append
+	}
 
 			# Output Handling
 			# Skip console updates if mouse movement was recently detected (every 50ms check) to prevent stutter
 			# This prevents blocking console operations from interfering with Windows mouse message processing
-			$skipConsoleUpdate = (Get-TimeSinceMs -startTime $script:LastMouseMovementTime) -lt 200
+			$skipConsoleUpdate = if ($_isViewerMode) { $false } else { (Get-TimeSinceMs -startTime $script:LastMouseMovementTime) -lt 200 }
 			# Force UI redraw when forceRedraw is true (e.g., after window resize) - override skipConsoleUpdate
 			if ($forceRedraw) {
 				$skipConsoleUpdate = $false
@@ -7650,6 +8472,9 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 		# Use ClearFirst on forced redraws (startup transition, resize, re-open after dialog)
 		# to atomically clear stale content and paint the new frame in one write.
 		if ($forceRedraw) { Flush-Buffer -ClearFirst } else { Flush-Buffer }
+		if ($script:DiagEnabled -and $_isViewerMode -and $script:LoopIteration -le 5) {
+			"$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER RENDER FLUSHED iter=$($script:LoopIteration) forceRedraw=$forceRedraw Rows=$Rows HostWidth=$HostWidth RenderQueue=$($script:RenderQueue.Count)" | Out-File $script:IpcDiagFile -Append
+		}
 	} elseif ($Output -eq "hidden") {
 		$script:ModeButtonBounds        = $null  # Header not rendered in hidden mode
 		$script:HeaderEndTimeBounds     = $null
@@ -7729,6 +8554,22 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			$end        = $endRef.Value;        $LogArray   = $logArrayRef.Value
 			$Output    = $script:Output
 			$DebugMode = $script:DebugMode
+			if ($_isViewerMode) {
+				try {
+					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{
+						type = 'settings'
+						intervalSeconds = $script:IntervalSeconds
+						intervalVariance = $script:IntervalVariance
+						moveSpeed = $script:MoveSpeed
+						moveVariance = $script:MoveVariance
+						travelDistance = $script:TravelDistance
+						travelVariance = $script:TravelVariance
+						autoResumeDelaySeconds = $script:AutoResumeDelaySeconds
+					}
+					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance }
+					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output }
+				} catch {}
+			}
 			if ($settingsResult.ReopenSettings) {
 			# Another sub-dialog was used — loop again via the next iteration
 			$script:PendingReopenSettings = $true
@@ -7741,6 +8582,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 		}
 		}
 		
+		if (-not $_isViewerMode) {
 		# Check if end time reached (only if end time is set)
 			# Compare full MMddHHmm values to handle overnight runs correctly
 			if ($endTimeInt -ne -1 -and -not [string]::IsNullOrEmpty($end)) {
@@ -7767,7 +8609,22 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 				}
 				break
 			}
+		} # end if (-not $_isViewerMode) — end-time check
 		} # end :process
+
+	# Viewer pipe cleanup
+	if ($_isViewerMode) {
+		if ($null -ne $_viewerPipeReader) { try { $_viewerPipeReader.Dispose() } catch {} }
+		if ($null -ne $_viewerPipeWriter) { try { $_viewerPipeWriter.Dispose() } catch {} }
+		if ($null -ne $_viewerPipeClient) { try { $_viewerPipeClient.Dispose() } catch {} }
+	}
+
+	# Release singleton mutex so another instance can start
+	if ($null -ne $script:InstanceMutex) {
+		try { $script:InstanceMutex.ReleaseMutex() } catch {}
+		$script:InstanceMutex.Dispose()
+		$script:InstanceMutex = $null
+	}
 }
 
 Export-ModuleMember -Function 'Start-mJig'

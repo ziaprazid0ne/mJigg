@@ -29,7 +29,35 @@ This document provides deep context for AI agents working on the `Start-mJig.psm
 
 ## Architecture Overview
 
-The module is a single-file PowerShell module (~7,900 lines) implementing a console-based TUI mouse jiggler. It uses Win32 API calls via P/Invoke for low-level mouse/keyboard interaction. Every invocation automatically runs inside a fresh, isolated runspace provisioned by the module itself (see Module Runspace Provisioner below).
+The module is a single-file PowerShell module (~8,600 lines) implementing a console-based TUI mouse jiggler. It uses Win32 API calls via P/Invoke for low-level mouse/keyboard interaction. Every invocation automatically runs inside a fresh, isolated runspace provisioned by the module itself (see Module Runspace Provisioner below).
+
+### IPC Background Worker Architecture
+
+By default, `Start-mJig` spawns a hidden background worker process that performs the actual mouse jiggling, then the calling terminal becomes a viewer connected to the worker via a named pipe (`\\.\pipe\mJig_IPC`). This allows the worker to persist independently of the terminal.
+
+**Behavior matrix:**
+- **`Start-mJig`** (no running instance): Spawns hidden worker, enters viewer mode
+- **`Start-mJig`** (instance running): Connects to existing worker as a viewer
+- **`Start-mJig -Inline`**: Legacy single-process mode, no IPC
+- **`Start-mJig -_WorkerMode`** (internal): Headless worker entry point
+
+**IPC protocol:** JSON lines over `NamedPipeServerStream` / `NamedPipeClientStream`. Worker sends `welcome`, `state` (every 500ms), `log`, and `stopped` messages. Viewer sends `settings`, `endtime`, `output`, and `quit` commands. State messages include `mouseInputDetected`, `keyboardInputDetected`, `userInputDetected`, `cooldownActive`, and `cooldownRemaining` so the viewer can display live input detection and cooldown status.
+
+**Key functions:**
+- `Start-WorkerLoop` — headless jiggling loop with pipe server; accepts one viewer at a time. Resilient pipe reconnection: all `BeginWaitForConnection` calls are wrapped in try/catch; if the call fails (e.g. broken pipe after abrupt viewer death), the `NamedPipeServerStream` is disposed and recreated from scratch.
+- `Connect-WorkerPipe` — connection-only function; returns pipe client/reader/writer or `$null` on failure
+- `Send-PipeMessage` / `Read-PipeMessage` — JSON-line IPC helpers. `Read-PipeMessage` uses asynchronous `ReadLineAsync()` with a `[ref]$PendingTask` parameter to prevent blocking on named pipes when no data is available. Each caller maintains its own pending task variable (`$_workerReadTask` / `$_viewerReadTask`).
+
+**Worker process spawning:** Uses `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` (WMI) to spawn the worker outside the terminal's job object, ensuring the worker survives when the viewer terminal tab is closed. Falls back to `Start-Process` if WMI is unavailable. The executable path is determined dynamically via `[System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName` to match the running PowerShell version (pwsh.exe on PS 7, powershell.exe on 5.1).
+
+**Worker input detection bootstrap:** `GetLastInputInfo` and mouse position tracking in the worker are guarded with `if ($null -ne $workerLastAutomatedMouseMovement)`. This skips input detection until the first automated movement completes, preventing a permanent "User input skip" deadlock where the null filter timestamps cause every system tick to be classified as user input.
+
+**Viewer main loop integration (`$_isViewerMode`):**
+When the viewer connects (via `Connect-WorkerPipe`), it sets `$_isViewerMode = $true` and falls through into the existing main `:process` loop. The main loop checks `$_isViewerMode` at key points:
+- **IPC reading**: At the top of each iteration and inside each 50ms wait tick, reads `state`, `log`, and `stopped` messages from the worker pipe. Updates `$script:*` variables, `$LogArray`, `$mouseInputDetected`, `$keyboardInputDetected`, `$PreviousIntervalKeys`, `$cooldownActive`, `$secondsRemaining`, and `$SkipUpdate` directly from the worker's state messages.
+- **Skips**: Interval calculation (uses fixed 500ms/10 ticks), movement-specific per-tick checks (keyboard state, mouse position, GetLastInputInfo), post-wait mouse settle, movement execution, log building, and end-time check.
+- **Keeps**: Full rendering code (unchanged), resize detection, console input handling (PeekConsoleInput for clicks, ReadKey for hotkeys), all dialog invocations, and stats box display (populated from IPC state).
+- **IPC forwarding**: After dialog results (quit, time, movement, output, settings), the viewer sends the changes back to the worker via the pipe.
 
 ### High-Level Flow
 
@@ -42,25 +70,33 @@ The module is a single-file PowerShell module (~7,900 lines) implementing a cons
    c. Import-Module into the new runspace; call Start-mJig -_InModuleRunspace $true + forwarded params
    d. Invoke() blocks; finally disposes runspace on exit
 4. Inside the provisioned runspace, $_InModuleRunspace=$true skips the provisioner
-5. Load assemblies (System.Windows.Forms)
-6. Define P/Invoke types (mJiggAPI namespace)
-7. Initialize variables and theme colors
-8. Define helper functions (including Invoke-ResizeHandler)
-9. Parse and validate parameters
-10. Show-StartupScreen  (skipped in -DebugMode / -Output hidden)
-11. Show-StartupComplete (skipped in -DebugMode / -Output hidden)
-    └── Calls Invoke-ResizeHandler if window is resized during the screen
+5. Mutex check:
+   a. Mutex NOT acquired + not -_WorkerMode → set $_viewerReconnect flag (viewer reconnect path)
+   b. Mutex acquired → continue initialization
+6. Console setup (skipped for -_WorkerMode; startup screen skipped for viewer reconnect)
+7. Load assemblies (System.Windows.Forms), define P/Invoke types
+8. Initialize variables, theme colors, parse end time
+9. Define helper functions (including IPC helpers, Start-WorkerLoop, Connect-WorkerPipe)
+10. IPC Mode Branching:
+    a. -_WorkerMode → Start-WorkerLoop (headless IPC server + jiggling loop), return
+    b. $_viewerReconnect → Connect-WorkerPipe, set $_isViewerMode = $true, fall through to main loop
+    c. -Inline not set + mutex acquired → Spawn hidden worker via WMI (Invoke-CimMethod Win32_Process),
+       Connect-WorkerPipe (15s timeout), set $_isViewerMode = $true, fall through to main loop
+    d. -Inline + mutex acquired → fall through to main loop (inline mode, $_isViewerMode = $false)
+11. Show-StartupScreen / Show-StartupComplete (inline mode only)
 12. Initialize $oldWindowSize / $OldBufferSize to current state
-13. Enter main processing loop
-    ├── Wait for interval (with input monitoring)
-    ├── Check for user input / hotkeys
-    ├── Detect window resize → Invoke-ResizeHandler (any context)
-    ├── Wait for mouse to settle (stutter prevention)
-    ├── Perform automated mouse movement
-    ├── Send simulated keypress
-    ├── Render UI (header, logs, stats, menu)
-    └── Handle window resize
-14. Cleanup on exit; provisioner's finally block disposes the runspace
+13. Enter main processing loop (dual-mode: inline OR viewer)
+    ├── Viewer IPC: read state/log/stopped messages from worker (viewer mode only)
+    ├── Wait for interval (inline: calculated; viewer: fixed 500ms)
+    ├── Per-tick: read IPC messages (viewer) / check keyboard/mouse state (inline)
+    ├── Check for user input / hotkeys + forward to worker (viewer)
+    ├── Detect window resize → Invoke-ResizeHandler (both modes)
+    ├── Wait for mouse to settle (inline only)
+    ├── Perform automated mouse movement (inline only)
+    ├── Send simulated keypress (inline only)
+    ├── Render UI (header, logs, stats, menu) — SAME CODE, both modes
+    └── Check end time (inline only; viewer uses IPC 'stopped' message)
+14. Pipe cleanup (viewer mode); mutex release; provisioner's finally block disposes the runspace
 ```
 
 ### Code Structure Map
@@ -92,6 +128,9 @@ Start-mJig.psm1
     │   ├── $TravelDistance - Cursor travel distance in pixels
     │   ├── $TravelVariance - Random variance for distance
     │   ├── $AutoResumeDelaySeconds - Cooldown after user input
+    │   ├── $Inline - Run without background worker (legacy single-process mode)
+    │   ├── $_WorkerMode [DontShow] - Internal: background worker entry point
+    │   ├── $_PipeName [DontShow] - Internal: named pipe identifier (default 'mJig_IPC')
     │   └── $_InModuleRunspace [DontShow] - Internal re-entry guard; never passed by users
     │
     ├── Initialization Variables (lines 150-212)
@@ -120,21 +159,22 @@ Start-mJig.psm1
     ├── Invoke-ResizeHandler (lines ~383-425)
     │   └── Unified blocking resize handler for main loop and hidden-mode contexts
     │
-    ├── Helper Functions (lines ~384-5150)
+    ├── Helper Functions (lines ~384-6000)
     │   ├── Find-WindowHandle (~384-470)
     │   ├── Buffered Rendering (Write-Buffer w/-NoWrap, Flush-Buffer, Clear-Buffer, Write-ButtonImmediate) (~1920-1980)
     │   ├── Draw-DialogShadow / Clear-DialogShadow (~1985-2030)
     │   ├── Show-TimeChangeDialog (~2035-2660)
     │   ├── Draw-ResizeLogo (~2870-2960)
-    │   ├── Get-MousePosition (~2965-2980)
-    │   ├── Test-MouseMoved (~2982-3000)
+    │   ├── Get-MousePosition / Test-MouseMoved (~2965-3000)
     │   ├── Get-TimeSinceMs / Get-ValueWithVariance / Get-Padding (~3000-3060)
-    │   ├── Write-SimpleDialogRow (~3060-3100)
-    │   ├── Write-SimpleFieldRow (~3100-3140)
-    │   ├── Show-MovementModifyDialog (~3145-3920)
-    │   ├── Show-QuitConfirmationDialog (~3925-4240)
-    │   ├── Show-SettingsDialog (~4245-4700) — slide-up 13-row dialog; time + movement sub-dialogs; inline output toggle + debug checkbox; `SkipAnimation` param for clean reopen
-    │   └── Show-InfoDialog (~4700+) — info/about dialog; version check, clickable GitHub URL
+    │   ├── IPC Helpers: Send-PipeMessage, Read-PipeMessage (async ReadLineAsync) (~2995-3030)
+    │   ├── Start-WorkerLoop (~3035-3480) — headless IPC server + jiggling loop; resilient pipe reconnection
+    │   ├── Connect-WorkerPipe (~3480-3560) — pipe connection + welcome handshake; returns client/reader/writer
+    │   ├── Write-SimpleDialogRow / Write-SimpleFieldRow (~3800-3900)
+    │   ├── Show-MovementModifyDialog (~3900-4700)
+    │   ├── Show-QuitConfirmationDialog (~4700-5020)
+    │   ├── Show-SettingsDialog (~5020-5480) — slide-up 13-row dialog; time + movement sub-dialogs; inline output toggle + debug checkbox; `SkipAnimation` param for clean reopen
+    │   └── Show-InfoDialog (~5480+) — info/about dialog; version check, clickable GitHub URL
     │
     ├── P/Invoke Type Definitions (lines ~700-900)
     │   ├── POINT struct
@@ -244,6 +284,12 @@ These can be modified at runtime via the Modify Movement dialog. When accessing 
 - `$script:LastMouseMovementTime` - Stutter prevention timing
 - `$script:ResizeQuotes` - Playful quotes array
 - `$script:CurrentResizeQuote` - Currently displayed quote
+- `$script:PipeName` - Named pipe identifier for IPC (default `'mJig_IPC'`)
+- `$script:LogReplayBuffer` - `Queue[hashtable]` (capacity 30) in worker mode; replayed to viewer on connect
+- `$_isViewerMode` - `$true` when running as a viewer connected to a background worker; controls main loop dual-mode behavior (local, not `$script:`)
+- `$_viewerPipeClient` / `$_viewerPipeReader` / `$_viewerPipeWriter` - Pipe objects for viewer IPC (local)
+- `$_viewerStopped` / `$_viewerStopReason` - Viewer stop state; reason is `'endtime'`, `'quit'`, `'disconnected'`, or `'pipe_error'`
+- `$_workerReadTask` / `$_viewerReadTask` - Pending `ReadLineAsync()` tasks for non-blocking pipe reads (local; passed as `[ref]` to `Read-PipeMessage`)
 
 ### 2. P/Invoke (Platform Invoke)
 
@@ -1187,20 +1233,20 @@ Windows Terminal has a setting "Automatically adjust lightness of indistinguisha
 | `_diag/input.txt` | PeekConsoleInput + GetLastInputInfo input detection logs (created with `-Diag`) |
 | `_diag/welcome.txt` | Welcome screen resize detection diagnostics (**always written**, no `-Diag` flag needed) |
 
-The `_diag/` folder is at the **project root** (`c:\Projects\mJigg\_diag\`), one level above the script (`Start-mJig\`). The script uses `Split-Path $PSScriptRoot -Parent` to build the path so it lands at the project root regardless of where the script file lives within the repo. `welcome.txt` is always written regardless of `-Diag`; all other diag files require the `-Diag` flag. All diag files are git-ignored.
+The `_diag/` folder is at the **project root** (`c:\Projects\mJig\_diag\`), one level above the script (`Start-mJig\`). The script uses `Split-Path $PSScriptRoot -Parent` to build the path so it lands at the project root regardless of where the script file lives within the repo. `welcome.txt` is always written regardless of `-Diag`; all other diag files require the `-Diag` flag. All diag files are git-ignored.
 
 > **TEMPORARY TEST SCRIPTS**: When an agent creates a throwaway `.ps1` script to test or experiment with something (e.g. testing rendering logic, validating a calculation), place it in `resources/`. All `resources/*.ps1` files are git-ignored. Do NOT place temp scripts in the project root or elsewhere. Note: `_diag/` (at the project root, not inside `Start-mJig/`) is separate — it is for runtime diagnostic output produced by the script itself (via `-Diag` or always-on), not for agent-authored test scripts.
 
 **When reviewing diagnostic output with the user**, always provide a ready-to-run command to print the relevant diag file. The user expects this every time. Use:
 
 ```powershell
-# Run these from the project root (c:\Projects\mJigg)
+# Run these from the project root (c:\Projects\mJig)
 Get-Content ".\_diag\input.txt"
 Get-Content ".\_diag\startup.txt"
 Get-Content ".\_diag\settle.txt"
 Get-Content ".\_diag\welcome.txt"   # always present, no -Diag flag needed
 # Or full paths:
-Get-Content "c:\Projects\mJigg\_diag\welcome.txt"
+Get-Content "c:\Projects\mJig\_diag\welcome.txt"
 ```
 
 ### Module Runspace Provisioner
@@ -1238,7 +1284,9 @@ No external dependencies - the script is fully self-contained.
 | Component | Approximate Lines |
 |-----------|------------------|
 | Module Runspace Provisioner | 71-100 |
-| Parameters | 41-69 |
+| Parameters | 41-75 |
+| Mutex check + viewer reconnect flag | ~790-815 |
+| Console setup guard (`-not $_WorkerMode`) | ~818-994 |
 | Box Characters | ~155-165 |
 | Theme Colors (incl. BorderPadV/H, HeaderBg, FooterBg, HeaderRowBg, MenuRowBg) | ~167-245 |
 | Show-StartupScreen | ~253-285 |
@@ -1251,17 +1299,20 @@ No external dependencies - the script is fully self-contained.
 | Show-TimeChangeDialog | ~2035-2660 |
 | Draw-ResizeLogo | ~2870-2960 |
 | Get-MousePosition / Test-MouseMoved | ~2965-3000 |
-| Write-SimpleDialogRow / Write-SimpleFieldRow | ~3060-3140 |
-| Show-MovementModifyDialog | ~3145-3920 |
-| Show-QuitConfirmationDialog | ~3925-4240 |
-| Show-SettingsDialog | ~4245-4700 |
-| Show-InfoDialog | ~4700+ |
-| $oldWindowSize / $OldBufferSize init (pre-main-loop) | ~5150-5160 |
-| Main Loop Start | ~5165 |
-| Wait Loop | ~5180-6050 |
-| Resize Detection (wait loop) | ~5950-6050 |
-| UI Rendering — chrome rows (header blank, header, separators, footer blank) | ~6300-6910, ~7280-7730 |
-| UI Rendering — log rows + stats box | ~7078-7275 |
-| Menu Bar Render | ~7370-7700 |
+| IPC Helpers (Send-PipeMessage, Read-PipeMessage) | ~2995-3030 |
+| Start-WorkerLoop | ~3035-3480 |
+| Connect-WorkerPipe | ~3480-3560 |
+| Write-SimpleDialogRow / Write-SimpleFieldRow | ~3800-3900 |
+| Show-MovementModifyDialog | ~3900-4700 |
+| Show-QuitConfirmationDialog | ~4700-5020 |
+| Show-SettingsDialog | ~5020-5480 |
+| Show-InfoDialog | ~5480+ |
+| IPC Mode Branching | ~6005-6080 |
+| $oldWindowSize / $OldBufferSize init (pre-main-loop) | ~6150-6160 |
+| Main Loop Start (inline mode) | ~6170 |
+| Wait Loop | ~6180-7050 |
+| Resize Detection (wait loop) | ~6950-7050 |
+| UI Rendering — chrome rows | ~7300-7900+ |
+| Menu Bar Render | ~8100+ |
 
 *Note: Line numbers are approximate and shift as code is modified.*
