@@ -145,7 +145,28 @@ function Start-mJig {
 				$null = $_ps.AddParameter($_kvp.Key, $_kvp.Value)
 			}
 			$_ps.Invoke()
-			if ($_ps.HadErrors) { $_ps.Streams.Error | ForEach-Object { Write-Error $_ } }
+			if ($_ps.HadErrors -and $DebugMode) {
+				$_errStream = $_ps.Streams.Error
+				if ($_errStream.Count -gt 0) {
+					$_uniqueErrors = @{}
+					foreach ($_err in $_errStream) {
+						$_key = "$($_err.Exception.Message)|$($_err.InvocationInfo.ScriptLineNumber)"
+						if (-not $_uniqueErrors.ContainsKey($_key)) {
+							$_uniqueErrors[$_key] = @{ Error = $_err; Count = 1 }
+						} else {
+							$_uniqueErrors[$_key].Count++
+						}
+					}
+					Write-Host ""
+					Write-Host "[RUNSPACE] $($_errStream.Count) non-terminating error(s) in child ($($_uniqueErrors.Count) unique):" -ForegroundColor DarkYellow
+					foreach ($_entry in $_uniqueErrors.Values) {
+						$_e = $_entry.Error
+						$_c = $_entry.Count
+						$_line = if ($_e.InvocationInfo) { $_e.InvocationInfo.ScriptLineNumber } else { '?' }
+						Write-Host "  Line $_line (x$_c): $($_e.Exception.Message)" -ForegroundColor DarkYellow
+					}
+				}
+			}
 		} finally {
 			$_ps.Dispose()
 			$_rs.Close()
@@ -3032,15 +3053,47 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 			return $null
 		}
 		
+		function Send-PipeMessageNonBlocking {
+			param(
+				[System.IO.StreamWriter]$Writer,
+				[hashtable]$Message,
+				[ref]$PendingFlush
+			)
+			if ($null -ne $PendingFlush.Value) {
+				if (-not $PendingFlush.Value.IsCompleted) {
+					return $false
+				}
+				if ($PendingFlush.Value.IsFaulted) {
+					$ex = $PendingFlush.Value.Exception
+					$PendingFlush.Value = $null
+					throw $ex
+				}
+				$PendingFlush.Value = $null
+			}
+			$json = $Message | ConvertTo-Json -Compress -Depth 3
+			$Writer.WriteLine($json)
+			$PendingFlush.Value = $Writer.FlushAsync()
+			return $true
+		}
+		
 		function Start-WorkerLoop {
+			$_wDiag = $script:DiagEnabled
+			$_wDiagFile = $null
+			if ($_wDiag) {
+				$_wDiagFile = Join-Path $script:DiagFolder "worker-ipc.txt"
+				"=== mJig Worker IPC Diag: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') PID=$PID ===" | Out-File $_wDiagFile
+			}
+			
 			$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
 				$script:PipeName,
 				[System.IO.Pipes.PipeDirection]::InOut,
 				1,
 				[System.IO.Pipes.PipeTransmissionMode]::Byte,
-				[System.IO.Pipes.PipeOptions]::Asynchronous
+				[System.IO.Pipes.PipeOptions]::Asynchronous,
+				65536, 65536
 			)
 			$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+			if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - WORKER STARTED pipe=$($script:PipeName) bufSize=65536" | Out-File $_wDiagFile -Append }
 			
 			$pipeReader = $null
 			$pipeWriter = $null
@@ -3056,10 +3109,13 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 			$workerLastUserInputTime = $null
 			$workerLoopIteration = 0
 			$workerStateTicks = 0
+			$_writeSkipCount = 0
 			
 			$lii = New-Object mJiggAPI.LASTINPUTINFO
 			$lii.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf([type][mJiggAPI.LASTINPUTINFO])
 			$_workerReadTask = $null
+			$_pendingWriteFlush = $null
+			$_workerSettingsEpoch = 0
 			
 			try {
 				:workerLoop while ($true) {
@@ -3096,7 +3152,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 								$pipeServer.EndWaitForConnection($connectResult)
 								$pipeReader = New-Object System.IO.StreamReader($pipeServer, [System.Text.Encoding]::UTF8)
 								$pipeWriter = New-Object System.IO.StreamWriter($pipeServer, [System.Text.Encoding]::UTF8)
+								$_pendingWriteFlush = $null
 								$viewerConnected = $true
+								if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER CONNECTED" | Out-File $_wDiagFile -Append }
 								
 								Send-PipeMessage -Writer $pipeWriter -Message @{
 									type = 'welcome'
@@ -3105,6 +3163,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 								}
 							Send-PipeMessage -Writer $pipeWriter -Message @{
 								type = 'state'
+								epoch = $_workerSettingsEpoch
 								intervalSeconds = $script:IntervalSeconds
 								intervalVariance = $script:IntervalVariance
 								moveSpeed = $script:MoveSpeed
@@ -3128,6 +3187,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 							}
 						} catch {
 							$viewerConnected = $false
+							$_pendingWriteFlush = $null
 							try { $pipeServer.Disconnect() } catch {}
 							try {
 								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
@@ -3135,7 +3195,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 								try { $pipeServer.Dispose() } catch {}
 								$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
 									$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
-									[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous)
+									[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
 								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 							}
 						}
@@ -3143,7 +3203,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 						
 						# Check viewer disconnection
 					if ($viewerConnected -and -not $pipeServer.IsConnected) {
+						if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DISCONNECTED (pipe not connected)" | Out-File $_wDiagFile -Append }
 						$_workerReadTask = $null
+						$_pendingWriteFlush = $null
 						$viewerConnected = $false
 						if ($null -ne $pipeReader) { try { $pipeReader.Dispose() } catch {} }
 						if ($null -ne $pipeWriter) { try { $pipeWriter.Dispose() } catch {} }
@@ -3156,7 +3218,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 							try { $pipeServer.Dispose() } catch {}
 							$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
 								$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
-								[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous)
+								[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
 							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 						}
 						}
@@ -3166,8 +3228,10 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 							try {
 								$msg = Read-PipeMessage -Reader $pipeReader -PendingTask ([ref]$_workerReadTask)
 								while ($null -ne $msg) {
+									if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - WORKER RECV type=$($msg.type)" | Out-File $_wDiagFile -Append }
 									switch ($msg.type) {
 										'settings' {
+											if ($null -ne $msg.epoch) { $_workerSettingsEpoch = [int]$msg.epoch }
 											if ($null -ne $msg.intervalSeconds) { $script:IntervalSeconds = [double]$msg.intervalSeconds }
 											if ($null -ne $msg.intervalVariance) { $script:IntervalVariance = [double]$msg.intervalVariance }
 											if ($null -ne $msg.moveSpeed) { $script:MoveSpeed = [double]$msg.moveSpeed }
@@ -3177,6 +3241,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 											if ($null -ne $msg.autoResumeDelaySeconds) { $script:AutoResumeDelaySeconds = [double]$msg.autoResumeDelaySeconds }
 										}
 										'endtime' {
+											if ($null -ne $msg.epoch) { $_workerSettingsEpoch = [int]$msg.epoch }
 											if ($null -ne $msg.endTime) {
 												$endTimeInt = [int]$msg.endTime
 												$endTimeStr = $endTimeInt.ToString().PadLeft(4, '0')
@@ -3195,6 +3260,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 											}
 										}
 										'output' {
+											if ($null -ne $msg.epoch) { $_workerSettingsEpoch = [int]$msg.epoch }
 											if ($null -ne $msg.mode) { $script:Output = $msg.mode }
 										}
 										'quit' {
@@ -3208,6 +3274,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 								}
 						} catch {
 							$_workerReadTask = $null
+							$_pendingWriteFlush = $null
 							$viewerConnected = $false
 							try { $pipeReader.Dispose() } catch {}
 							try { $pipeWriter.Dispose() } catch {}
@@ -3220,7 +3287,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 								try { $pipeServer.Dispose() } catch {}
 								$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
 									$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
-									[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous)
+									[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
 								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 							}
 						}
@@ -3282,8 +3349,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 										$_stateCooldownSecs = [Math]::Ceiling($script:AutoResumeDelaySeconds - $_sinceInput)
 									}
 								}
-								Send-PipeMessage -Writer $pipeWriter -Message @{
+								$_sendResult = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message @{
 								type = 'state'
+								epoch = $_workerSettingsEpoch
 								intervalSeconds = $script:IntervalSeconds
 								intervalVariance = $script:IntervalVariance
 								moveSpeed = $script:MoveSpeed
@@ -3301,8 +3369,16 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 								mouseInputDetected = $mouseInputDetected
 								keyboardInputDetected = $keyboardInputDetected
 								userInputDetected = $userInputDetected
-							}
+							} -PendingFlush ([ref]$_pendingWriteFlush)
+								if (-not $_sendResult) {
+									$_writeSkipCount++
+									if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - WORKER STATE SKIPPED (flush pending) skipCount=$_writeSkipCount" | Out-File $_wDiagFile -Append }
+								} else {
+									if ($_writeSkipCount -gt 0 -and $_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - WORKER STATE SENT (resumed after $_writeSkipCount skips)" | Out-File $_wDiagFile -Append }
+									$_writeSkipCount = 0
+								}
 					} catch {
+						$_pendingWriteFlush = $null
 						$viewerConnected = $false
 						try { $pipeServer.Disconnect() } catch {}
 						try {
@@ -3311,7 +3387,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 							try { $pipeServer.Dispose() } catch {}
 							$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
 								$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
-								[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous)
+								[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
 							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 						}
 					}
@@ -3421,7 +3497,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 							if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
 							$null = $script:LogReplayBuffer.Enqueue($logMsg)
 							if ($viewerConnected) {
-								try { Send-PipeMessage -Writer $pipeWriter -Message $logMsg } catch {}
+								try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message $logMsg -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
 							}
 						}
 						
@@ -3445,7 +3521,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 						if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
 						$null = $script:LogReplayBuffer.Enqueue($logMsg)
 						if ($viewerConnected) {
-							try { Send-PipeMessage -Writer $pipeWriter -Message $logMsg } catch {}
+							try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message $logMsg -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
 						}
 						
 						if ($null -eq $workerLastMovementTime) { $workerLastMovementTime = Get-Date }
@@ -5680,6 +5756,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 	$_viewerPipeReader = $null
 	$_viewerPipeWriter = $null
 	$_viewerReadTask = $null
+	$_settingsEpoch = 0
 	$_viewerStopped = $false
 	$_viewerStopReason = ''
 	
@@ -5709,6 +5786,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 		if ($PSBoundParameters.ContainsKey('EndTime')) { $workerCmd += " -EndTime '$EndTime'" }
 		if ($PSBoundParameters.ContainsKey('EndVariance')) { $workerCmd += " -EndVariance $EndVariance" }
 		if ($PSBoundParameters.ContainsKey('Output')) { $workerCmd += " -Output '$Output'" }
+		if ($Diag) { $workerCmd += " -Diag" }
 		
 		# Use the same PowerShell executable that's running now (pwsh.exe on PS 7, powershell.exe on 5.1)
 		$_psExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
@@ -5887,6 +5965,8 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 				while ($null -ne $msg) {
 					switch ($msg.type) {
 						'state' {
+							$_msgEpoch = if ($null -ne $msg.epoch) { [int]$msg.epoch } else { 0 }
+							if ($_msgEpoch -lt $_settingsEpoch) { break }
 							$script:IntervalSeconds = [double]$msg.intervalSeconds
 							$script:IntervalVariance = [double]$msg.intervalVariance
 							$script:MoveSpeed = [double]$msg.moveSpeed
@@ -6014,6 +6094,8 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 						while ($null -ne $msg) {
 							switch ($msg.type) {
 								'state' {
+									$_msgEpoch = if ($null -ne $msg.epoch) { [int]$msg.epoch } else { 0 }
+									if ($_msgEpoch -lt $_settingsEpoch) { break }
 									$script:IntervalSeconds = [double]$msg.intervalSeconds
 									$script:IntervalVariance = [double]$msg.intervalVariance
 									$script:MoveSpeed = [double]$msg.moveSpeed
@@ -6589,7 +6671,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 						$Output = "full"
 					}
 					$script:Output = $Output
-					if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output } } catch {} }
+					if ($_isViewerMode) { $_settingsEpoch++; try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output; epoch = $_settingsEpoch } } catch {} }
 						# Debug: Log view toggle
 						if ($DebugMode) {
 							if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
@@ -6630,7 +6712,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 					$script:MenuItemsBounds.Clear()
 					}
 					$script:Output = $Output
-					if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output } } catch {} }
+					if ($_isViewerMode) { $_settingsEpoch++; try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output; epoch = $_settingsEpoch } } catch {} }
 						# Debug: Log incognito toggle
 						if ($DebugMode) {
 							if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
@@ -6659,6 +6741,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 				} elseif ($lastKeyPress -eq "s") {
 					$lastKeyPress = $null
 					$lastKeyInfo  = $null
+					if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG OPEN type=settings pipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append }
 					$HostWidthRef  = [ref]$HostWidth;  $HostHeightRef = [ref]$HostHeight
 					$endTimeIntRef = [ref]$endTimeInt; $endTimeStrRef = [ref]$endTimeStr
 					$endRef        = [ref]$end;        $logArrayRef   = [ref]$LogArray
@@ -6666,15 +6749,19 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 						-HostWidthRef $HostWidthRef -HostHeightRef $HostHeightRef `
 						-EndTimeIntRef $endTimeIntRef -EndTimeStrRef $endTimeStrRef `
 						-EndRef $endRef -LogArrayRef $logArrayRef
+			if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG CLOSED type=settings reopen=$($settingsResult.ReopenSettings) needsRedraw=$($settingsResult.NeedsRedraw) pipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append }
 			$HostWidth  = $HostWidthRef.Value;  $HostHeight = $HostHeightRef.Value
 			$endTimeInt = $endTimeIntRef.Value; $endTimeStr = $endTimeStrRef.Value
 			$end        = $endRef.Value;        $LogArray   = $logArrayRef.Value
 			$Output    = $script:Output
 			$DebugMode = $script:DebugMode
 			if ($_isViewerMode) {
+				$_settingsEpoch++
 				try {
+					if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SENDING settings+endtime+output epoch=$_settingsEpoch to worker..." | Out-File $script:IpcDiagFile -Append }
 					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{
 						type = 'settings'
+						epoch = $_settingsEpoch
 						intervalSeconds = $script:IntervalSeconds
 						intervalVariance = $script:IntervalVariance
 						moveSpeed = $script:MoveSpeed
@@ -6685,7 +6772,10 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 					}
 					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance }
 					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output }
-				} catch {}
+					if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND COMPLETE (3 messages sent)" | Out-File $script:IpcDiagFile -Append }
+				} catch {
+					if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND FAILED: $($_.Exception.Message)" | Out-File $script:IpcDiagFile -Append }
+				}
 			}
 			if ($settingsResult.ReopenSettings) {
 					# Sub-dialog was used — flag so the main loop reopens settings
@@ -6697,6 +6787,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 				clear-host
 				break
 					} elseif ($lastKeyPress -eq "m" -and $Output -ne "hidden") {
+							if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG OPEN type=movement pipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append }
 							# Debug: Log movement dialog opened (before calling dialog)
 							if ($DebugMode) {
 									if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
@@ -6788,9 +6879,12 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 										$LogArray += [PSCustomObject]@{logRow = $true; components = $changeLogComponents}
 									}
 									if ($_isViewerMode) {
+										$_settingsEpoch++
 										try {
+											if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SENDING settings after movement dialog epoch=$_settingsEpoch..." | Out-File $script:IpcDiagFile -Append }
 											Send-PipeMessage -Writer $_viewerPipeWriter -Message @{
 												type = 'settings'
+												epoch = $_settingsEpoch
 												intervalSeconds = $script:IntervalSeconds
 												intervalVariance = $script:IntervalVariance
 												moveSpeed = $script:MoveSpeed
@@ -6799,14 +6893,19 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 												travelVariance = $script:TravelVariance
 												autoResumeDelaySeconds = $script:AutoResumeDelaySeconds
 											}
-										} catch {}
+											if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND COMPLETE (movement settings)" | Out-File $script:IpcDiagFile -Append }
+										} catch {
+											if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND FAILED (movement): $($_.Exception.Message)" | Out-File $script:IpcDiagFile -Append }
+										}
 									}
 								}
+								if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG CLOSED type=movement" | Out-File $script:IpcDiagFile -Append }
 								$SkipUpdate = $true
 								$forceRedraw = $true
 								clear-host
 								break
 							} elseif ($lastKeyPress -eq "t") {
+								if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG OPEN type=time pipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append }
 								# Debug: Log time dialog opened (before calling dialog)
 								if ($DebugMode) {
 									if ($null -eq $LogArray -or -not ($LogArray -is [Array])) {
@@ -6904,9 +7003,17 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 										$LogArray += [PSCustomObject]@{logRow = $true; components = $changeLogComponents}
 									}
 									if ($_isViewerMode) {
-										try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance } } catch {}
+										$_settingsEpoch++
+										try {
+											if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SENDING endtime after time dialog epoch=$_settingsEpoch..." | Out-File $script:IpcDiagFile -Append }
+											Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance; epoch = $_settingsEpoch }
+											if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND COMPLETE (endtime)" | Out-File $script:IpcDiagFile -Append }
+										} catch {
+											if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND FAILED (endtime): $($_.Exception.Message)" | Out-File $script:IpcDiagFile -Append }
+										}
 									}
 								}
+							if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG CLOSED type=time" | Out-File $script:IpcDiagFile -Append }
 							$SkipUpdate = $true
 							$forceRedraw = $true
 							clear-host
@@ -8541,6 +8648,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 			# just been repainted cleanly above, so reopen Settings instantly on top.
 			if ($script:PendingReopenSettings) {
 				$script:PendingReopenSettings = $false
+				if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG REOPEN type=settings (PendingReopenSettings)" | Out-File $script:IpcDiagFile -Append }
 				$HostWidthRef  = [ref]$HostWidth;  $HostHeightRef = [ref]$HostHeight
 				$endTimeIntRef = [ref]$endTimeInt; $endTimeStrRef = [ref]$endTimeStr
 				$endRef        = [ref]$end;        $logArrayRef   = [ref]$LogArray
@@ -8549,15 +8657,19 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 					-EndTimeIntRef $endTimeIntRef -EndTimeStrRef $endTimeStrRef `
 					-EndRef $endRef -LogArrayRef $logArrayRef `
 					-SkipAnimation:$true
+			if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG CLOSED type=settings (reopen) needsRedraw=$($settingsResult.NeedsRedraw) reopen=$($settingsResult.ReopenSettings)" | Out-File $script:IpcDiagFile -Append }
 			$HostWidth  = $HostWidthRef.Value;  $HostHeight = $HostHeightRef.Value
 			$endTimeInt = $endTimeIntRef.Value; $endTimeStr = $endTimeStrRef.Value
 			$end        = $endRef.Value;        $LogArray   = $logArrayRef.Value
 			$Output    = $script:Output
 			$DebugMode = $script:DebugMode
 			if ($_isViewerMode) {
+				$_settingsEpoch++
 				try {
+					if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SENDING settings+endtime+output (reopen path) epoch=$_settingsEpoch..." | Out-File $script:IpcDiagFile -Append }
 					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{
 						type = 'settings'
+						epoch = $_settingsEpoch
 						intervalSeconds = $script:IntervalSeconds
 						intervalVariance = $script:IntervalVariance
 						moveSpeed = $script:MoveSpeed
@@ -8568,7 +8680,10 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 					}
 					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance }
 					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output }
-				} catch {}
+					if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND COMPLETE (reopen path, 3 messages)" | Out-File $script:IpcDiagFile -Append }
+				} catch {
+					if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND FAILED (reopen path): $($_.Exception.Message)" | Out-File $script:IpcDiagFile -Append }
+				}
 			}
 			if ($settingsResult.ReopenSettings) {
 			# Another sub-dialog was used — loop again via the next iteration

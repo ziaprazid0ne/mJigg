@@ -23,7 +23,7 @@ A feature-rich PowerShell mouse jiggler with a console-based TUI, designed to ke
 
 ## Requirements
 
-- Windows PowerShell 5.1 or PowerShell 7+
+- PowerShell 7+ (the hidden background worker requires `pwsh.exe`)
 - Windows OS (uses Win32 API for mouse/keyboard interaction)
 
 ## Installation
@@ -190,11 +190,15 @@ Colors and layout are defined as `$script:` variables in the Theme Colors sectio
 
 ## Diagnostics
 
-Enable with `-Diag` flag. Creates log files in `_diag/` at the **project root** (`c:\Projects\mJig\_diag\`):
+Enable with `-Diag` flag. Creates log files in `_diag/` relative to the module directory (`Start-mJig\_diag\`):
 - `startup.txt` - Initialization diagnostics
 - `settle.txt` - Mouse settle detection logs
 - `input.txt` - Input detection logs (PeekConsoleInput + GetLastInputInfo)
 - `welcome.txt` - Welcome-screen resize diagnostics (**always written** even without `-Diag`)
+- `ipc.txt` - Viewer-side IPC diagnostics (dialog open/close, pipe send/receive, epoch tracking)
+- `worker-ipc.txt` - Worker-side IPC diagnostics (viewer connect/disconnect, command receipt, state send/skip events)
+
+The `-Diag` flag is automatically forwarded to the background worker process when it is spawned.
 
 ## License
 

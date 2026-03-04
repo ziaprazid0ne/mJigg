@@ -6,7 +6,24 @@ All notable changes to `start-mjig.ps1` are documented in this file.
 
 ## [Latest] - Unreleased
 
-Changes since last commit (0653dd2 - "Memory optimizations: ring buffer, pre-alloc, hoisted objects, rate-limited TZ cache"):
+Changes since last commit (a22c95b - "IPC background worker architecture: hidden process, named pipe viewer, WMI persistence"):
+
+### Added
+- **IPC Settings Epoch Guard** — incrementing `$_settingsEpoch` counter on the viewer side and `$_workerSettingsEpoch` on the worker side. Prevents stale `state` messages (buffered in the pipe while a dialog was open) from overwriting viewer-side settings after the user changes them. The viewer skips any incoming `state` message whose `epoch` is less than its own `$_settingsEpoch`. Log and stopped messages are always processed regardless of epoch.
+- **Epoch included in all viewer-to-worker messages** — `settings`, `endtime`, and `output` messages from the viewer now include an `epoch` field. The worker captures this epoch and includes it in every outgoing `state` message. Six viewer send sites covered: `s` hotkey (settings+endtime+output), `m` hotkey (movement), `t` hotkey (endtime), `v`/`o` output toggle, incognito toggle, and the PendingReopenSettings reopen path.
+- **`Send-PipeMessageNonBlocking` function** — async write variant using `FlushAsync()` with a `[ref]$PendingFlush` pattern. If a previous flush hasn't completed (viewer not draining during a dialog), the message is skipped instead of blocking the worker. Used for periodic `state` and `log` messages.
+- **64KB pipe buffers** — all `NamedPipeServerStream` constructors (initial + 4 reconnection paths) now specify 65536 bytes for in/out buffer sizes, providing ~80 seconds of buffering for state messages during dialog interactions.
+- **Worker-side IPC diagnostics (`_diag/worker-ipc.txt`)** — logs viewer connect/disconnect, command receipt, and state message send/skip events when `-Diag` is enabled. The `-Diag` flag is now forwarded to the worker process on spawn.
+- **Viewer-side IPC diagnostics (`_diag/ipc.txt`)** — logs dialog open/close, pipe send attempts with results, and main loop re-entry events when `-Diag` is enabled.
+
+### Changed
+- **Provisioner error stream handling** — non-terminating errors from the child runspace are no longer dumped as a wall of repeated messages on quit. In normal mode they are silently suppressed. In `-DebugMode` they are deduplicated by message + line number and shown as a compact summary (e.g., "3536 non-terminating errors, 2 unique: Line 1926 x1768").
+- **`$_pendingWriteFlush` management** — new variable in `Start-WorkerLoop` tracking the async flush state. Reset at all 5 viewer disconnect/reconnect paths to prevent stale async tasks from interfering with new pipe operations.
+- **`$_writeSkipCount`** — counter for consecutive state messages skipped due to pending flush, used for diagnostic logging in the worker.
+
+---
+
+## [a22c95b] - 2026-03-03
 
 ### Added
 - **IPC Background Worker Architecture** — `Start-mJig` now spawns a hidden background worker process by default. The worker handles mouse jiggling, key simulation, and input detection via a named pipe (`\\.\pipe\mJig_IPC`). The caller's terminal becomes a viewer that renders the TUI from IPC state updates. Closing the terminal no longer stops mJig; reconnect from any terminal by running `Start-mJig` again.
