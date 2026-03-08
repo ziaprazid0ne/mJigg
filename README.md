@@ -200,6 +200,8 @@ Enable with `-Diag` flag. Creates log files in `_diag/` relative to the module d
 
 The `-Diag` flag is automatically forwarded to the background worker process when it is spawned.
 
+After quitting, a 15-second countdown prompt offers to print all diagnostic files directly to the console. Each file is displayed in a distinct color and limited to 100 rows; files exceeding the limit show a truncation notice with the full file path.
+
 ## License
 
 Shield: [![CC BY-ND 4.0][cc-by-nd-shield]][cc-by-nd]

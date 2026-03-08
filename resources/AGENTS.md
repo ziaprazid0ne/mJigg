@@ -1,11 +1,11 @@
 # mJig Code Context for AI Agents
 
-This document provides deep context for AI agents working on the `Start-mJig.psm1` codebase.
+This document provides deep context for AI agents working on the mJig codebase.
 
-> **IMPORTANT FOR AI AGENTS**: When modifying `Start-mJig.psm1`, you must also update this `AGENTS.md` file and `README.md` to reflect any changes. This includes:
+> **IMPORTANT FOR AI AGENTS**: When modifying mJig source files, you must also update this `AGENTS.md` file and `README.md` to reflect any changes. This includes:
 > - New or modified parameters
 > - New or renamed functions
-> - Changes to line number ranges in the code structure
+> - New files added to the `Private/` tree
 > - New features or behaviors
 > - New theme colors or UI components
 > - Changes to hotkeys or interactive controls
@@ -29,7 +29,15 @@ This document provides deep context for AI agents working on the `Start-mJig.psm
 
 ## Architecture Overview
 
-The module is a single-file PowerShell module (~8,745 lines) implementing a console-based TUI mouse jiggler. It uses Win32 API calls via P/Invoke for low-level mouse/keyboard interaction. Every invocation automatically runs inside a fresh, isolated runspace provisioned by the module itself (see Module Runspace Provisioner below).
+The module is a multi-file PowerShell module implementing a console-based TUI mouse jiggler. It uses Win32 API calls via P/Invoke for low-level mouse/keyboard interaction. Every invocation automatically runs inside a fresh, isolated runspace provisioned by the module itself (see Module Runspace Provisioner below).
+
+### Multi-File Structure
+
+The codebase is split across ~39 files under `Start-mJig/Private/`. The skeleton `Start-mJig.psm1` (~3,000 lines) contains the `Start-mJig` function entry point, parameter block, Module Runspace Provisioner, variable initialization, and the main loop. All helper functions and large config sections are dot-sourced from individual `.ps1` files **inside** the `Start-mJig` function body, preserving PowerShell's scope chain so nested functions can access `$script:` and parent-scope variables without refactoring.
+
+**Build pipeline:** `Start-mJig/Build/Build-Module.ps1` recombines all dot-sourced files into a single monolithic `.psm1` in `dist/`. GitHub Actions (`.github/workflows/build.yml`) runs this on `v*` tag push and creates a release. The `dist/` folder is git-ignored.
+
+**Development vs release:** During development, `Import-Module .\Start-mJig` loads the skeleton which dot-sources individual files at runtime. For releases, the build script produces a single-file `.psm1` that is functionally identical.
 
 ### IPC Background Worker Architecture
 
@@ -41,7 +49,7 @@ By default, `Start-mJig` spawns a hidden background worker process that performs
 - **`Start-mJig -Inline`**: Legacy single-process mode, no IPC
 - **`Start-mJig -_WorkerMode`** (internal): Headless worker entry point
 
-**IPC protocol:** JSON lines over `NamedPipeServerStream` / `NamedPipeClientStream`. Worker sends `welcome`, `state` (every 500ms), `log`, and `stopped` messages. Viewer sends `settings`, `endtime`, `output`, and `quit` commands. State messages include `mouseInputDetected`, `keyboardInputDetected`, `userInputDetected`, `cooldownActive`, `cooldownRemaining`, and `epoch` so the viewer can display live input detection and cooldown status and discard stale state messages.
+**IPC protocol:** JSON lines over `NamedPipeServerStream` / `NamedPipeClientStream`. Worker sends `welcome`, `state` (every 500ms), `log`, and `stopped` messages. Viewer sends `settings`, `endtime`, `output`, and `quit` commands. State messages include `mouseInputDetected`, `keyboardInputDetected`, `keyboardInferred`, `userInputDetected`, `cooldownActive`, `cooldownRemaining`, and `epoch` so the viewer can display live input detection and cooldown status and discard stale state messages.
 
 **Key functions:**
 - `Start-WorkerLoop` — headless jiggling loop with pipe server; accepts one viewer at a time. Resilient pipe reconnection: all `BeginWaitForConnection` calls are wrapped in try/catch; if the call fails (e.g. broken pipe after abrupt viewer death), the `NamedPipeServerStream` is disposed and recreated from scratch. All `NamedPipeServerStream` instances use 64KB (65536) in/out buffer sizes to prevent pipe saturation during viewer dialog interactions.
@@ -64,7 +72,7 @@ After a viewer dialog closes, the viewer sends new settings to the worker and re
 When the viewer connects (via `Connect-WorkerPipe`), it sets `$_isViewerMode = $true` and falls through into the existing main `:process` loop. The main loop checks `$_isViewerMode` at key points:
 - **IPC reading**: At the top of each iteration and inside each 50ms wait tick, reads `state`, `log`, and `stopped` messages from the worker pipe. Updates `$script:*` variables, `$LogArray`, `$mouseInputDetected`, `$keyboardInputDetected`, `$PreviousIntervalKeys`, `$cooldownActive`, `$secondsRemaining`, and `$SkipUpdate` directly from the worker's state messages.
 - **Skips**: Interval calculation (uses fixed 500ms/10 ticks), movement-specific per-tick checks (keyboard state, mouse position, GetLastInputInfo), post-wait mouse settle, movement execution, log building, and end-time check.
-- **Keeps**: Full rendering code (unchanged), resize detection, console input handling (PeekConsoleInput for clicks, ReadKey for hotkeys), all dialog invocations, and stats box display (populated from IPC state).
+- **Keeps**: Full rendering via `Draw-MainFrame`, resize detection, console input handling (PeekConsoleInput for clicks, ReadKey for hotkeys), all dialog invocations, and stats box display (populated from IPC state).
 - **IPC forwarding**: After dialog results (quit, time, movement, output, settings), the viewer increments `$_settingsEpoch` and sends the changes (with `epoch`) back to the worker via the pipe. During dialogs, the viewer's main loop is suspended (dialog has its own input loop), so IPC messages from the worker accumulate in the 64KB pipe buffer. The worker uses `Send-PipeMessageNonBlocking` to avoid blocking when the buffer fills. After the dialog closes, the viewer returns to the main loop and drains the backed-up messages. The **settings epoch guard** causes the viewer to skip any `state` message whose `epoch` is less than its own `$_settingsEpoch`, preventing stale pre-change values from overwriting the viewer's local variables.
 
 ### High-Level Flow
@@ -98,147 +106,106 @@ When the viewer connects (via `Connect-WorkerPipe`), it sets `$_isViewerMode = $
     ├── Wait for interval (inline: calculated; viewer: fixed 500ms)
     ├── Per-tick: read IPC messages (viewer) / check keyboard/mouse state (inline)
     ├── Check for user input / hotkeys + forward to worker (viewer)
-    ├── Detect window resize → Invoke-ResizeHandler (both modes)
+    ├── Detect window resize → Invoke-ResizeHandler → Draw-MainFrame (both modes)
     ├── Wait for mouse to settle (inline only)
     ├── Perform automated mouse movement (inline only)
     ├── Send simulated keypress (inline only)
     ├── Render UI (header, logs, stats, menu) — SAME CODE, both modes
     └── Check end time (inline only; viewer uses IPC 'stopped' message)
-14. Pipe cleanup (viewer mode); mutex release; provisioner's finally block disposes the runspace
+14. Cleanup: pipe disposal (viewer mode) → Show-DiagnosticFiles prompt (if -Diag) → mutex release → provisioner's finally block disposes the runspace
 ```
 
 ### Code Structure Map
 
 ```
-Start-mJig.psm1 (~8,745 lines)
-└── Start-mJig function (lines 1-end)
-    │
-    ├── Parameters (lines 41-69)
-    │   ├── $Output - View mode (min/full/hidden)
-    │   ├── $DebugMode - Verbose logging switch
-    │   ├── $Diag - File-based diagnostics switch
-    │   ├── $EndTime - Stop time in HHmm format
-    │   ├── $EndVariance - Random variance for end time
-    │   ├── $IntervalSeconds - Base interval between cycles
-    │   ├── $IntervalVariance - Random variance for intervals
-    │   ├── $MoveSpeed - Movement animation duration
-    │   ├── $MoveVariance - Random variance for speed
-    │   ├── $TravelDistance - Cursor travel distance in pixels
-    │   ├── $TravelVariance - Random variance for distance
-    │   ├── $AutoResumeDelaySeconds - Cooldown after user input
-    │   ├── $Inline - Run without background worker (legacy single-process mode)
-    │   ├── $_WorkerMode [DontShow] - Internal: background worker entry point
-    │   ├── $_PipeName [DontShow] - Internal: named pipe identifier (default 'mJig_IPC')
-    │   └── $_InModuleRunspace [DontShow] - Internal re-entry guard; never passed by users
-    │
-    ├── Module Runspace Provisioner (lines 77-201)
-    │   ├── Fires when $_InModuleRunspace is not set (first call from caller's session)
-    │   ├── Creates InitialSessionState::CreateDefault2() — isolated from profile/PSModulePath
-    │   ├── Creates Runspace with $Host passthrough (preserves console TUI) + ApartmentState=STA
-    │   ├── Imports this module into the runspace; calls Start-mJig -_InModuleRunspace $true
-    │   ├── Invoke() blocks until mJig exits; finally disposes runspace
-    │   └── Error stream handling (line ~148): suppresses in normal mode, deduplicated summary in -DebugMode
-    │
-    ├── Initialization Variables (lines ~209-280)
-    │   ├── Script-scoped copies of parameters (line ~209)
-    │   ├── State tracking variables
-    │   ├── Resize handling variables
-    │   └── Box-drawing character definitions
-    │
-    ├── Theme Colors Section (lines ~285-520)
-    │   ├── Menu bar colors (incl. OnClick pressed-state colors)
-    │   ├── Header colors (HeaderBg, HeaderRowBg)
-    │   ├── Footer colors (FooterBg, MenuRowBg)
-    │   ├── Border padding (BorderPadV, BorderPadH)
-    │   ├── Stats box colors
-    │   ├── Dialog colors (Quit, Time, Movement, Settings)
-    │   ├── Resize screen colors
-    │   └── General UI colors
-    │
-    ├── Startup Screen Functions (lines ~522-750)
-    │   ├── Show-StartupScreen (~522) — initial "Initializing…" screen (Write-Host, pre-VT100)
-    │   └── Show-StartupComplete (~550) — "Initialization Complete" box; keypress-wait or 7-s countdown;
-    │       │                       nested helpers: getSize, drainWakeKeys, handleResize
-    │       │                       getSize calls PeekConsoleInput before reading WindowSize (ConPTY flush)
-    │       │                       handleResize is self-contained; does NOT call Invoke-ResizeHandler
-    │
-    ├── Invoke-ResizeHandler (lines ~754-850)
-    │   └── Unified blocking resize handler for main loop and hidden-mode contexts
-    │
-    ├── Assembly Loading & P/Invoke Type Definitions (lines ~1114-1550)
-    │   ├── Load System.Windows.Forms (~1114)
-    │   ├── Check for existing mJiggAPI types
-    │   ├── C# type definition block (namespace mJiggAPI, line ~1187)
-    │   │   ├── POINT struct
-    │   │   ├── CONSOLE_SCREEN_BUFFER_INFO struct
-    │   │   ├── MOUSE_EVENT_RECORD struct
-    │   │   ├── KEY_EVENT_RECORD struct
-    │   │   ├── INPUT_RECORD struct (union: MouseEvent + KeyEvent)
-    │   │   ├── COORD / SMALL_RECT / LASTINPUTINFO structs
-    │   │   ├── Keyboard class (keybd_event only)
-    │   │   └── Mouse class (GetCursorPos, SetCursorPos, GetAsyncKeyState, FindWindow, GetLastInputInfo, PeekConsoleInput, ReadConsoleInput, etc.)
-    │   ├── Add-Type compilation (~1416)
-    │   └── Verify API functionality
-    │
-    ├── End Time Calculation (lines ~1596-1650)
-    │   ├── Apply variance to end time
-    │   └── Determine if end time is today/tomorrow
-    │
-    ├── Helper Functions (lines ~1936-5920)
-    │   ├── Buffered Rendering: Write-Buffer (~1936), Flush-Buffer (~1961), Clear-Buffer (~1990), Write-ButtonImmediate (~1997)
-    │   ├── Draw-DialogShadow (~2071) / Clear-DialogShadow (~2092)
-    │   ├── Show-TimeChangeDialog (~2110)
-    │   ├── Draw-ResizeLogo (~2851)
-    │   ├── Get-MousePosition (~2969) / Test-MouseMoved (~2980)
-    │   ├── Get-TimeSinceMs (~2994) / Get-ValueWithVariance (~3001)
-    │   ├── IPC Helpers: Send-PipeMessage (~3022), Read-PipeMessage (~3032, async ReadLineAsync), Send-PipeMessageNonBlocking (~3056, FlushAsync)
-    │   ├── Start-WorkerLoop (~3079-3555) — headless IPC server + jiggling loop; resilient pipe reconnection; 64KB pipe buffers; non-blocking state/log writes; $_workerSettingsEpoch (~3118)
-    │   ├── Connect-WorkerPipe (~3556-3630) — pipe connection + welcome handshake; returns client/reader/writer
-    │   ├── Get-Padding (~3631) / Write-SimpleDialogRow (~3659) / Write-SimpleFieldRow (~3684)
-    │   ├── Show-MovementModifyDialog (~3728)
-    │   ├── Show-QuitConfirmationDialog (~4496)
-    │   ├── Show-SettingsDialog (~4985) — slide-up 13-row dialog; time + movement sub-dialogs; inline output toggle + debug checkbox; `SkipAnimation` param for clean reopen
-    │   └── Show-InfoDialog (~5444) — info/about dialog; version check, clickable GitHub URL
-    │
-    ├── Main Loop (lines ~5925-8700)
-    │   │
-    │   ├── Viewer IPC variables: $_settingsEpoch (~5759), $_isViewerMode, pipe objects
-    │   │
-    │   ├── :process while ($true) entry (~5925)
-    │   │   └── Reset per-iteration state variables
-    │   │
-    │   ├── Viewer IPC read + state update (viewer mode)
-    │   │   └── Epoch check: skip state messages with epoch < $_settingsEpoch
-    │   │
-    │   ├── Wait Loop (50ms ticks)
-    │   │   ├── Mouse position monitoring (Test-MouseMoved) — inline only
-    │   │   ├── PeekConsoleInput (scroll + keyboard + mouse click detection)
-    │   │   ├── GetLastInputInfo (system-wide activity + mouse inference) — inline only
-    │   │   ├── Menu hotkey detection (console ReadKey)
-    │   │   ├── Window resize detection
-    │   │   └── Dialog invocation (settings/time/movement/quit/info)
-    │   │
-    │   ├── Mouse Settle Detection — inline only
-    │   │
-    │   ├── Movement Execution — inline only
-    │   │   ├── Calculate random direction
-    │   │   ├── Animate cursor movement
-    │   │   └── Send simulated keypress
-    │   │
-    │   ├── UI Rendering (same code, both modes)
-    │   │   ├── Header line
-    │   │   ├── Horizontal separator
-    │   │   ├── Log entries (full view)
-    │   │   ├── Stats box (full view, wide window)
-    │   │   ├── Bottom separator
-    │   │   ├── Menu bar
-    │   │   └── Incognito view (status line + (i) button)
-    │   │
-    │   └── End Time Check — inline only (viewer uses IPC 'stopped' message)
-    │
-    └── Cleanup
-        ├── Pipe cleanup (viewer mode); mutex release
-        └── Provisioner's finally block disposes the runspace
+Start-mJig/
+├── Start-mJig.psd1                             Module manifest (unchanged)
+├── Start-mJig.psm1                             Skeleton (~3,000 lines)
+│   └── Start-mJig function
+│       ├── Parameters
+│       ├── Module Runspace Provisioner
+│       ├── Initialization Variables + box-drawing chars
+│       ├── . Private\Config\Initialize-Theme.ps1
+│       ├── . Private\Startup\Show-StartupScreen.ps1
+│       ├── . Private\Startup\Show-StartupComplete.ps1
+│       ├── . Private\Startup\Get-LatestVersionInfo.ps1
+│       ├── . Private\Helpers\Invoke-ResizeHandler.ps1
+│       ├── Mutex check + Console setup
+│       ├── . Private\Config\Initialize-PInvoke.ps1
+│       ├── End Time Calculation
+│       ├── . Private\Helpers\Get-SmoothMovementPath.ps1
+│       ├── . Private\Helpers\Get-DirectionArrow.ps1
+│       ├── . Private\Rendering\*.ps1           (11 files)
+│       ├── . Private\Dialogs\Show-TimeChangeDialog.ps1
+│       ├── . Private\Helpers\Restore-ConsoleInputMode.ps1
+│       ├── . Private\Helpers\Send-ResizeExitWakeKey.ps1
+│       ├── . Private\Helpers\Show-DiagnosticFiles.ps1
+│       ├── . Private\Rendering\Draw-ResizeLogo.ps1
+│       ├── . Private\Rendering\Draw-MainFrame.ps1
+│       ├── . Private\Helpers\*.ps1             (remaining helpers)
+│       ├── . Private\IPC\*.ps1                 (5 files)
+│       ├── . Private\Helpers\Get-Padding.ps1
+│       ├── . Private\Rendering\Write-Section*.ps1 + Write-SimpleField*.ps1
+│       ├── . Private\Dialogs\*.ps1             (remaining 4 dialogs)
+│       ├── IPC Mode Branching
+│       ├── Main Loop (:process while)
+│       │   ├── Viewer IPC read + state update
+│       │   ├── Wait Loop (50ms ticks)
+│       │   ├── Mouse Settle Detection (inline only)
+│       │   ├── Movement Execution (inline only)
+│       │   ├── UI Rendering → Draw-MainFrame
+│       │   └── End Time Check (inline only)
+│       └── Cleanup (pipe, Show-DiagnosticFiles if -Diag, mutex, runspace)
+│
+├── Private/
+│   ├── Config/
+│   │   ├── Initialize-Theme.ps1                Theme color variables (~230 lines)
+│   │   └── Initialize-PInvoke.ps1              C# P/Invoke types + Add-Type (~440 lines)
+│   ├── Startup/
+│   │   ├── Show-StartupScreen.ps1              Pre-VT100 "Initializing…" screen
+│   │   ├── Show-StartupComplete.ps1            "Init Complete" box (nested: drawCompleteScreen, getSize, drainWakeKeys)
+│   │   └── Get-LatestVersionInfo.ps1           GitHub release check (cached)
+│   ├── Rendering/
+│   │   ├── Write-Buffer.ps1                    Queue positioned, colored text segments
+│   │   ├── Flush-Buffer.ps1                    Build VT100 string + atomic [Console]::Write()
+│   │   ├── Clear-Buffer.ps1                    Discard queued segments
+│   │   ├── Write-ButtonImmediate.ps1           Instant button redraw (click feedback)
+│   │   ├── Draw-DialogShadow.ps1               Offset shadow effect
+│   │   ├── Clear-DialogShadow.ps1              Remove shadow
+│   │   ├── Draw-ResizeLogo.ps1                 Resize splash logo
+│   │   ├── Draw-MainFrame.ps1                  Full main UI renderer (~940 lines)
+│   │   ├── Write-SectionLine.ps1               Section divider row
+│   │   ├── Write-SimpleDialogRow.ps1           Dialog content row
+│   │   └── Write-SimpleFieldRow.ps1            Dialog input field row
+│   ├── Dialogs/
+│   │   ├── Show-TimeChangeDialog.ps1           End time editor (~680 lines)
+│   │   ├── Show-MovementModifyDialog.ps1       Movement parameter editor (~765 lines)
+│   │   ├── Show-QuitConfirmationDialog.ps1     Quit confirmation (~460 lines)
+│   │   ├── Show-SettingsDialog.ps1             Settings slide-up (~490 lines)
+│   │   └── Show-InfoDialog.ps1                 About & version (~300 lines)
+│   ├── IPC/
+│   │   ├── Send-PipeMessage.ps1                Synchronous JSON-line write
+│   │   ├── Read-PipeMessage.ps1                Async ReadLineAsync reader
+│   │   ├── Send-PipeMessageNonBlocking.ps1     FlushAsync writer (skips on backpressure)
+│   │   ├── Start-WorkerLoop.ps1                Headless IPC server + jiggling loop (~500 lines)
+│   │   └── Connect-WorkerPipe.ps1              Pipe connection + welcome handshake
+│   └── Helpers/
+│       ├── Get-SmoothMovementPath.ps1          Ease-in-out-cubic path generator
+│       ├── Get-DirectionArrow.ps1              Movement direction arrow emoji
+│       ├── Get-CachedMethod.ps1                Reflection method cache
+│       ├── Get-MousePosition.ps1               Cursor position via GetCursorPos
+│       ├── Test-MouseMoved.ps1                 Position change detection
+│       ├── Get-TimeSinceMs.ps1                 Millisecond elapsed time
+│       ├── Get-ValueWithVariance.ps1           Random variance helper
+│       ├── Set-CoordinateBounds.ps1            Click region bounds helper
+│       ├── Get-Padding.ps1                     Padding string generator
+│       ├── Invoke-ResizeHandler.ps1            Blocking resize handler
+│       ├── Restore-ConsoleInputMode.ps1        Re-enable ENABLE_MOUSE_INPUT
+│       ├── Send-ResizeExitWakeKey.ps1          Inject VK_RMENU wake event
+│       └── Show-DiagnosticFiles.ps1            Post-exit diag file dump (countdown prompt)
+│
+└── Build/
+    └── Build-Module.ps1                        Combines all files into single .psm1
 ```
 
 ---
@@ -335,6 +302,7 @@ $consoleHandle = [mJiggAPI.Mouse]::GetConsoleWindow()
 - `keybd_event` - Simulate key presses
 - `GetLastInputInfo` - Passive system-wide last input timestamp (detects all input: keyboard, mouse, scroll)
 - `PeekConsoleInput` / `ReadConsoleInput` - Console input buffer access for scroll and keyboard event detection
+- `GetConsoleMode` / `SetConsoleMode` - Console input mode management; used by `Restore-ConsoleInputMode` to re-enable `ENABLE_MOUSE_INPUT` after `[Console]::Clear()` / `clear-host` operations strip it
 - `FindWindow` / `EnumWindows` - Window handle lookup
 - `GetForegroundWindow` - Currently active window
 - `GetConsoleWindow` - This script's console window
@@ -377,9 +345,9 @@ Flush-Buffer -ClearFirst
 1. After initial dialog draw (shadow + borders + fields + buttons)
 2. After dialog field redraw (2 affected rows on navigation/click)
 3. After dialog input value change (character typed, backspace, validation error)
-4. After dialog resize handler redraw (`Flush-Buffer -ClearFirst`)
+4. After dialog resize handler atomic redraw (`Draw-MainFrame -Force -NoFlush` + optional parent callback + dialog redraw + single `Flush-Buffer -ClearFirst`)
 5. After dialog cleanup (clear shadow + clear area)
-6. After full main UI render (header + separator + logs + stats + separator + menu)
+6. After full main UI render (`Draw-MainFrame`: header + separator + logs + stats + separator + menu)
 7. After resize logo draw (`Draw-ResizeLogo -ClearFirst` on first draw)
 
 **What stays as direct writes:**
@@ -524,7 +492,7 @@ The transparency is achieved by writing spaces with **no BG** (`$null` → ANSI 
 
 **Content start/end X:**
 - Header and menu content start at `X = $_bpH + 2` (group-bg col + 2 inner padding).
-- Log rows start at `X = $_bpH - 2` (flush with the group-bg col; no inner padding for logs).
+- Log rows start at `X = Max(0, $_bpH - 2)` (flush with the group-bg col; no inner padding for logs; clamped to 0 to prevent negative X which skips VT100 positioning). Width is clamped to `Min(logWidth + 2, HostWidth - logStartX)` to prevent line wrapping.
 - Stats separator at `X = $_bpH + $logWidth + 1`.
 
 **`$_bpV = 1` footer blank**: Uses `Write-Buffer -NoWrap` on the last segment to prevent console scroll when writing to `Y = $HostHeight - 1`. When `$_bpH > 1`, the row is split into three segments (transparent left, group-bg centre, transparent right with NoWrap) to achieve both transparency and full background coverage.
@@ -649,9 +617,11 @@ function drainWakeKeys {
 }
 ```
 
-#### Main loop: `Invoke-ResizeHandler`
+#### Main loop & dialog: `Invoke-ResizeHandler`
 
-Called from: the main wait loop resize check, and the per-iteration outside-wait-loop resize check. Not called from the welcome screen.
+Called from: the main wait loop resize check, the per-iteration outside-wait-loop resize check, **and all five dialog resize checks** (Time, Movement, Quit, Settings, Info). Not called from the welcome screen.
+
+**Parameters:** `-PreviousScreenState` (string, defaults to `$script:CurrentScreenState`). Stored in `$script:LastResizePreviousState`.
 
 1. **Enter**: Reset `$script:CurrentResizeQuote` and `$script:ResizeLogoLockedHeight`
 2. **Initial draw**: `Draw-ResizeLogo -ClearFirst` (normal mode) or `[Console]::Clear()` (hidden mode)
@@ -659,20 +629,66 @@ Called from: the main wait loop resize check, and the per-iteration outside-wait
    - Read `$psw.WindowSize` on every iteration (main loop already calls PeekConsoleInput externally)
    - If size changed: update pending size, reset stability timer, redraw logo (or nothing in hidden mode)
    - Every 50 redraws: `[Console]::Clear()` + `Restore-ConsoleInputMode` to prevent artifact buildup
-   - Check stability: if `$elapsed -ge $ResizeThrottleMs` (1500ms) AND LMB not held → exit
+   - Check stability: if `$elapsed -ge $ResizeThrottleMs` (100ms) AND LMB not held → exit
 4. **Exit**: `[Console]::Clear()`, `Restore-ConsoleInputMode`, `Send-ResizeExitWakeKey`, `return $pendingSize`
 
+**Centralized resize flow** (after extraction of `Draw-MainFrame`):
+```
+Resize detected → Invoke-ResizeHandler (logo shown, blocks until stable)
+  → Caller updates HostWidth/HostHeight from returned stableSize
+  → Draw-MainFrame -Force -NoFlush (queues main UI, does not flush)
+  → If sub-dialog with parent: invoke ParentRedrawCallback (queues parent dialog offfocus)
+  → Dialog re-centers and redraws on top (queues dialog)
+  → Single Flush-Buffer -ClearFirst (atomic paint of all layers)
+```
+
 ```powershell
-# Callers use the returned stable size to update their tracking state:
+# Main loop call pattern:
 $stableSize = Invoke-ResizeHandler
 $oldWindowSize = $stableSize
 $HostWidth     = $stableSize.Width
 $HostHeight    = $stableSize.Height
+
+# Dialog call pattern (top-level dialog — Settings, Quit, Info):
+$stableSize = Invoke-ResizeHandler -PreviousScreenState "dialog-settings"
+$HostWidthRef.Value  = $stableSize.Width
+$HostHeightRef.Value = $stableSize.Height
+Draw-MainFrame -Force -NoFlush
+# ... re-center and queue dialog redraw ...
+Flush-Buffer -ClearFirst
+
+# Sub-dialog call pattern (TimeChange/MovementModify opened from Settings):
+$stableSize = Invoke-ResizeHandler -PreviousScreenState "dialog-time"
+$HostWidthRef.Value  = $stableSize.Width
+$HostHeightRef.Value = $stableSize.Height
+Draw-MainFrame -Force -NoFlush
+if ($null -ne $ParentRedrawCallback) {
+    & $ParentRedrawCallback $currentHostWidth $currentHostHeight
+}
+# ... re-center and queue sub-dialog redraw ...
+Flush-Buffer -ClearFirst
 ```
+
+#### `Draw-MainFrame` function
+
+Extracted rendering function (~2953) that draws the complete main UI: header, separator, log rows, stats box, bottom separator, menu bar, and footer. Callable from any context.
+
+**Parameters:**
+- `-ClearFirst`: passes through to `Flush-Buffer -ClearFirst`
+- `-Force`: overrides `$skipConsoleUpdate` (always render)
+- `-NoFlush`: queues segments but skips final `Flush-Buffer` (for layering dialog on top)
+
+**Scope:** Defined inside `Start-mJig`, reads parent-scope variables (`$Output`, `$HostWidth`, `$HostHeight`, `$LogArray`, `$PreviousIntervalKeys`, etc.) via PowerShell's scope chain. Computes its own `$_bpV`, `$_bpH`, `$Rows`, and refreshes `$date` internally. Performs safety trim/pad on `$LogArray` to match `$Rows`.
+
+**Screen state tracking:** Sets `$script:CurrentScreenState` to `"main"` or `"hidden"` based on `$Output`. Dialogs set it to `"dialog-*"` on entry and restore it on exit.
+
+**Parent chain redraw pattern:** Sub-dialogs (`Show-TimeChangeDialog`, `Show-MovementModifyDialog`) accept an optional `[scriptblock]$ParentRedrawCallback` parameter. When a resize occurs inside a sub-dialog opened from Settings, the resize handler calls `Draw-MainFrame -Force -NoFlush` → `& $ParentRedrawCallback $w $h` (queues Settings in offfocus mode) → queues sub-dialog redraw → `Flush-Buffer -ClearFirst`. This ensures the full visual stack (main frame → Settings offfocus → sub-dialog) is painted atomically in a single flush, eliminating the flash caused by the previous double-flush pattern. `Show-SettingsDialog` creates the callback scriptblock before invoking each sub-dialog; the callback reads `$script:SettingsButtonStartX` and `$script:MenuBarY` (updated by `Draw-MainFrame`) to position the offfocus Settings dialog correctly at the new screen size. The callback also shadows `$dialogWidth`, `$dialogHeight`, and `$dialogLines` from saved `$_stgDialog*` variables to prevent PowerShell scope-chain shadowing (the sub-dialog's own `$dialogWidth`/`$dialogHeight` would otherwise be found first).
+
+**Sub-dialog host refs:** `Show-SettingsDialog` passes `$HostWidthRef`/`$HostHeightRef` directly to sub-dialogs (not `[ref]$currentHostWidth` local intermediaries). This ensures that when a sub-dialog's resize handler updates the refs and calls `Draw-MainFrame`, the function reads the correct updated dimensions from the main loop's scope chain.
 
 **LMB gate**: After the stability timer expires, the exit is deferred if `GetAsyncKeyState(0x01) -band 0x8000` is set (mouse button still held). The timer is **not** reset by mouse state — only new size changes reset it.
 
-**`$oldWindowSize` initialization**: Both `$oldWindowSize` and `$OldBufferSize` are set to the current live values immediately before the `:process while ($true)` main loop starts. This prevents the first-iteration `$null` comparison from triggering a spurious resize screen on every startup.
+**`$oldWindowSize` initialization and sync**: Both `$oldWindowSize` and `$OldBufferSize` are set to the current live values immediately before the `:process while ($true)` main loop starts (prevents the first-iteration `$null` comparison from triggering a spurious resize screen on every startup). They are also synced to the current window state at every dialog exit path in the wait loop (Settings, Movement, Time, Quit, Info — both NeedsRedraw and normal close paths). This prevents the main loop from detecting a false resize mismatch after a dialog that internally handled a resize via `Invoke-ResizeHandler`.
 
 **`Draw-ResizeLogo` function:**
 - Accepts `-ClearFirst` switch (passed through to `Flush-Buffer`)
@@ -693,7 +709,7 @@ Dialogs are modal functions that take control of input and rendering:
 4. Draw dialog box with borders
 5. Enter input loop
 6. Handle keypresses (Enter, Escape, Tab, arrows, etc.)
-7. Handle window resize (redraw dialog)
+7. Handle window resize (`Invoke-ResizeHandler` → `Draw-MainFrame` → redraw dialog)
 8. Return result hashtable
 9. Clear shadow and dialog area
 10. Restore cursor visibility
@@ -838,7 +854,9 @@ $emojiMouse = [char]::ConvertFromUtf32(0x1F400)      # 🐀
 
 ### 11. Log Array Structure
 
-`$LogArray` is a `System.Collections.Generic.List[object]` that always contains exactly `$Rows` entries (one per visible log row). It is maintained as a ring buffer: each new log entry calls `$LogArray.RemoveAt(0)` (evicts oldest) then `$null = $LogArray.Add(...)` (appends newest). **Never use `= @()` or `+=` on `$LogArray`** — those convert the List to a plain array. If dialog code must append, use `.Add()`. If the List is accidentally converted to an array, the render-cycle guard at the top of the log section automatically re-wraps it.
+`$LogArray` is a `System.Collections.Generic.List[object]` that always contains exactly `$Rows` entries (one per visible log row). It is maintained as a ring buffer: each new log entry calls `$LogArray.RemoveAt(0)` (evicts oldest) then `$null = $LogArray.Add(...)` (appends newest). **Never use `= @()` or `+=` on `$LogArray`** — those convert the List to a plain array. Always use `$null = $LogArray.Add(...)` with no guard condition. If the List is accidentally converted to an array, the render-cycle guard at the top of the log section automatically re-wraps it.
+
+**Debug log entries** (inside `if ($DebugMode)` blocks) follow the same pattern — just call `$null = $LogArray.Add(...)` directly. The render loop trims `$LogArray` to `$Rows` entries before each frame, so overflow is handled automatically. Do **not** add a guard like `if ($LogArray -is [Array]) { $LogArray = @() }` — the `List[object]` is never an `[Array]`, so such a check always fires and wipes the log.
 
 Log entries use a component-based structure for dynamic truncation:
 
@@ -876,9 +894,22 @@ Input detection uses four complementary mechanisms, each providing evidence for 
 
 **Classification logic (evidence-based, inference by elimination):**
 - **Mouse clicks**: `PeekConsoleInput` MOUSE_EVENT left button press → direct evidence (with cell coords for button mapping); `GetAsyncKeyState` VK 0x01-0x06 → general detection for jiggler pause
-- **Scroll**: `PeekConsoleInput` MOUSE_EVENT with scroll flag → direct evidence
-- **Keyboard**: `PeekConsoleInput` KEY_EVENT records (excluding VK 0xA5) → direct evidence
+- **Scroll**: `PeekConsoleInput` MOUSE_EVENT with scroll flag → direct evidence (focused only)
+- **Keyboard**: `PeekConsoleInput` KEY_EVENT records (excluding VK 0xA5) → direct evidence (focused only)
 - **Mouse movement**: `Test-MouseMoved` position change → direct evidence; OR `GetLastInputInfo` activity with no keyboard/scroll/click evidence → inference by elimination
+- **Keyboard/Other** (worker inference): `GetLastInputInfo` activity detected + mouse did NOT move → inferred as keyboard or other non-mouse input. Cannot distinguish keyboard from scroll when console is not focused (no passive Win32 API exposes device type without global input interception).
+
+**Worker vs viewer detection and merge:**
+
+The worker (headless background process) has no console input buffer, so it cannot use `PeekConsoleInput`. It detects:
+- **Mouse movement**: `Test-MouseMoved` (direct) or `GetLastInputInfo` inference by elimination
+- **Keyboard/Other**: `GetLastInputInfo` activity when mouse did NOT move (inference — could be keyboard, scroll, or any other HID input)
+
+The worker sends `keyboardInferred = $true` alongside `keyboardInputDetected = $true` in state messages so the viewer can distinguish worker-inferred from viewer-detected keyboard activity.
+
+The viewer OR-merges worker detections with its own local detections (preserving both). It does NOT overwrite local state with worker state. The viewer also feeds `$msg.mouseInputDetected` into `$intervalMouseInputs` so worker-detected mouse movement appears in the final display.
+
+**Display label logic:** The final `$PreviousIntervalKeys` assembly uses "Keyboard" when the viewer locally confirmed a KEY_EVENT via `PeekConsoleInput` (`$_keyboardLocallyDetected`), and "Keyboard/Other" when only the worker inferred it (`$_keyboardInferred` without `$_keyboardLocallyDetected`).
 
 ```powershell
 # Mouse button state (0x01-0x06 only)
@@ -890,11 +921,13 @@ $wasJustPressed = ($state -band 0x0001) -ne 0
 **State tracking variables:**
 - `$script:previousKeyStates` - Hashtable of previous mouse button states (for edge detection, VK 0x01-0x06 only)
 - `$script:LastSimulatedKeyPress` - Timestamp of last simulated press (for filtering)
-- `$keyboardInputDetected` - Boolean, set by `PeekConsoleInput` KEY_EVENT records
+- `$keyboardInputDetected` - Boolean, set by `PeekConsoleInput` KEY_EVENT records or worker state message
 - `$mouseInputDetected` - Boolean, set by mouse movement (Test-MouseMoved or GetLastInputInfo inference) or button clicks
 - `$scrollDetectedInInterval` - Boolean, set by `PeekConsoleInput` scroll events, persists across wait loop iterations
+- `$_keyboardInferred` - Boolean, set from worker state message `keyboardInferred` field. Indicates keyboard detection was inferred (not direct evidence).
+- `$_keyboardLocallyDetected` - Boolean, set when `PeekConsoleInput` finds a KEY_EVENT. Indicates definitive keyboard evidence (console was focused).
 - `$script:userInputDetected` - Boolean, set by any detection mechanism, triggers jiggler pause
-- `$intervalMouseInputs` - `System.Collections.Generic.HashSet[string]` — cleared at the start of each main-loop iteration via `.Clear()`. Use `$null = $intervalMouseInputs.Add("Mouse")` etc. — **never `+=`** (would convert to plain array).
+- `$intervalMouseInputs` - `System.Collections.Generic.HashSet[string]` — cleared at the start of each main-loop iteration via `.Clear()`. Use `$null = $intervalMouseInputs.Add("Mouse")` etc. — **never `+=`** (would convert to plain array). Worker mouse detections are also fed into this set via the OR-merge in viewer state handlers.
 
 ### 13. Movement Animation
 
@@ -1018,7 +1051,7 @@ $script:NewParam = $NewParam
    - Queue all rendering via `Write-Buffer` (borders, content, fields, buttons)
    - Call `Draw-DialogShadow` (also uses `Write-Buffer`)
    - Call `Flush-Buffer` after the complete dialog is queued
-   - Input loop with resize detection (use `Flush-Buffer -ClearFirst` on resize)
+   - Input loop with resize detection (`Invoke-ResizeHandler` → `Draw-MainFrame -Force -NoFlush` → optional `& $ParentRedrawCallback` → queue dialog redraw → `Flush-Buffer -ClearFirst`)
    - On field/input redraws: queue affected rows via `Write-Buffer`, then `Flush-Buffer`
    - Cursor visibility: `$script:CursorVisible = $true; [Console]::Write("$($script:ESC)[?25h")` to show, `$script:CursorVisible = $false; [Console]::Write("$($script:ESC)[?25l")` to hide
    - Call `Clear-DialogShadow` + queue clear area via `Write-Buffer`, then `Flush-Buffer`
@@ -1063,6 +1096,29 @@ Key locations:
 ---
 
 ## Important Gotchas
+
+### LogArray Type Guard Bug (CRITICAL)
+
+**Never** add a type-check guard before appending to `$LogArray`. The pattern below is **WRONG** and will wipe the entire log on every call:
+
+```powershell
+# WRONG — $LogArray is a List[object], NOT an [Array], so the guard always fires
+if ($null -eq $LogArray -or -not ($LogArray -is [Array])) { $LogArray = @() }
+$LogArray += [PSCustomObject]@{ ... }   # Also wrong: += converts List to plain array
+```
+
+**Correct pattern:**
+```powershell
+$null = $LogArray.Add([PSCustomObject]@{
+    logRow = $true
+    components = @(
+        @{ priority = 1; text = ...; shortText = ... },
+        @{ priority = 2; text = ...; shortText = ... }
+    )
+})
+```
+
+No guard is needed. The render loop trims `$LogArray` to `$Rows` entries before each frame.
 
 ### Encoding Issues (CRITICAL)
 
@@ -1131,6 +1187,32 @@ function Update-Setting {
 }
 ```
 
+### Scope-Chain Shadowing in Scriptblock Callbacks (CRITICAL)
+
+When a scriptblock is invoked with `&` from inside a nested function, it runs in a child scope of the **caller's** scope — NOT where it was defined. If the caller has a variable with the same name as one the scriptblock expects (e.g. `$dialogWidth`), the caller's value shadows the intended one.
+
+**Example**: `$settingsParentRedraw` is defined in `Show-SettingsDialog` (where `$dialogWidth = 26`), but invoked from inside `Show-MovementModifyDialog` (where `$dialogWidth = 30`). The callback sees `30`, not `26`.
+
+**Fix pattern**: Save the needed values with unique prefixed names in the defining scope, then shadow the conflicting names as local variables at the top of the callback:
+
+```powershell
+# In Show-SettingsDialog, after $dialogWidth etc. are set:
+$_stgDialogWidth  = $dialogWidth
+$_stgDialogHeight = $dialogHeight
+$_stgDialogLines  = $dialogLines
+
+# In the callback:
+$settingsParentRedraw = {
+    param($w, $h)
+    $dialogWidth  = $_stgDialogWidth    # shadows sub-dialog's $dialogWidth
+    $dialogHeight = $_stgDialogHeight
+    $dialogLines  = $_stgDialogLines
+    # ... rest of callback uses correct Settings values ...
+}
+```
+
+The `$_stg*` names don't exist in any sub-dialog, so they resolve correctly via the scope chain (sub-dialog → Settings → main loop). The local `$dialogWidth` in the callback then shadows the sub-dialog's value for `& $drawSettingsDialog` which runs in a child scope of the callback.
+
 ### GetAsyncKeyState Return Values
 
 ```powershell
@@ -1144,6 +1226,12 @@ $wasPressed = ($state -band 0x0001) -ne 0
 ```
 
 Note: The "was pressed" bit is consumed on read, so only check it once per call. Only used for mouse buttons (0x01-0x06) and specific modifier keys (Shift, Ctrl).
+
+### `[Console]::Clear()` and `clear-host` Strip `ENABLE_MOUSE_INPUT` (CRITICAL)
+
+In Windows Terminal, calling `[Console]::Clear()` or `clear-host` resets the console input mode, stripping the `ENABLE_MOUSE_INPUT` flag. This causes `PeekConsoleInput` to stop reporting `MOUSE_EVENT` records entirely — mouse clicks become invisible to the application while `GetAsyncKeyState` (hardware-level) still works.
+
+**Always call `Restore-ConsoleInputMode` after any `[Console]::Clear()` or `clear-host`**. The function reads the current mode via `GetConsoleMode`, ORs in `ENABLE_MOUSE_INPUT` (0x0010), and writes it back via `SetConsoleMode`. Current call sites: pre-main-loop clear, `Invoke-ResizeHandler` exit/hidden-mode, and once at the wait loop entry point (catches all dialog exit `clear-host` calls).
 
 ### Type Reloading Limitations
 
@@ -1212,7 +1300,7 @@ Windows Terminal has a setting "Automatically adjust lightness of indistinguisha
 ## Testing Tips
 
 1. **Debug Mode**: Run with `-DebugMode` for verbose console logging during initialization
-2. **Diagnostics**: Run with `-Diag` for file-based logs in `_diag/` (relative to script location)
+2. **Diagnostics**: Run with `-Diag` for file-based logs in `_diag/` (relative to script location). After quitting, a 15-second countdown prompt offers to print all diagnostic files to the console (each file in a different color, limited to 100 rows per file)
 3. **Settle Detection**: Test by moving mouse during interval countdown - movement should be deferred
 4. **Resize Handling**: Drag window edges to test logo centering and quote display
 5. **Dialog Rendering**: Test dialogs at various window sizes (they should stay centered)
@@ -1225,13 +1313,21 @@ Windows Terminal has a setting "Automatically adjust lightness of indistinguisha
 
 | File | Purpose |
 |------|---------|
-| `Start-mJig/Start-mJig.psm1` | Module root — contains `Start-mJig` function + Module Runspace Provisioner |
+| `Start-mJig/Start-mJig.psm1` | Module skeleton — `Start-mJig` function, provisioner, init, main loop (~3,000 lines) |
 | `Start-mJig/Start-mJig.psd1` | Module manifest — version, GUID, exports, `RequiredAssemblies` |
+| `Start-mJig/Private/Config/` | Theme colors (`Initialize-Theme.ps1`) and P/Invoke types (`Initialize-PInvoke.ps1`) |
+| `Start-mJig/Private/Startup/` | `Show-StartupScreen.ps1`, `Show-StartupComplete.ps1`, `Get-LatestVersionInfo.ps1` |
+| `Start-mJig/Private/Rendering/` | Buffered rendering functions (11 files: `Write-Buffer`, `Flush-Buffer`, `Draw-MainFrame`, etc.) |
+| `Start-mJig/Private/Dialogs/` | All 5 dialog functions (`Show-TimeChangeDialog`, `Show-MovementModifyDialog`, etc.) |
+| `Start-mJig/Private/IPC/` | IPC helpers + worker loop (5 files: `Send-PipeMessage`, `Start-WorkerLoop`, etc.) |
+| `Start-mJig/Private/Helpers/` | Utility functions (13 files: `Get-MousePosition`, `Invoke-ResizeHandler`, `Show-DiagnosticFiles`, etc.) |
+| `Start-mJig/Build/Build-Module.ps1` | Build script — combines skeleton + Private/ files into single `.psm1` in `dist/` |
+| `.github/workflows/build.yml` | GitHub Actions — runs build on `v*` tag push, creates release |
 | `README.md` | User documentation |
 | `resources/AGENTS.md` | AI agent context (this file) |
 | `resources/test-logs.ps1` | Temporary test script for log rendering (git-ignored) |
 | `CHANGELOG.md` | Change tracking across commits |
-| `.gitignore` | Excludes `_diag/`, backup files, and `resources/*.ps1` from git |
+| `.gitignore` | Excludes `_diag/`, backup files, `resources/*.ps1`, and `dist/` from git |
 | `_diag/startup.txt` | Initialization diagnostics (created with `-Diag`) |
 | `_diag/settle.txt` | Mouse settle detection logs (created with `-Diag`) |
 | `_diag/input.txt` | PeekConsoleInput + GetLastInputInfo input detection logs (created with `-Diag`) |
@@ -1239,9 +1335,11 @@ Windows Terminal has a setting "Automatically adjust lightness of indistinguisha
 | `_diag/worker-ipc.txt` | Worker-side IPC diagnostics: viewer connect/disconnect, command recv, state send/skip counts (created with `-Diag`, forwarded to worker via spawn command) |
 | `_diag/welcome.txt` | Welcome screen resize detection diagnostics (**always written**, no `-Diag` flag needed) |
 
-The `_diag/` folder is at the **project root** (`c:\Projects\mJig\_diag\`), one level above the script (`Start-mJig\`). The script uses `Split-Path $PSScriptRoot -Parent` to build the path so it lands at the project root regardless of where the script file lives within the repo. `welcome.txt` is always written regardless of `-Diag`; all other diag files require the `-Diag` flag. `-Diag` is automatically forwarded to the worker process when spawned. All diag files are git-ignored.
+The `_diag/` folder is relative to `$PSScriptRoot` (i.e. `Start-mJig\_diag\`). `welcome.txt` is always written regardless of `-Diag`; all other diag files require the `-Diag` flag. `-Diag` is automatically forwarded to the worker process when spawned. All diag files are git-ignored.
 
-> **TEMPORARY TEST SCRIPTS**: When an agent creates a throwaway `.ps1` script to test or experiment with something (e.g. testing rendering logic, validating a calculation), place it in `resources/`. All `resources/*.ps1` files are git-ignored. Do NOT place temp scripts in the project root or elsewhere. Note: `_diag/` (at the project root, not inside `Start-mJig/`) is separate — it is for runtime diagnostic output produced by the script itself (via `-Diag` or always-on), not for agent-authored test scripts.
+**Post-exit diagnostic dump:** When `-Diag` is enabled, `Show-DiagnosticFiles` runs after the main loop exits (all exit paths: quit confirmation, end time reached). It lists available diagnostic files with line counts, then prompts `Print diagnostics to console? [Y/N]` with a 15-second countdown that auto-skips. If the user presses Y, each file is printed in a distinct color (startup=Cyan, settle=Yellow, input=Green, ipc=Magenta, worker-ipc=DarkCyan), limited to 100 rows per file. Files exceeding 100 rows show a truncation message with the full file path.
+
+> **TEMPORARY TEST SCRIPTS**: When an agent creates a throwaway `.ps1` script to test or experiment with something (e.g. testing rendering logic, validating a calculation), place it in `resources/`. All `resources/*.ps1` files are git-ignored. Do NOT place temp scripts in the project root or elsewhere. Note: `_diag/` is separate — it is for runtime diagnostic output produced by the script itself (via `-Diag` or always-on), not for agent-authored test scripts.
 
 **When reviewing diagnostic output with the user**, always provide a ready-to-run command to print the relevant diag file. The user expects this every time. Use:
 
@@ -1277,6 +1375,8 @@ The provisioner is a ~30-line block at the top of `Start-mJig` (immediately afte
 **Error stream handling (line ~148):**
 Non-terminating errors from the child runspace are accumulated in `$_ps.Streams.Error` during the entire session. In normal mode these are silently suppressed. In `-DebugMode` they are deduplicated by message+line number and shown as a compact summary after exit. This prevents the wall of hundreds of identical errors (e.g., null-reference errors from rendering edge cases) that would otherwise dump on quit.
 
+**Exit flow:** All exit paths (quit confirmation via mouse click or keyboard `q`, and end time reached) use `break process` to exit the `:process` main loop and fall through to the cleanup section: viewer pipe disposal → `Show-DiagnosticFiles` prompt (if `-Diag`) → mutex release. The provisioner's `finally` block then disposes the runspace and restores console state. The `-DebugMode` error summary prints after the cleanup section completes.
+
 **Why `$Host` must be passed to `CreateRunspace`:**
 - Without it the runspace gets a default automation host with no console
 - Passing the caller's `$Host` gives the provisioned runspace access to `$Host.UI.RawUI.ReadKey`, `WindowSize`, `KeyAvailable`, and all VT100/`[Console]::Write()` output — everything the TUI depends on
@@ -1290,43 +1390,46 @@ No external dependencies - the script is fully self-contained.
 
 ---
 
-## Quick Reference: Key Line Numbers
+## Quick Reference: Function Locations
 
-| Component | Approximate Lines |
-|-----------|------------------|
-| Parameters | 41-69 |
-| Module Runspace Provisioner | 77-201 |
-| Error stream handling (provisioner finally) | ~148 |
-| Initialization Variables (script-scoped copies) | ~209-280 |
-| Box Characters | ~274-284 |
-| Theme Colors (incl. BorderPadV/H, HeaderBg, FooterBg, HeaderRowBg, MenuRowBg) | ~285-520 |
-| Show-StartupScreen | ~522 |
-| Show-StartupComplete | ~550 |
-| Invoke-ResizeHandler | ~754 |
-| Mutex check + viewer reconnect flag | ~809-835 |
-| Console setup guard (`-not $_WorkerMode`) | ~839-1015 |
-| Assembly Loading + P/Invoke Types (namespace mJiggAPI) | ~1114-1550 |
-| End Time Calculation | ~1596 |
-| Buffered Rendering: Write-Buffer, Flush-Buffer, Clear-Buffer, Write-ButtonImmediate | ~1936-2070 |
-| Draw-DialogShadow / Clear-DialogShadow | ~2071-2110 |
-| Show-TimeChangeDialog | ~2110 |
-| Draw-ResizeLogo | ~2851 |
-| Get-MousePosition / Test-MouseMoved | ~2969-2993 |
-| Get-TimeSinceMs / Get-ValueWithVariance | ~2994-3020 |
-| IPC Helpers (Send-PipeMessage, Read-PipeMessage, Send-PipeMessageNonBlocking) | ~3022-3078 |
-| Start-WorkerLoop (incl. $_workerSettingsEpoch at ~3118) | ~3079-3555 |
-| Connect-WorkerPipe | ~3556-3630 |
-| Get-Padding / Write-SimpleDialogRow / Write-SimpleFieldRow | ~3631-3727 |
-| Show-MovementModifyDialog | ~3728 |
-| Show-QuitConfirmationDialog | ~4496 |
-| Show-SettingsDialog | ~4985 |
-| Show-InfoDialog | ~5444 |
-| IPC Mode Branching (incl. $_settingsEpoch at ~5759) | ~5744-5833 |
-| $oldWindowSize / $OldBufferSize init (pre-main-loop) | ~5902-5910 |
-| Main Loop Start (:process while) | ~5925 |
-| Wait Loop | ~6077-7133 |
-| Resize Detection (in wait loop) | ~7084-7096 |
-| UI Rendering — chrome rows | ~7285-7900+ |
-| Menu Bar Render | ~8277+ |
+Functions are in individual `.ps1` files under `Start-mJig/Private/`. The skeleton `Start-mJig.psm1` contains params, provisioner, init, and the main loop.
 
-*Note: Line numbers are approximate and shift as code is modified. Last verified: 2026-03-04 (~8,745 lines total).*
+| Component | Location |
+|-----------|----------|
+| Parameters | `Start-mJig.psm1` (top of function) |
+| Module Runspace Provisioner | `Start-mJig.psm1` |
+| Initialization Variables | `Start-mJig.psm1` |
+| Theme Colors | `Private/Config/Initialize-Theme.ps1` |
+| P/Invoke Types (mJiggAPI) | `Private/Config/Initialize-PInvoke.ps1` |
+| Show-StartupScreen | `Private/Startup/Show-StartupScreen.ps1` |
+| Show-StartupComplete | `Private/Startup/Show-StartupComplete.ps1` |
+| Get-LatestVersionInfo | `Private/Startup/Get-LatestVersionInfo.ps1` |
+| Invoke-ResizeHandler | `Private/Helpers/Invoke-ResizeHandler.ps1` |
+| Get-SmoothMovementPath | `Private/Helpers/Get-SmoothMovementPath.ps1` |
+| Get-DirectionArrow | `Private/Helpers/Get-DirectionArrow.ps1` |
+| Write-Buffer / Flush-Buffer / Clear-Buffer | `Private/Rendering/` |
+| Write-ButtonImmediate | `Private/Rendering/Write-ButtonImmediate.ps1` |
+| Draw-DialogShadow / Clear-DialogShadow | `Private/Rendering/` |
+| Draw-ResizeLogo | `Private/Rendering/Draw-ResizeLogo.ps1` |
+| Draw-MainFrame | `Private/Rendering/Draw-MainFrame.ps1` |
+| Write-SectionLine / Write-SimpleDialogRow / Write-SimpleFieldRow | `Private/Rendering/` |
+| Get-MousePosition / Test-MouseMoved | `Private/Helpers/` |
+| Get-TimeSinceMs / Get-ValueWithVariance | `Private/Helpers/` |
+| Get-CachedMethod / Set-CoordinateBounds / Get-Padding | `Private/Helpers/` |
+| Restore-ConsoleInputMode / Send-ResizeExitWakeKey | `Private/Helpers/` |
+| Show-DiagnosticFiles | `Private/Helpers/Show-DiagnosticFiles.ps1` |
+| Send-PipeMessage / Read-PipeMessage / Send-PipeMessageNonBlocking | `Private/IPC/` |
+| Start-WorkerLoop | `Private/IPC/Start-WorkerLoop.ps1` |
+| Connect-WorkerPipe | `Private/IPC/Connect-WorkerPipe.ps1` |
+| Show-TimeChangeDialog | `Private/Dialogs/Show-TimeChangeDialog.ps1` |
+| Show-MovementModifyDialog | `Private/Dialogs/Show-MovementModifyDialog.ps1` |
+| Show-QuitConfirmationDialog | `Private/Dialogs/Show-QuitConfirmationDialog.ps1` |
+| Show-SettingsDialog | `Private/Dialogs/Show-SettingsDialog.ps1` |
+| Show-InfoDialog | `Private/Dialogs/Show-InfoDialog.ps1` |
+| Mutex check / Console setup | `Start-mJig.psm1` |
+| End Time Calculation | `Start-mJig.psm1` |
+| IPC Mode Branching | `Start-mJig.psm1` |
+| Main Loop (:process while) | `Start-mJig.psm1` |
+| Build Script | `Build/Build-Module.ps1` |
+
+*Note: All paths are relative to `Start-mJig/`. Last verified: 2026-03-08.*

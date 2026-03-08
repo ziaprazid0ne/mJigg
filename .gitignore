@@ -4,3 +4,4 @@ _parsecheck.ps1
 _diag/
 /.backups/
 resources/*.ps1
+dist/

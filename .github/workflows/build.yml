@@ -1,0 +1,25 @@
+name: Build Module Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build combined module
+        shell: pwsh
+        run: .\Start-mJig\Build\Build-Module.ps1
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Start-mJig/Start-mJig.psm1
+            dist/Start-mJig/Start-mJig.psd1
