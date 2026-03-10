@@ -1,4 +1,4 @@
-﻿	function Write-Buffer {
+	function Write-Buffer {
 		param(
 			[int]$X = -1,
 			[int]$Y = -1,
@@ -20,5 +20,7 @@
 				return
 			}
 		}
-		$rq.Add([object[]]@($X, $Y, $Text, $fgCode, $bgCode, $nw))
+		$seg = [object[]]::new(6)
+	$seg[0] = $X; $seg[1] = $Y; $seg[2] = $Text; $seg[3] = $fgCode; $seg[4] = $bgCode; $seg[5] = $nw
+	$rq.Add($seg)
 		}

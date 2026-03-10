@@ -1,4 +1,4 @@
-﻿		if ($DebugMode) {
+		if ($DebugMode) {
 			Write-Host "[DEBUG] Loading System.Windows.Forms assembly..." -ForegroundColor $script:TextHighlight
 		}
 		try {
@@ -148,6 +148,10 @@ namespace mJiggAPI {
 		
 		public const uint KEYEVENTF_KEYUP = 0x0002;
 		public const int VK_RMENU = 0xA5;  // Right Alt key (modifier, won't type anything)
+		public const int VK_SHIFT = 0x10;
+		public const int VK_M     = 0x4D;
+		public const int VK_P     = 0x50;
+		public const int VK_Q     = 0x51;
 	}
 	
 	public class Mouse {
@@ -183,7 +187,8 @@ namespace mJiggAPI {
 		public static extern bool ReadConsoleInput(IntPtr hConsoleInput, [Out] INPUT_RECORD[] lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
 		
 		[DllImport("kernel32.dll", SetLastError = true)]
-		public static extern uint PeekConsoleInput(IntPtr hConsoleInput, [Out] INPUT_RECORD[] lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool PeekConsoleInput(IntPtr hConsoleInput, [Out] INPUT_RECORD[] lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
 		
 		[DllImport("kernel32.dll", SetLastError = true)]
 		public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
@@ -301,13 +306,12 @@ namespace mJiggAPI {
 				
 				# Add-Type with explicit error handling and assembly references
 				# Note: We use our own POINT struct, so we don't need System.Drawing.dll
-				$addTypeResult = $null
-				$addTypeError = $null
-				try {
-					if ($DebugMode) {
-						Write-Host "  [DEBUG] Attempting to add types..." -ForegroundColor $script:TextHighlight
-					}
-					$addTypeResult = Add-Type -TypeDefinition $typeDefinition -ReferencedAssemblies @("System.dll") -ErrorAction Stop
+			$addTypeError = $null
+			try {
+				if ($DebugMode) {
+					Write-Host "  [DEBUG] Attempting to add types..." -ForegroundColor $script:TextHighlight
+				}
+				$null = Add-Type -TypeDefinition $typeDefinition -ReferencedAssemblies @("System.dll") -ErrorAction Stop
 					if ($DebugMode) {
 						Write-Host "  [OK] Add-Type completed successfully" -ForegroundColor $script:TextSuccess
 					}

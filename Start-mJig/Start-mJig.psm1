@@ -1,11 +1,8 @@
 function Start-mJig {
 
-	#############################################################
+	<############################################################
 	## mJig - An overly complex powershell mouse jiggling tool ##
 	#############################################################
-
-	<#    _                       __
-		/   \                  /      \
 	   '      \              /          \
 	  |       |Oo          o|            |
 	  `    \  |OOOo......oOO|   /        |
@@ -14,12 +11,12 @@ function Start-mJig {
 	 ______OOOOOOOOOOOOOOOOOOOOOOOo.___
 	  --- OO'* `OOOOOOOOOO'*  `OOOOO--
 		  OO.   OOOOOOOOO'    .OOOOO o
-		  `OOOooOOOOOOOOOooooOOOOOO'OOOo
-		.OO "OOOOOOOOOOOOOOOOOOOO"OOOOOOOo
-	__ OOOOOO`OOOOOOOOOOOOOOOO"OOOOOOOOOOOOo
-	___OOOOOOOO_"OOOOOOOOOOO"_OOOOOOOOOOOOOOOO
+		  `-OOooOOOOOOOOOooooOOOOOO_OOOo
+		.OO "-OOOOOOOOOOOOOOOOO-"OOOOOOOo
+	 __OOOOO`_OOOOOOOOOOOOOOO"-OOOOOOOOOOOo-
+	 _0OOOOOOOO_"OOOOOOOOOOO"_OOOOOOOOOOOOOOO_
 	 OOOOO^OOOO0`(____)/"OOOOOOOOOOOOO^OOOOOO
-	 OOOOO OO000/00||00\000000OOOOOOOO OOOOOO
+	 OOOOO OO000/00||00\000000OOOOOOOO OOOOOO-
 	 OOOOO O0000000000000000 ppppoooooOOOOOO
 	 `OOOOO 0000000000000000 QQQQ "OOOOOOO"
 	  o"OOOO 000000000000000oooooOOoooooooO'
@@ -27,8 +24,8 @@ function Start-mJig {
 	 OOOOOO QQQQ 0000000000000000000OOOOOOO
 	OOOOOO00eeee00000000000000000000OOOOOOOO.
 	OOOOOOOO000000000000000000000000OOOOOOOOOO
-	OOOOOOOOO00000000000000000000000OOOOOOOOOO
-	`OOOOOOOOO000000000000000000000OOOOOOOOOOO
+	OOOOOOOOO00000000000000000000000OOOOOOOOOO-
+	`OOOOOOOOO000000000000000000000OOOOOOOOOOO.
 	 "OOOOOOOO0000000000000000000OOOOOOOOOOO'
 	   "OOOOOOO00000000000000000OOOOOOOOOO"
 	.ooooOOOOOOOo"OOOOOOO000000000000OOOOOOOOOOO"
@@ -36,7 +33,7 @@ function Start-mJig {
 	OOO         QQQQO"'                     `"QQQQ
 	OOO
 	`OOo.
-	`"OOOOOOOOOOOOoooooooo#>
+	`"wigglejiggleoooooooo#>
 
 	param(
 		[Parameter(Mandatory = $false)] 
@@ -247,6 +244,8 @@ function Start-mJig {
 	$script:LoopIteration = 0  # Track loop iterations for diagnostics
 	$script:lastInputCheckTime = $null  # Track when we last logged input check (for debug mode)
 	$script:DialogButtonClick = $null  # Track dialog button clicks detected from main loop ("Update" or "Cancel")
+	$script:ManualPause = $false
+	$script:_HotkeyDebounce = $false
 	
 	# Performance: Cache for reflection method lookups
 	$script:MethodCache = @{}
@@ -342,7 +341,7 @@ function Start-mJig {
 		$_viewerReconnect = $true
 	}
 	if ($DebugMode -and -not $_viewerReconnect) {
-		Write-Host "  [OK] Mutex acquired — no other instance running" -ForegroundColor $script:TextSuccess
+		Write-Host "  [OK] Mutex acquired -- no other instance running" -ForegroundColor $script:TextSuccess
 	}
 	
 	# Show initializing screen (or plain clear for DebugMode)
@@ -505,22 +504,8 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 	if ($DebugMode) {
 		Write-Host "[DEBUG] Initializing output array..." -ForegroundColor $script:TextHighlight
 	}
-	try {
-		if ($Output -ne "hidden") {
-			$LogArray = New-Object 'System.Collections.Generic.List[object]'
-			if ($DebugMode) {
-				Write-Host "  [OK] Output mode: $Output" -ForegroundColor $script:TextSuccess
-			}
-		} else {
-			if ($DebugMode) {
-				Write-Host "  [OK] Output mode: hidden (no log array)" -ForegroundColor $script:TextSuccess
-			}
-		}
-	} catch {
-		if ($DebugMode) {
-			Write-Host "  [FAIL] Failed to initialize output array: $($_.Exception.Message)" -ForegroundColor $script:TextError
-		}
-		throw  # Re-throw as this is critical
+	if ($DebugMode) {
+		Write-Host "  [OK] Output mode: $Output" -ForegroundColor $script:TextSuccess
 	}
 
 	} # end if (-not $_WorkerMode) — console setup guard
@@ -626,7 +611,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 		# Verify types loaded correctly
 		if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - CHECKPOINT 2: Types loaded, verifying" | Out-File $script:StartupDiagFile -Append }
 		try {
-			$testKey = [mJiggAPI.Mouse]::GetAsyncKeyState(0x01)
+			$null = [mJiggAPI.Mouse]::GetAsyncKeyState(0x01)
 			$testPoint = New-Object mJiggAPI.POINT
 			$hasGetCursorPos = [mJiggAPI.Mouse].GetMethod("GetCursorPos") -ne $null
 			if ($hasGetCursorPos) {
@@ -793,12 +778,46 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 		# Used for instant press/release visual feedback without waiting for the next full frame.
 		# Requires the bounds entry to include displayText (string) and format (int: 0=emoji, 1/2=text).
 		. "$PSScriptRoot\Private\Rendering\Write-ButtonImmediate.ps1"
+	. "$PSScriptRoot\Private\Rendering\Write-HotkeyLabel.ps1"
 
 		# Function to draw drop shadow for dialog boxes
 		. "$PSScriptRoot\Private\Rendering\Draw-DialogShadow.ps1"
 		
 		# Function to clear drop shadow for dialog boxes
 		. "$PSScriptRoot\Private\Rendering\Clear-DialogShadow.ps1"
+
+		# Debug log entry helper (reduces boilerplate for structured log entries)
+		. "$PSScriptRoot\Private\Helpers\Add-DebugLogEntry.ps1"
+
+		# Post-dialog cleanup helper (set skip/redraw flags + refresh window/buffer sizes)
+		. "$PSScriptRoot\Private\Helpers\Invoke-PostDialogCleanup.ps1"
+	. "$PSScriptRoot\Private\Helpers\Invoke-CursorMovement.ps1"
+
+	. "$PSScriptRoot\Private\Helpers\Show-Notification.ps1"
+	. "$PSScriptRoot\Private\Helpers\Test-GlobalHotkey.ps1"
+
+		# Dialog shared helpers (button layout, mouse click detection, key input, exit cleanup)
+		. "$PSScriptRoot\Private\Helpers\Get-DialogButtonLayout.ps1"
+		. "$PSScriptRoot\Private\Helpers\Get-DialogMouseClick.ps1"
+		. "$PSScriptRoot\Private\Helpers\Read-DialogKeyInput.ps1"
+		. "$PSScriptRoot\Private\Helpers\Invoke-DialogExitCleanup.ps1"
+
+		# Pre-allocated buffer for dialog PeekConsoleInput (reused across all dialogs)
+		$script:_DialogPeekBuffer = New-Object 'mJiggAPI.INPUT_RECORD[]' 16
+
+		# Pre-allocated point for cursor movement animation (avoids per-step allocation)
+		$script:_MovementPoint = New-Object System.Drawing.Point
+
+		# Cached emoji constants (avoid recomputation every frame)
+		$script:MouseEmoji     = [char]::ConvertFromUtf32(0x1F400)  # 🐀
+		$script:HourglassEmoji = [char]::ConvertFromUtf32(0x23F3)   # ⏳
+		$script:LockEmoji      = [char]::ConvertFromUtf32(0x1F512)  # 🔒
+		$script:GearEmoji      = [char]::ConvertFromUtf32(0x1F6E0)  # 🛠
+		$script:RedXEmoji      = [char]::ConvertFromUtf32(0x274C)   # ❌
+		$script:CheckmarkEmoji = [char]::ConvertFromUtf32(0x2705)   # ✅
+
+		# Cached virtual screen bounds (display config rarely changes during a run)
+		$script:_VirtualScreen = [System.Windows.Forms.SystemInformation]::VirtualScreen
 
 		# Function to show popup dialog for changing end time
 		. "$PSScriptRoot\Private\Dialogs\Show-TimeChangeDialog.ps1"
@@ -1008,7 +1027,19 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 		}
 	}
 	# ---- End IPC Mode Branching ----------------------------------------------------
-	
+
+	if ($_isViewerMode) {
+		$_workerPid = $_pipeResult.WorkerPid
+		$_connTs = (Get-Date).ToString("HH:mm:ss")
+		$null = $LogArray.Add([PSCustomObject]@{
+			logRow = $true
+			components = @(
+				@{ priority = 1; text = $_connTs; shortText = $_connTs },
+				@{ priority = 2; text = " - Viewer connected to worker (PID: $_workerPid)"; shortText = " - Connected (PID: $_workerPid)" }
+			)
+		})
+	}
+
 	if ($script:DiagEnabled -and $_isViewerMode) {
 		"=== mJig IPC Viewer Diag: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') ===" | Out-File $script:IpcDiagFile
 		"  _isViewerMode=$_isViewerMode  _viewerReconnect=$_viewerReconnect  Inline=$Inline" | Out-File $script:IpcDiagFile -Append
@@ -1133,7 +1164,60 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 			$lastKeyPress = $null  # Reset key press tracking
 			$lastKeyInfo = $null  # Reset key info tracking
 			$pressedMenuKeys.Clear()  # Reset per-iteration key-up tracking
-	
+
+	# ---- Global Hotkey Polling (Shift+M+P / Shift+M+Q) --------------------------
+	# Standalone mode only — in viewer mode the worker detects hotkeys
+	# via its fast 50ms tick loop and forwards state changes via pipe.
+	if (-not $_isViewerMode) {
+		$_globalAction = Test-GlobalHotkey
+		if ($_globalAction -eq 'togglePause') {
+			$script:ManualPause = -not $script:ManualPause
+			if ($script:ManualPause) {
+				Show-Notification -Title 'mJig' -Body 'Paused'
+			} else {
+				Show-Notification -Title 'mJig' -Body 'Resumed'
+			}
+			if ($LogArray.Count -gt 0 -and $LogArray.Count -ge $Rows) { $LogArray.RemoveAt(0) }
+			$null = $LogArray.Add([PSCustomObject]@{
+				logRow = $true
+				components = @(
+					@{ priority = 1; text = $date.ToString("HH:mm:ss"); shortText = $date.ToString("HH:mm:ss") },
+					@{ priority = 2; text = " - $(if ($script:ManualPause) { 'Paused' } else { 'Resumed' }) (hotkey)"; shortText = " - $(if ($script:ManualPause) { 'Paused' } else { 'Resumed' })" }
+				)
+			})
+		} elseif ($_globalAction -eq 'quit') {
+			Show-Notification -Title 'mJig' -Body 'mJig stopped'
+			Clear-Host
+			$runtime = (Get-Date) - $ScriptStartTime
+			$hours = [math]::Floor($runtime.TotalHours)
+			$minutes = $runtime.Minutes
+			$seconds = $runtime.Seconds
+			$runtimeStr = ""
+			if ($hours -gt 0) {
+				$runtimeStr = "$hours hour$(if ($hours -ne 1) { 's' }), $minutes minute$(if ($minutes -ne 1) { 's' })"
+			} elseif ($minutes -gt 0) {
+				$runtimeStr = "$minutes minute$(if ($minutes -ne 1) { 's' }), $seconds second$(if ($seconds -ne 1) { 's' })"
+			} else {
+				$runtimeStr = "$seconds second$(if ($seconds -ne 1) { 's' })"
+			}
+			Write-Host ""
+			$mouseEmoji = [char]::ConvertFromUtf32(0x1F400)
+			Write-Host "  mJig(" -NoNewline -ForegroundColor $script:HeaderAppName
+			$mouseEmojiX = $Host.UI.RawUI.CursorPosition.X
+			$mouseEmojiY = $Host.UI.RawUI.CursorPosition.Y
+			Write-Host $mouseEmoji -NoNewline -ForegroundColor $script:HeaderIcon
+			[Console]::SetCursorPosition($mouseEmojiX + 2, $mouseEmojiY)
+			Write-Host ") " -NoNewline -ForegroundColor $script:HeaderAppName
+			Write-Host "Stopped" -ForegroundColor $script:TextError
+			Write-Host ""
+			Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:StatsBoxLabel
+			Write-Host $runtimeStr -ForegroundColor $script:StatsBoxValue
+			Write-Host ""
+			break process
+		}
+	}
+	# ---- End Global Hotkey Polling ------------------------------------------------
+
 	# ---- Viewer IPC: read state/log messages from the background worker --------
 	if ($_isViewerMode) {
 		if ($script:DiagEnabled -and $script:LoopIteration -le 5) {
@@ -1169,9 +1253,26 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 							$SkipUpdate = [bool]$msg.userInputDetected -or $cooldownActive
 						}
 						'log' {
-							if ($null -ne $LogArray) {
+							if ($null -ne $LogArray -and -not $script:ManualPause) {
 								$components = @()
 								foreach ($c in $msg.components) {
+									$components += @{
+										priority = [int]$c.priority
+										text = [string]$c.text
+										shortText = [string]$c.shortText
+									}
+								}
+								if ($LogArray.Count -gt 0 -and $LogArray.Count -ge $Rows) {
+									$LogArray.RemoveAt(0)
+								}
+								$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $components })
+							}
+						}
+						'togglePause' {
+							$script:ManualPause = [bool]$msg.paused
+							if ($null -ne $msg.logMsg -and $null -ne $LogArray) {
+								$components = @()
+								foreach ($c in $msg.logMsg.components) {
 									$components += @{
 										priority = [int]$c.priority
 										text = [string]$c.text
@@ -1299,9 +1400,26 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 									$SkipUpdate = [bool]$msg.userInputDetected -or $cooldownActive
 								}
 									'log' {
-										if ($null -ne $LogArray) {
+										if ($null -ne $LogArray -and -not $script:ManualPause) {
 											$components = @()
 											foreach ($c in $msg.components) {
+												$components += @{
+													priority = [int]$c.priority
+													text = [string]$c.text
+													shortText = [string]$c.shortText
+												}
+											}
+											if ($LogArray.Count -gt 0 -and $LogArray.Count -ge $Rows) {
+												$LogArray.RemoveAt(0)
+											}
+											$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $components })
+										}
+									}
+									'togglePause' {
+										$script:ManualPause = [bool]$msg.paused
+										if ($null -ne $msg.logMsg -and $null -ne $LogArray) {
+											$components = @()
+											foreach ($c in $msg.logMsg.components) {
 												$components += @{
 													priority = [int]$c.priority
 													text = [string]$c.text
@@ -1475,10 +1593,9 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 								# Consume scroll and click events to prevent buffer buildup
 								$maxConsumeIdx = [Math]::Max($lastScrollIdx, $lastClickIdx)
 								if ($maxConsumeIdx -ge 0) {
-									$consumeCount = [uint32]($maxConsumeIdx + 1)
-									$flushBuffer = New-Object 'mJiggAPI.INPUT_RECORD[]' $consumeCount
-									$flushed = [uint32]0
-									[mJiggAPI.Mouse]::ReadConsoleInput($hStdIn, $flushBuffer, $consumeCount, [ref]$flushed) | Out-Null
+								$consumeCount = [uint32]($maxConsumeIdx + 1)
+								$flushed = [uint32]0
+								[mJiggAPI.Mouse]::ReadConsoleInput($hStdIn, $_waitPeekBuffer, $consumeCount, [ref]$flushed) | Out-Null
 								}
 								if ($hasScrollEvent) {
 									$scrollDetected = $true
@@ -1597,18 +1714,12 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 							}
 						}
 							
-							if ($DebugMode) {
-								$clickTarget = "none"
-								if ($null -ne $script:DialogButtonClick) { $clickTarget = "Dialog:$($script:DialogButtonClick)" }
-								elseif ($null -ne $script:MenuClickHotkey) { $clickTarget = "Menu:$($script:MenuClickHotkey)" }
-							$null = $LogArray.Add([PSCustomObject]@{
-								logRow = $true
-								components = @(
-								@{ priority = 1; text = $date.ToString("HH:mm:ss"); shortText = $date.ToString("HH:mm:ss") },
-								@{ priority = 2; text = " - [DEBUG] LButton click at console ($consoleX,$consoleY), target: $clickTarget"; shortText = " - [DEBUG] Click ($consoleX,$consoleY) -> $clickTarget" }
-								)
-							})
-							}
+						if ($DebugMode) {
+							$clickTarget = "none"
+							if ($null -ne $script:DialogButtonClick) { $clickTarget = "Dialog:$($script:DialogButtonClick)" }
+							elseif ($null -ne $script:MenuClickHotkey) { $clickTarget = "Menu:$($script:MenuClickHotkey)" }
+							Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "LButton click at console ($consoleX,$consoleY), target: $clickTarget" -ShortMessage "Click ($consoleX,$consoleY) -> $clickTarget"
+						}
 						}
 						
 						# Check mouse buttons (0x01-0x06) for input detection (pause jiggler)
@@ -1698,11 +1809,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 							$HostWidth = $HostWidthRef.Value
 							$HostHeight = $HostHeightRef.Value
 							if ($quitResult.NeedsRedraw) {
-								$SkipUpdate = $true
-								$forceRedraw = $true
-								$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
-								$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
-								clear-host
+								Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 								break
 							}
 							if ($quitResult.Result -eq $true) {
@@ -1730,35 +1837,16 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 								Write-Host ""
 								break process
 							} else {
-								$SkipUpdate = $true
-								$forceRedraw = $true
-								$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
-								$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
-								clear-host
+								Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 								break
 							}
 						} elseif ($lastKeyPress -eq "q") {
 								$lastKeyPress = $null
 								$lastKeyInfo = $null
 								
-								# Debug: Log quit dialog opened
-								if ($DebugMode) {
-								$null = $LogArray.Add([PSCustomObject]@{
-									logRow = $true
-									components = @(
-										@{
-									priority = 1
-										text = $date.ToString("HH:mm:ss")
-										shortText = $date.ToString("HH:mm:ss")
-									},
-									@{
-										priority = 2
-										text = " - [DEBUG] Quit dialog opened"
-											shortText = " - [DEBUG] Quit opened"
-										}
-									)
-								})
-								}
+							if ($DebugMode) {
+								Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Quit dialog opened" -ShortMessage "Quit opened"
+							}
 								
 								$HostWidthRef = [ref]$HostWidth
 								$HostHeightRef = [ref]$HostHeight
@@ -1766,33 +1854,14 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 								$HostWidth = $HostWidthRef.Value
 								$HostHeight = $HostHeightRef.Value
 								if ($quitResult.NeedsRedraw) {
-									$SkipUpdate = $true
-									$forceRedraw = $true
-									$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
-									$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
-									clear-host
+									Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 									break
 								}
 								if ($quitResult.Result -eq $true) {
 									if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'quit' } } catch {} }
-									# Debug: Log quit confirmed
-									if ($DebugMode) {
-									$null = $LogArray.Add([PSCustomObject]@{
-										logRow = $true
-										components = @(
-											@{
-										priority = 1
-											text = $date.ToString("HH:mm:ss")
-											shortText = $date.ToString("HH:mm:ss")
-										},
-										@{
-											priority = 2
-											text = " - [DEBUG] Quit confirmed"
-												shortText = " - [DEBUG] Quit confirmed"
-											}
-										)
-									})
-									}
+								if ($DebugMode) {
+									Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Quit confirmed"
+								}
 									Clear-Host
 									$runtime = (Get-Date) - $ScriptStartTime
 									$hours = [math]::Floor($runtime.TotalHours)
@@ -1821,29 +1890,10 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 									Write-Host ""
 									break process
 								} else {
-									# Debug: Log quit canceled
-									if ($DebugMode) {
-									$null = $LogArray.Add([PSCustomObject]@{
-										logRow = $true
-										components = @(
-											@{
-											priority = 1
-											text = $date.ToString("HH:mm:ss")
-											shortText = $date.ToString("HH:mm:ss")
-										},
-										@{
-											priority = 2
-											text = " - [DEBUG] Quit canceled"
-												shortText = " - [DEBUG] Quit canceled"
-											}
-										)
-									})
-									}
-									$SkipUpdate = $true
-									$forceRedraw = $true
-									$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
-									$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
-									clear-host
+								if ($DebugMode) {
+									Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Quit canceled"
+								}
+									Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 									break
 								}
 				} elseif ($lastKeyPress -eq "o" -and $Output -ne "hidden") {
@@ -1855,27 +1905,10 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 					}
 					$script:Output = $Output
 					if ($_isViewerMode) { $_settingsEpoch++; try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output; epoch = $_settingsEpoch } } catch {} }
-						# Debug: Log view toggle
-						if ($DebugMode) {
-						$null = $LogArray.Add([PSCustomObject]@{
-							logRow = $true
-							components = @(
-								@{
-									priority = 1
-									text = $date.ToString("HH:mm:ss")
-									shortText = $date.ToString("HH:mm:ss")
-								},
-								@{
-									priority = [int]2
-									text = " - [DEBUG] View toggle: $oldOutput $([char]0x2192) $Output"
-									shortText = " - [DEBUG] View: $oldOutput $([char]0x2192) $Output"
-								}
-							)
-						})
-						}
-						$SkipUpdate = $true
-						$forceRedraw = $true
-						clear-host
+					if ($DebugMode) {
+						Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "View toggle: $oldOutput $([char]0x2192) $Output" -ShortMessage "View: $oldOutput $([char]0x2192) $Output"
+					}
+						Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw)
 						break
 					} elseif ($lastKeyPress -eq "i") {
 					$oldOutput = $Output
@@ -1893,27 +1926,10 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 					}
 					$script:Output = $Output
 					if ($_isViewerMode) { $_settingsEpoch++; try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output; epoch = $_settingsEpoch } } catch {} }
-						# Debug: Log incognito toggle
-						if ($DebugMode) {
-						$null = $LogArray.Add([PSCustomObject]@{
-							logRow = $true
-							components = @(
-								@{
-									priority = 1
-									text = $date.ToString("HH:mm:ss")
-									shortText = $date.ToString("HH:mm:ss")
-								},
-								@{
-									priority = [int]2
-									text = " - [DEBUG] Incognito toggle: $oldOutput $([char]0x2192) $Output"
-									shortText = " - [DEBUG] Incognito: $oldOutput $([char]0x2192) $Output"
-								}
-							)
-						})
-						}
-						$SkipUpdate = $true
-						$forceRedraw = $true
-						clear-host
+					if ($DebugMode) {
+						Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Incognito toggle: $oldOutput $([char]0x2192) $Output" -ShortMessage "Incognito: $oldOutput $([char]0x2192) $Output"
+					}
+						Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw)
 						break
 				} elseif ($lastKeyPress -eq "s") {
 					$lastKeyPress = $null
@@ -1959,32 +1975,13 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 					# after it has repainted the full screen cleanly.
 					$script:PendingReopenSettings = $true
 				}
-				$SkipUpdate  = $true
-				$forceRedraw = $true
-				$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
-				$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
-				clear-host
+				Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 				break
 					} elseif ($lastKeyPress -eq "m" -and $Output -ne "hidden") {
 							if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG OPEN type=movement pipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append }
-							# Debug: Log movement dialog opened (before calling dialog)
-							if ($DebugMode) {
-								$null = $LogArray.Add([PSCustomObject]@{
-									logRow = $true
-									components = @(
-										@{
-									priority = 1
-										text = $date.ToString("HH:mm:ss")
-										shortText = $date.ToString("HH:mm:ss")
-									},
-									@{
-										priority = 2
-										text = " - [DEBUG] Movement dialog opened"
-											shortText = " - [DEBUG] Movement opened"
-										}
-									)
-								})
-								}
+						if ($DebugMode) {
+							Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Movement dialog opened" -ShortMessage "Movement opened"
+						}
 								
 								$HostWidthRef = [ref]$HostWidth
 								$HostHeightRef = [ref]$HostHeight
@@ -1992,31 +1989,12 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 								$HostWidth = $HostWidthRef.Value
 								$HostHeight = $HostHeightRef.Value
 								
-								# Debug: Verify logs are preserved after dialog closes
-								if ($DebugMode) {
-								$null = $LogArray.Add([PSCustomObject]@{
-									logRow = $true
-									components = @(
-										@{
-									priority = 1
-										text = $date.ToString("HH:mm:ss")
-										shortText = $date.ToString("HH:mm:ss")
-									},
-									@{
-										priority = 2
-										text = " - [DEBUG] Movement dialog closed"
-											shortText = " - [DEBUG] Movement closed"
-										}
-									)
-								})
-								}
+							if ($DebugMode) {
+								Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Movement dialog closed" -ShortMessage "Movement closed"
+							}
 								
 								if ($dialogResult.NeedsRedraw) {
-									$SkipUpdate = $true
-									$forceRedraw = $true
-									$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
-									$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
-									clear-host
+									Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 									break
 								}
 								if ($null -ne $dialogResult.Result) {
@@ -2075,32 +2053,13 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 									}
 								}
 								if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG CLOSED type=movement" | Out-File $script:IpcDiagFile -Append }
-								$SkipUpdate = $true
-								$forceRedraw = $true
-								$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
-								$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
-								clear-host
+								Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 								break
 							} elseif ($lastKeyPress -eq "t") {
 								if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG OPEN type=time pipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append }
-								# Debug: Log time dialog opened (before calling dialog)
-								if ($DebugMode) {
-								$null = $LogArray.Add([PSCustomObject]@{
-									logRow = $true
-									components = @(
-										@{
-									priority = 1
-										text = $date.ToString("HH:mm:ss")
-										shortText = $date.ToString("HH:mm:ss")
-									},
-									@{
-										priority = 2
-										text = " - [DEBUG] Time dialog opened"
-											shortText = " - [DEBUG] Time opened"
-										}
-									)
-								})
-								}
+							if ($DebugMode) {
+								Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Time dialog opened" -ShortMessage "Time opened"
+							}
 								
 								$HostWidthRef = [ref]$HostWidth
 								$HostHeightRef = [ref]$HostHeight
@@ -2108,31 +2067,12 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 								$HostWidth = $HostWidthRef.Value
 								$HostHeight = $HostHeightRef.Value
 								
-								# Debug: Verify logs are preserved after dialog closes
-								if ($DebugMode) {
-								$null = $LogArray.Add([PSCustomObject]@{
-									logRow = $true
-									components = @(
-										@{
-									priority = 1
-										text = $date.ToString("HH:mm:ss")
-										shortText = $date.ToString("HH:mm:ss")
-									},
-									@{
-										priority = 2
-										text = " - [DEBUG] Time dialog closed"
-											shortText = " - [DEBUG] Time closed"
-										}
-									)
-								})
-								}
+							if ($DebugMode) {
+								Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Time dialog closed" -ShortMessage "Time closed"
+							}
 								
 								if ($dialogResult.NeedsRedraw) {
-									$SkipUpdate = $true
-									$forceRedraw = $true
-									$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
-									$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
-									clear-host
+									Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 									break
 								}
 								if ($null -ne $dialogResult.Result) {
@@ -2187,11 +2127,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 									}
 								}
 							if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG CLOSED type=time" | Out-File $script:IpcDiagFile -Append }
-							$SkipUpdate = $true
-							$forceRedraw = $true
-							$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
-							$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
-							clear-host
+							Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 							break
 				} elseif (($lastKeyPress -eq "?" -or $lastKeyPress -eq "/") -and $Output -ne "hidden") {
 						$lastKeyPress = $null
@@ -2201,11 +2137,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 						$infoResult = Show-InfoDialog -hostWidthRef $HostWidthRef -hostHeightRef $HostHeightRef
 						$HostWidth  = $HostWidthRef.Value
 						$HostHeight = $HostHeightRef.Value
-						$SkipUpdate  = $true
-						$forceRedraw = $true
-						$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
-						$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
-						clear-host
+						Invoke-PostDialogCleanup -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 						break
 					}
 				}
@@ -2237,7 +2169,6 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 							$SkipUpdate    = $true
 							$forceRedraw   = $true
 							$waitExecuted  = $false
-							clear-host
 							break
 						}
 					}
@@ -2333,7 +2264,6 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 				$HostHeight    = $newWindowSize.Height
 				$SkipUpdate    = $true
 				$forceRedraw   = $true
-				clear-host
 			} elseif ($null -ne $oldWindowSize -and
 					($newWindowSize.Width -ne $oldWindowSize.Width -or $newWindowSize.Height -ne $oldWindowSize.Height)) {
 				# Unified handler — blocks until stable and LMB released
@@ -2522,31 +2452,16 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 						$secondsRemaining = [Math]::Ceiling($script:AutoResumeDelaySeconds - $timeSinceInput)
 					} else {
 						# Timer expired - clear it
-						# Debug: Log resume (timer expired)
-						if ($DebugMode -and $null -ne $LastUserInputTime) {
-						$null = $LogArray.Add([PSCustomObject]@{
-							logRow = $true
-							components = @(
-								@{
-							priority = 1
-								text = $date.ToString("HH:mm:ss")
-								shortText = $date.ToString("HH:mm:ss")
-							},
-							@{
-								priority = 2
-								text = " - [DEBUG] Auto-resume delay expired, resuming"
-									shortText = " - [DEBUG] Resumed"
-								}
-							)
-						})
-						}
+					if ($DebugMode -and $null -ne $LastUserInputTime) {
+						Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Auto-resume delay expired, resuming" -ShortMessage "Resumed"
+					}
 						$LastUserInputTime = $null
 						$cooldownActive = $false
 					}
 				}
 			}
 			
-			if ($SkipUpdate -ne $true) {
+			if ($SkipUpdate -ne $true -and -not $script:ManualPause) {
 				if ($cooldownActive) {
 					# Timer is active - skip coordinate updates and simulated key presses
 					$SkipUpdate = $true
@@ -2584,9 +2499,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 			$x = [Math]::Round($pos.X + ($distance * [Math]::Cos($angle)))
 			$y = [Math]::Round($pos.Y + ($distance * [Math]::Sin($angle)))
 			
-			# Use the virtual screen rectangle so all connected monitors are reachable.
-			# VirtualScreen is the bounding rect of every monitor combined.
-			$vScreen  = [System.Windows.Forms.SystemInformation]::VirtualScreen
+		$vScreen  = $script:_VirtualScreen
 			$sLeft    = $vScreen.Left
 			$sTop     = $vScreen.Top
 			$sRight   = $vScreen.Right  - 1
@@ -2617,55 +2530,20 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 				$movementPoints = $movementPath.Points
 				$LastMovementDurationMs = $movementPath.TotalTimeMs
 				
-			# Move through each point smoothly
-			$movementAborted = $false
-			if ($movementPoints.Count -gt 1) {
-				# Constant 5ms between every cursor step. Point count was sized to match this
-				# in Get-SmoothMovementPath, so total wall-time ≈ TotalTimeMs as requested.
-				$stepIntervalMs = 5
-				
-				# Add a tiny initial delay to prevent stutter at movement start
-				# This ensures smooth transition from wait loop to movement
-				Start-Sleep -Milliseconds 1
-				
-				# Move to each point at a constant 5ms interval (skip first point = start position)
-				for ($i = 1; $i -lt $movementPoints.Count; $i++) {
-					$point = $movementPoints[$i]
-					[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point ($point.X, $point.Y)
-					
-					# Sleep 5ms between steps; skip after the last point to avoid an extra delay
-					if ($i -lt $movementPoints.Count - 1) {
-						Start-Sleep -Milliseconds $stepIntervalMs
-							
-							# Check if user moved the mouse during animation by comparing
-							# actual cursor position to where we just placed it
-							$actualPos = Get-MousePosition
-							if ($null -ne $actualPos) {
-								$driftX = [Math]::Abs($actualPos.X - $point.X)
-								$driftY = [Math]::Abs($actualPos.Y - $point.Y)
-								if ($driftX -gt 3 -or $driftY -gt 3) {
-									$movementAborted = $true
-									$SkipUpdate = $true
-									$script:userInputDetected = $true
-									$mouseInputDetected = $true
-								$null = $intervalMouseInputs.Add("Mouse")
-								if ($script:AutoResumeDelaySeconds -gt 0) {
-									$LastUserInputTime = Get-Date
-								}
-								$LastPos = $actualPos
-									$automatedMovementPos = $null
-									if ($script:DiagEnabled) {
-										"$(Get-Date -Format 'HH:mm:ss.fff') - Loop $($script:LoopIteration): Movement aborted at step $i/$($movementPoints.Count) - user moved mouse (drift: $driftX,$driftY)" | Out-File $script:SettleDiagFile -Append
-									}
-									break
-								}
-							}
-						}
-					}
-				} else {
-					# Single point or no movement needed - just move directly
-					[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point ($x, $y)
-				}
+		$_moveResult = Invoke-CursorMovement -Points $movementPoints -FallbackX $x -FallbackY $y
+		$movementAborted = $_moveResult.Aborted
+		if ($movementAborted) {
+			$SkipUpdate = $true
+			$script:userInputDetected = $true
+			$mouseInputDetected = $true
+			$null = $intervalMouseInputs.Add("Mouse")
+			if ($script:AutoResumeDelaySeconds -gt 0) { $LastUserInputTime = Get-Date }
+			$LastPos = $_moveResult.ActualPosition
+			$automatedMovementPos = $null
+			if ($script:DiagEnabled) {
+				"$(Get-Date -Format 'HH:mm:ss.fff') - Loop $($script:LoopIteration): Movement aborted at step $($_moveResult.Step)/$($_moveResult.TotalSteps) - user moved mouse (drift: $($_moveResult.DriftX),$($_moveResult.DriftY))" | Out-File $script:SettleDiagFile -Append
+			}
+		}
 				
 				if ($movementAborted) {
 					$PosUpdate = $false
@@ -2711,38 +2589,26 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 				}
 			}
 			
-			# Combine mouse inputs and keys for display
-			# Mouse movement first, then clicks/scroll, then keyboard
-			$allInputs = @()
-			$mouseMovement = $intervalMouseInputs | Where-Object { $_ -eq "Mouse" }
-			if ($mouseMovement) {
-				$allInputs += $mouseMovement
-				$otherMouseInputs = $intervalMouseInputs | Where-Object { $_ -ne "Mouse" }
-				if ($otherMouseInputs) {
-					$allInputs += $otherMouseInputs
-				}
-			} else {
-				if ($intervalMouseInputs.Count -gt 0) {
-					$allInputs += $intervalMouseInputs
-				}
-			}
-			if ($keyboardInputDetected) {
-				if ($_keyboardInferred -and -not $_keyboardLocallyDetected) {
-					if (-not $scrollDetectedInInterval) {
-						$allInputs += "Keyboard/Other"
-					}
-				} else {
-					$allInputs += "Keyboard"
-				}
-			}
+		$allInputs = @()
+		$_hasMouse = $false
+		foreach ($_mi in $intervalMouseInputs) {
+			if ($_mi -eq "Mouse") { if (-not $_hasMouse) { $allInputs += "Mouse"; $_hasMouse = $true } }
+			else { $allInputs += $_mi }
+		}
+		if ($keyboardInputDetected) {
+			if ($_keyboardInferred -and -not $_keyboardLocallyDetected) {
+				if (-not $scrollDetectedInInterval) { $allInputs += "Keyboard/Other" }
+			} else { $allInputs += "Keyboard" }
+		}
 			$PreviousIntervalKeys = $allInputs
 			
 			# Only create log entry when we complete a wait interval AND do something
-			# Don't create log entries for window resize events
+			# Don't create log entries for window resize events or while manually paused
 			$shouldCreateLogEntry = $false
 			
-			# If this is just a window resize (forceRedraw set), don't create log entry
-			if ($forceRedraw -and -not $waitExecuted -and -not $PosUpdate) {
+			if ($script:ManualPause) {
+				$shouldCreateLogEntry = $false
+			} elseif ($forceRedraw -and -not $waitExecuted -and -not $PosUpdate) {
 				# This is just a window resize redraw - skip log entry completely
 				$shouldCreateLogEntry = $false
 			} elseif ($PosUpdate) {
@@ -2866,37 +2732,32 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 		# List is maintained at exactly $Rows entries; no further trim/pad needed
 		} # end if (-not $_isViewerMode) — post-wait movement + log building
 
-		if ($_isViewerMode) {
-			$allInputs = @()
-			$mouseMovement = $intervalMouseInputs | Where-Object { $_ -eq "Mouse" }
-			if ($mouseMovement) {
-				$allInputs += $mouseMovement
-				$otherMouseInputs = $intervalMouseInputs | Where-Object { $_ -ne "Mouse" }
-				if ($otherMouseInputs) {
-					$allInputs += $otherMouseInputs
-				}
-			} else {
-				if ($intervalMouseInputs.Count -gt 0) {
-					$allInputs += $intervalMouseInputs
-				}
-			}
-			if ($keyboardInputDetected) {
-				if ($_keyboardInferred -and -not $_keyboardLocallyDetected) {
-					if (-not $scrollDetectedInInterval) {
-						$allInputs += "Keyboard/Other"
-					}
-				} else {
-					$allInputs += "Keyboard"
-				}
-			}
-			$PreviousIntervalKeys = $allInputs
+	if ($_isViewerMode) {
+		$allInputs = @()
+		$_hasMouse = $false
+		foreach ($_mi in $intervalMouseInputs) {
+			if ($_mi -eq "Mouse") { if (-not $_hasMouse) { $allInputs += "Mouse"; $_hasMouse = $true } }
+			else { $allInputs += $_mi }
 		}
+		if ($keyboardInputDetected) {
+			if ($_keyboardInferred -and -not $_keyboardLocallyDetected) {
+				if (-not $scrollDetectedInInterval) { $allInputs += "Keyboard/Other" }
+			} else { $allInputs += "Keyboard" }
+		}
+		$PreviousIntervalKeys = $allInputs
+	}
 
 	if ($script:DiagEnabled -and $_isViewerMode -and $script:LoopIteration -le 5) {
 		"$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER PRE-RENDER iter=$($script:LoopIteration) HostWidth=$HostWidth HostHeight=$HostHeight Rows=$Rows Output=$Output forceRedraw=$forceRedraw SkipUpdate=$SkipUpdate LogArray=$($LogArray.Count)" | Out-File $script:IpcDiagFile -Append
 	}
 
-		Draw-MainFrame -ClearFirst:$forceRedraw -Force:$forceRedraw
+		if ($forceRedraw) {
+			Draw-MainFrame -Force:$true -Date $date -NoFlush
+			clear-host
+			Flush-Buffer
+		} else {
+			Draw-MainFrame -Date $date
+		}
 
 		# Reset resize cleared screen flag after we've completed a redraw
 		# This ensures the screen will be cleared again if user starts a new resize
@@ -2948,11 +2809,12 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 			# Another sub-dialog was used — loop again via the next iteration
 			$script:PendingReopenSettings = $true
 		}
-			$SkipUpdate  = $true
-			# Signal the next iteration to skip sleep and redraw immediately.
-			# Do NOT call clear-host here — the screen was just rendered cleanly
-			# above and clearing it would cause a blank-screen flash.
-			$script:PendingForceRedraw = $true
+		$SkipUpdate  = $true
+		$oldWindowSize = (Get-Host).UI.RawUI.WindowSize
+		$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
+		Draw-MainFrame -Force:$true -Date $date -NoFlush
+		clear-host
+		Flush-Buffer
 		}
 		}
 		
@@ -2986,6 +2848,9 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 		} # end if (-not $_isViewerMode) — end-time check
 		} # end :process
 
+	# Notification cleanup
+	Dispose-Notification
+
 	# Viewer pipe cleanup
 	if ($_isViewerMode) {
 		if ($null -ne $_viewerPipeReader) { try { $_viewerPipeReader.Dispose() } catch {} }
@@ -3005,3 +2870,4 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 }
 
 Export-ModuleMember -Function 'Start-mJig'
+

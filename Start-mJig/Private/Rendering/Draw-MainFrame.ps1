@@ -1,9 +1,10 @@
-﻿	function Draw-MainFrame {
-		param(
-			[switch]$ClearFirst,
-			[switch]$Force,
-			[switch]$NoFlush
-		)
+	function Draw-MainFrame {
+	param(
+		[switch]$ClearFirst,
+		[switch]$Force,
+		[switch]$NoFlush,
+		$Date = $null
+	)
 
 		# Compute UI dimensions fresh (allows calling from any context)
 		$Outputline = 0
@@ -19,8 +20,7 @@
 		while ($LogArray.Count -lt $Rows) { $LogArray.Insert(0, [PSCustomObject]@{ logRow = $true; components = @() }) }
 		while ($LogArray.Count -gt $Rows) { $LogArray.RemoveAt(0) }
 
-		# Refresh timestamp for header display
-		$date = Get-Date
+	$date = if ($null -ne $Date) { $Date } else { Get-Date }
 
 		# Track screen state
 		$script:CurrentScreenState = if ($Output -eq "hidden") { "hidden" } else { "main" }
@@ -87,9 +87,8 @@
 				$spacingBeforeTimes = [math]::Max(1, [math]::Floor($remainingSpace / 2))
 				$spacingAfterTimes = [math]::Max(1, $remainingSpace - $spacingBeforeTimes)
 				
-			# Write left part (mJig title) via buffer with static emoji positioning
-			$mouseEmoji = [char]::ConvertFromUtf32(0x1F400)  # 🐀
-			$hourglassEmoji = [char]::ConvertFromUtf32(0x23F3)  # ⏳
+		$mouseEmoji = $script:MouseEmoji
+		$hourglassEmoji = $script:HourglassEmoji
 	Write-Buffer -X ($_bpH + 2) -Y $Outputline -Text "mJig(" -FG $script:HeaderAppName -BG $_hrBg
 	$curX = $_bpH + 2 + 5  # content starts at bpH+2; "mJig(" = 5 chars
 			Write-Buffer -Text $mouseEmoji -FG $script:HeaderIcon -BG $_hrBg
@@ -422,13 +421,7 @@
 
 			# Output bottom separator (only if not skipping console updates)
 			if ($Output -ne "hidden" -and -not $skipConsoleUpdate) {
-			# Calculate if we should show stats box (full view, wide enough window)
-			$boxWidth = 50  # Width for stats box
-			$boxPadding = 2  # Padding around box (1 space on each side)
-			$verticalSeparatorWidth = 3  # " $($script:BoxVertical) " = 3 characters
-		$showStatsBox = ($Output -eq "full" -and $HostWidth -ge ($boxWidth + $boxPadding + $verticalSeparatorWidth + 50 + 2 * $_bpH))  # Need at least 50 chars for logs + padding
-		$logWidth = if ($showStatsBox) { $HostWidth - 2 * $_bpH - $boxWidth - $boxPadding - $verticalSeparatorWidth + 1 } else { $HostWidth - 2 * $_bpH + 1 }  # +1 extends right boundary to group-bg char
-				
+			
 		# Bottom separator line
 		if ($_bpH -gt 1) { Write-Buffer -X 0            -Y $Outputline -Text (" " * ($_bpH - 1)) }          # transparent left outer
 		Write-Buffer -X ($_bpH - 1) -Y $Outputline -Text " " -BG $_fBg                                       # 1 group-bg left
@@ -438,9 +431,9 @@
 			$outputLine++
 
 			## Menu Options ##
-			$emojiLock = [char]::ConvertFromUtf32(0x1F512)  # 🔒
-			$emojiGear = [char]::ConvertFromUtf32(0x1F6E0)  # 🛠
-				$emojiRedX = [char]::ConvertFromUtf32(0x274C)  # ❌
+		$emojiLock = $script:LockEmoji
+		$emojiGear = $script:GearEmoji
+			$emojiRedX = $script:RedXEmoji
 				
 			$menuItemsList = @(
 				@{
@@ -593,37 +586,15 @@
 				} else {
 					Write-Buffer -X $contentX -Y $menuY -Text "" -BG $btnBg
 				}
-		$textParts = $text -split "([()])"
-			for ($j = 0; $j -lt $textParts.Count; $j++) {
-				$part = $textParts[$j]
-				if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
-					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $btnFg -BG $btnBg }
-					Write-Buffer -Text $textParts[$j + 1] -FG $btnHkFg -BG $btnBg
-					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $btnFg -BG $btnBg }
-					$j += 2
-				} elseif ($part -ne "") {
-					Write-Buffer -Text $part -FG $btnFg -BG $btnBg
-				}
-			}
-			if ($script:MenuButtonShowBrackets) {
-				Write-Buffer -Text "]" -FG $btnBracketFg -BG $btnBracketBg
-			}
+	Write-HotkeyLabel -Text $text -FG $btnFg -HotkeyFG $btnHkFg -BG $btnBg
+		if ($script:MenuButtonShowBrackets) {
+			Write-Buffer -Text "]" -FG $btnBracketFg -BG $btnBracketBg
 		}
-	} else {
-				Write-Buffer -X $itemStartX -Y $menuY -Text "" -BG $btnBg
-				$textParts = $itemText -split "([()])"
-				for ($j = 0; $j -lt $textParts.Count; $j++) {
-					$part = $textParts[$j]
-					if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
-						if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $btnFg -BG $btnBg }
-						Write-Buffer -Text $textParts[$j + 1] -FG $btnHkFg -BG $btnBg
-						if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $btnFg -BG $btnBg }
-						$j += 2
-					} elseif ($part -ne "") {
-						Write-Buffer -Text $part -FG $btnFg -BG $btnBg
-					}
-				}
-			}
+	}
+} else {
+			Write-Buffer -X $itemStartX -Y $menuY -Text "" -BG $btnBg
+			Write-HotkeyLabel -Text $itemText -FG $btnFg -HotkeyFG $btnHkFg -BG $btnBg
+		}
 				
 	# Store menu item bounds (computed statically)
 	$itemEndX = $itemStartX + $itemDisplayWidth - 1
@@ -781,37 +752,15 @@
 			} else {
 				Write-Buffer -X $contentX -Y $menuY -Text "" -BG $qBtnBg
 			}
-		$textParts = $text -split "([()])"
-		for ($j = 0; $j -lt $textParts.Count; $j++) {
-			$part = $textParts[$j]
-			if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
-				if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $qBtnFg -BG $qBtnBg }
-				Write-Buffer -Text $textParts[$j + 1] -FG $qBtnHkFg -BG $qBtnBg
-				if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $qBtnFg -BG $qBtnBg }
-				$j += 2
-			} elseif ($part -ne "") {
-				Write-Buffer -Text $part -FG $qBtnFg -BG $qBtnBg
-			}
-		}
-		if ($script:MenuButtonShowBrackets) {
-			Write-Buffer -Text "]" -FG $qBtnBracketFg -BG $qBtnBracketBg
-		}
+	Write-HotkeyLabel -Text $text -FG $qBtnFg -HotkeyFG $qBtnHkFg -BG $qBtnBg
+	if ($script:MenuButtonShowBrackets) {
+		Write-Buffer -Text "]" -FG $qBtnBracketFg -BG $qBtnBracketBg
 	}
+}
 } else {
-			Write-Buffer -X $quitStartX -Y $menuY -Text "" -BG $qBtnBg
-			$textParts = $itemText -split "([()])"
-			for ($j = 0; $j -lt $textParts.Count; $j++) {
-				$part = $textParts[$j]
-				if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
-					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $qBtnFg -BG $qBtnBg }
-					Write-Buffer -Text $textParts[$j + 1] -FG $qBtnHkFg -BG $qBtnBg
-					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $qBtnFg -BG $qBtnBg }
-					$j += 2
-				} elseif ($part -ne "") {
-					Write-Buffer -Text $part -FG $qBtnFg -BG $qBtnBg
-				}
-			}
-		}
+		Write-Buffer -X $quitStartX -Y $menuY -Text "" -BG $qBtnBg
+		Write-HotkeyLabel -Text $itemText -FG $qBtnFg -HotkeyFG $qBtnHkFg -BG $qBtnBg
+	}
 			
 	# Store quit item bounds (computed statically)
 	$quitEndX = $quitStartX + $quitWidth - 1

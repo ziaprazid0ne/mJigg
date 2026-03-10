@@ -1,4 +1,4 @@
-﻿	function Show-InfoDialog {
+	function Show-InfoDialog {
 		param([ref]$HostWidthRef, [ref]$HostHeightRef)
 
 		$script:CurrentScreenState = "dialog-info"
@@ -18,9 +18,8 @@
 		# Fetch version info (uses cached result on subsequent calls)
 		$versionInfo = Get-LatestVersionInfo
 
-	$dlgIconWidth    = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
-	$dlgBracketWidth = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
-	$dlgParenAdj     = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+	$_bl = Get-DialogButtonLayout
+	$dlgIconWidth = $_bl.IconWidth; $dlgBracketWidth = $_bl.BracketWidth; $dlgParenAdj = $_bl.ParenAdj
 	# Single close button: "│ " + bracket? + icon? + "(c)lose" + padding + "│"
 	# padding = dialogWidth - 10 - bracketWidth - iconWidth  (= 52 - b - i)
 	$bottomLinePadding = $dialogWidth - 10 - $dlgParenAdj - $dlgBracketWidth - $dlgIconWidth
@@ -228,34 +227,15 @@
 			$key     = $null
 			$char    = $null
 
-			try {
-				$peekBuf  = New-Object 'mJiggAPI.INPUT_RECORD[]' 16
-				$peekEvts = [uint32]0
-				$hIn      = [mJiggAPI.Mouse]::GetStdHandle(-10)
-				if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 16, [ref]$peekEvts) -and $peekEvts -gt 0) {
-					$lastClickIdx = -1
-					$clickX = -1; $clickY = -1
-					for ($e = 0; $e -lt $peekEvts; $e++) {
-						if ($peekBuf[$e].EventType -eq 0x0002 -and $peekBuf[$e].MouseEvent.dwEventFlags -eq 0 -and ($peekBuf[$e].MouseEvent.dwButtonState -band 0x0001) -ne 0) {
-							$clickX = $peekBuf[$e].MouseEvent.dwMousePosition.X
-							$clickY = $peekBuf[$e].MouseEvent.dwMousePosition.Y
-							$lastClickIdx = $e
-						}
-					}
-					if ($lastClickIdx -ge 0) {
-						$consumeCount = [uint32]($lastClickIdx + 1)
-						$flushBuf     = New-Object 'mJiggAPI.INPUT_RECORD[]' $consumeCount
-						$flushed      = [uint32]0
-						[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $consumeCount, [ref]$flushed) | Out-Null
-					# Click outside dialog bounds → close
-					if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
-						$char = "c"; $keyProcessed = $true
-					} elseif ($clickY -eq $buttonRowY -and $clickX -ge $closeButtonStartX -and $clickX -le $closeButtonEndX) {
-						$char = "c"; $keyProcessed = $true
-					}
-					}
-				}
-			} catch {}
+		$_click = Get-DialogMouseClick -PeekBuffer $script:_DialogPeekBuffer
+		if ($null -ne $_click) {
+			$clickX = $_click.X; $clickY = $_click.Y
+			if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
+				$char = "c"; $keyProcessed = $true
+			} elseif ($clickY -eq $buttonRowY -and $clickX -ge $closeButtonStartX -and $clickX -le $closeButtonEndX) {
+				$char = "c"; $keyProcessed = $true
+			}
+		}
 
 			# Main-loop DialogButtonClick (set when click is routed through main input handler)
 			if (-not $keyProcessed -and $null -ne $script:DialogButtonClick) {
@@ -264,15 +244,12 @@
 			}
 
 			# Keyboard input
-			if (-not $keyProcessed) {
-				while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
-					$keyInfo    = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyup,AllowCtrlC")
-					$isKeyDown  = if ($null -ne $keyInfo.KeyDown) { $keyInfo.KeyDown } else { $false }
-					if (-not $isKeyDown) {
-						$key = $keyInfo.Key; $char = $keyInfo.Character; $keyProcessed = $true
-					}
-				}
+		if (-not $keyProcessed) {
+			$keyInfo = Read-DialogKeyInput
+			if ($null -ne $keyInfo) {
+				$key = $keyInfo.Key; $char = $keyInfo.Character; $keyProcessed = $true
 			}
+		}
 
 			if (-not $keyProcessed) { Start-Sleep -Milliseconds 50; continue }
 
@@ -283,22 +260,9 @@
 
 		} while ($true)
 
-		$script:DialogButtonBounds = $null
-		$script:DialogButtonClick  = $null
+	try { while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,AllowCtrlC") } } catch {}
 
-		# Clear key buffer
-		try { while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,AllowCtrlC") } } catch {}
+	Invoke-DialogExitCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -ClearShadow
 
-		# Clear dialog area
-		Clear-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight
-		for ($i = 0; $i -lt $dialogHeight; $i++) {
-			Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text (" " * $dialogWidth)
-		}
-		Flush-Buffer
-
-		$script:CursorVisible = $savedCursorVisible
-		if ($script:CursorVisible) { [Console]::Write("$($script:ESC)[?25h") } else { [Console]::Write("$($script:ESC)[?25l") }
-
-		$script:CurrentScreenState = if ($Output -eq "hidden") { "hidden" } else { "main" }
-		return @{ NeedsRedraw = $needsRedraw }
+	return @{ NeedsRedraw = $needsRedraw }
 	}

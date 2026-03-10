@@ -1,4 +1,4 @@
-﻿		function Show-TimeChangeDialog {
+		function Show-TimeChangeDialog {
 			param(
 				[int]$currentEndTime,
 				[ref]$HostWidthRef,
@@ -24,9 +24,8 @@
 			
 		$checkmark = [char]::ConvertFromUtf32(0x2705)  # ✅ green checkmark
 		$redX = [char]::ConvertFromUtf32(0x274C)  # ❌ red X
-$dlgIconWidth    = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
-$dlgBracketWidth = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
-$dlgParenAdj     = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+$_bl = Get-DialogButtonLayout
+$dlgIconWidth = $_bl.IconWidth; $dlgBracketWidth = $_bl.BracketWidth; $dlgParenAdj = $_bl.ParenAdj
 # Button line: border+space(2) + btn1(bracketW+iconW+"(a)pply"=7) + gap(2) + btn2(bracketW+iconW+"(c)ancel"=8) = 19 + 2*iconWidth + 2*bracketWidth
 $bottomLinePadding = $dialogWidth - (19 + 2 * $dlgParenAdj + 2 * $dlgIconWidth + 2 * $dlgBracketWidth) - 1
 			
@@ -178,23 +177,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 			[Console]::SetCursorPosition($inputX + $timeInput.Length, $inputY)
 			
 			# Debug: Log that dialog input loop has started
-			if ($DebugMode) {
-			$null = $LogArray.Add([PSCustomObject]@{
-				logRow = $true
-				components = @(
-					@{
-						priority = 1
-						text = (Get-Date).ToString("HH:mm:ss")
-						shortText = (Get-Date).ToString("HH:mm:ss")
-					},
-					@{
-						priority = 2
-						text = " - [DEBUG] Time dialog input loop started, button row Y: $buttonRowY"
-						shortText = " - [DEBUG] Dialog started"
-					}
-				)
-			})
-			}
+		if ($DebugMode) {
+			Add-DebugLogEntry -LogArray $LogArray -Message "Time dialog input loop started, button row Y: $buttonRowY" -ShortMessage "Dialog started"
+		}
 			
 			:inputLoop do {
 				# Check for window resize and update references
@@ -327,47 +312,21 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 				$key = $null
 				$char = $null
 				
-				try {
-					$peekBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' 16
-					$peekEvts = [uint32]0
-					$hIn = [mJiggAPI.Mouse]::GetStdHandle(-10)
-					if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 16, [ref]$peekEvts) -and $peekEvts -gt 0) {
-						$lastClickIdx = -1
-						$clickX = -1; $clickY = -1
-						for ($e = 0; $e -lt $peekEvts; $e++) {
-							if ($peekBuf[$e].EventType -eq 0x0002 -and $peekBuf[$e].MouseEvent.dwEventFlags -eq 0 -and ($peekBuf[$e].MouseEvent.dwButtonState -band 0x0001) -ne 0) {
-								$clickX = $peekBuf[$e].MouseEvent.dwMousePosition.X
-								$clickY = $peekBuf[$e].MouseEvent.dwMousePosition.Y
-								$lastClickIdx = $e
-							}
-						}
-						if ($lastClickIdx -ge 0) {
-							$consumeCount = [uint32]($lastClickIdx + 1)
-							$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $consumeCount
-							$flushed = [uint32]0
-							[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $consumeCount, [ref]$flushed) | Out-Null
-							
-					# Click outside dialog bounds → cancel
-					if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
-						$char = "c"; $keyProcessed = $true
-					} elseif ($clickY -eq $buttonRowY -and $clickX -ge $updateButtonStartX -and $clickX -le $updateButtonEndX) {
-						$char = "a"; $keyProcessed = $true
-					} elseif ($clickY -eq $buttonRowY -and $clickX -ge $cancelButtonStartX -and $clickX -le $cancelButtonEndX) {
-						$char = "c"; $keyProcessed = $true
-					}
-					if ($DebugMode) {
-						$clickTarget = if ($keyProcessed) { "button:$char" } else { "none" }
-					$null = $LogArray.Add([PSCustomObject]@{
-						logRow = $true
-						components = @(
-							@{ priority = 1; text = (Get-Date).ToString("HH:mm:ss"); shortText = (Get-Date).ToString("HH:mm:ss") },
-							@{ priority = 2; text = " - [DEBUG] Time dialog click at ($clickX,$clickY), target: $clickTarget"; shortText = " - [DEBUG] Click ($clickX,$clickY) -> $clickTarget" }
-						)
-					})
-					}
-						}
-					}
-				} catch { }
+			$_click = Get-DialogMouseClick -PeekBuffer $script:_DialogPeekBuffer
+			if ($null -ne $_click) {
+				$clickX = $_click.X; $clickY = $_click.Y
+				if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
+					$char = "c"; $keyProcessed = $true
+				} elseif ($clickY -eq $buttonRowY -and $clickX -ge $updateButtonStartX -and $clickX -le $updateButtonEndX) {
+					$char = "a"; $keyProcessed = $true
+				} elseif ($clickY -eq $buttonRowY -and $clickX -ge $cancelButtonStartX -and $clickX -le $cancelButtonEndX) {
+					$char = "c"; $keyProcessed = $true
+				}
+			if ($DebugMode) {
+				$clickTarget = if ($keyProcessed) { "button:$char" } else { "none" }
+				Add-DebugLogEntry -LogArray $LogArray -Message "Time dialog click at ($clickX,$clickY), target: $clickTarget" -ShortMessage "Click ($clickX,$clickY) -> $clickTarget"
+			}
+			}
 				
 				# Check for dialog button clicks detected by main loop
 				if (-not $keyProcessed -and $null -ne $script:DialogButtonClick) {
@@ -377,23 +336,12 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 				elseif ($buttonClick -eq "Cancel") { $char = "c"; $keyProcessed = $true }
 			}
 			
-			# Wait for key input (non-blocking check)
-			if (-not $keyProcessed) {
-				while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
-					$keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyup,AllowCtrlC")
-						$isKeyDown = $false
-						if ($null -ne $keyInfo.KeyDown) {
-							$isKeyDown = $keyInfo.KeyDown
-						}
-						
-						# Only process key UP events (skip key down)
-						if (-not $isKeyDown) {
-							$key = $keyInfo.Key
-							$char = $keyInfo.Character
-							$keyProcessed = $true
-						}
-					}
-				}
+		if (-not $keyProcessed) {
+			$keyInfo = Read-DialogKeyInput
+			if ($null -ne $keyInfo) {
+				$key = $keyInfo.Key; $char = $keyInfo.Character; $keyProcessed = $true
+			}
+		}
 				
 				if (-not $keyProcessed) {
 					# No key available, sleep briefly and check for resize again
@@ -404,24 +352,10 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 			if ($char -eq "a" -or $char -eq "A" -or $key -eq "Enter" -or $char -eq [char]13 -or $char -eq [char]10) {
 				# Apply - allow blank input to clear end time (Enter key also works as hidden function)
 					# Debug: Log time dialog update
-					if ($DebugMode) {
-					$updateValue = if ($timeInput.Length -eq 0) { "cleared" } else { $timeInput }
-					$null = $LogArray.Add([PSCustomObject]@{
-						logRow = $true
-						components = @(
-							@{
-								priority = 1
-								text = (Get-Date).ToString("HH:mm:ss")
-								shortText = (Get-Date).ToString("HH:mm:ss")
-							},
-							@{
-								priority = 2
-								text = " - [DEBUG] Time dialog: Update clicked (value: $updateValue)"
-								shortText = " - [DEBUG] Time: Update"
-							}
-						)
-					})
-					}
+				if ($DebugMode) {
+				$updateValue = if ($timeInput.Length -eq 0) { "cleared" } else { $timeInput }
+				Add-DebugLogEntry -LogArray $LogArray -Message "Time dialog: Update clicked (value: $updateValue)" -ShortMessage "Time: Update"
+				}
 					if ($timeInput.Length -eq 0) {
 						# Blank input - clear end time (use -1 as special value)
 						$result = -1
@@ -570,23 +504,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 				} elseif ($char -eq "c" -or $char -eq "C" -or $char -eq "t" -or $char -eq "T" -or $key -eq "Escape" -or ($null -ne $keyInfo -and $keyInfo.VirtualKeyCode -eq 27)) {
 					# Cancel (Escape key and 't' key also work as hidden functions)
 					# Debug: Log time dialog cancel
-					if ($DebugMode) {
-					$null = $LogArray.Add([PSCustomObject]@{
-						logRow = $true
-						components = @(
-							@{
-								priority = 1
-								text = (Get-Date).ToString("HH:mm:ss")
-								shortText = (Get-Date).ToString("HH:mm:ss")
-							},
-							@{
-								priority = 2
-								text = " - [DEBUG] Time dialog: Cancel clicked"
-								shortText = " - [DEBUG] Time: Cancel"
-							}
-						)
-					})
-					}
+				if ($DebugMode) {
+				Add-DebugLogEntry -LogArray $LogArray -Message "Time dialog: Cancel clicked" -ShortMessage "Time: Cancel"
+				}
 					$result = $null
 					$needsRedraw = $false  # No redraw needed on cancel
 					break
@@ -659,19 +579,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 				}
 			} until ($false)
 			
-			Clear-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight
-			for ($i = 0; $i -lt $dialogHeight; $i++) {
-				Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text (" " * $dialogWidth)
-			}
-			Flush-Buffer
-			
-			$script:CursorVisible = $savedCursorVisible
-			if ($script:CursorVisible) { [Console]::Write("$($script:ESC)[?25h") } else { [Console]::Write("$($script:ESC)[?25l") }
-			
-			$script:DialogButtonBounds = $null
-			$script:DialogButtonClick = $null
-			
-			$script:CurrentScreenState = if ($Output -eq "hidden") { "hidden" } else { "main" }
+		Invoke-DialogExitCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -ClearShadow
 			return @{
 				Result = $result
 				NeedsRedraw = $needsRedraw

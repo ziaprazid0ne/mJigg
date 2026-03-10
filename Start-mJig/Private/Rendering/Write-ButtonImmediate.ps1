@@ -1,4 +1,4 @@
-﻿		function Write-ButtonImmediate {
+		function Write-ButtonImmediate {
 			param($btn, $fg, $bg, $hotkeyFg, $pipeFg = $null, $bracketFg = $null, $bracketBg = $null)
 			$text   = $btn.displayText
 			$startX = $btn.startX
@@ -36,18 +36,7 @@
 					} else {
 						Write-Buffer -X $contentX -Y $y -Text "" -BG $bg
 					}
-				$textParts = $parts[1] -split "([()])"
-				for ($j = 0; $j -lt $textParts.Count; $j++) {
-					$part = $textParts[$j]
-					if ($part -eq "(" -and $j+2 -lt $textParts.Count -and $textParts[$j+1] -match '^[a-z]$' -and $textParts[$j+2] -eq ")") {
-						if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $fg -BG $bg }
-						Write-Buffer -Text $textParts[$j+1] -FG $hotkeyFg -BG $bg
-						if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $fg -BG $bg }
-						$j += 2
-					} elseif ($part -ne "") {
-						Write-Buffer -Text $part -FG $fg -BG $bg
-					}
-				}
+			Write-HotkeyLabel -Text $parts[1] -FG $fg -HotkeyFG $hotkeyFg -BG $bg
 				if ($script:MenuButtonShowBrackets) {
 					Write-Buffer -Text "]" -FG $rBracketFg -BG $rBracketBg
 				}
@@ -55,18 +44,7 @@
 		} else {
 			# Text-only formats (noIcons / short)
 			Write-Buffer -X $startX -Y $y -Text "" -BG $bg
-			$textParts = $text -split "([()])"
-			for ($j = 0; $j -lt $textParts.Count; $j++) {
-				$part = $textParts[$j]
-				if ($part -eq "(" -and $j+2 -lt $textParts.Count -and $textParts[$j+1] -match '^[a-z]$' -and $textParts[$j+2] -eq ")") {
-					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $fg -BG $bg }
-					Write-Buffer -Text $textParts[$j+1] -FG $hotkeyFg -BG $bg
-					if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $fg -BG $bg }
-					$j += 2
-				} elseif ($part -ne "") {
-					Write-Buffer -Text $part -FG $fg -BG $bg
-				}
-			}
+		Write-HotkeyLabel -Text $text -FG $fg -HotkeyFG $hotkeyFg -BG $bg
 		}
 			Flush-Buffer
 		}

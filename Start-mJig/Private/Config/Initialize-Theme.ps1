@@ -1,4 +1,4 @@
-﻿	# ============================================================================
+	# ============================================================================
 	# Theme Colors
 	# ============================================================================
 	#
@@ -53,12 +53,14 @@
 	# Background applied only to the menu bar row (not the separator or blank).
 	# YAML: mainDisplay.footer.rowBg
 	$script:MenuRowBg        = "DarkCyan"
-	# Blank-line/column border around the chrome. Minimum 1.
+	# Blank-line/column border around the chrome. Clamped to 1–5 below.
 	# Only the innermost row/column on each side receives the Header/FooterBg; extras stay transparent.
 	# YAML: mainDisplay.borderPadV (top/bottom rows)
 	$script:BorderPadV       = 1
 	# YAML: mainDisplay.borderPadH (left/right columns)
 	$script:BorderPadH       = 1
+	$script:BorderPadV = [math]::Max(1, [math]::Min(5, $script:BorderPadV))
+	$script:BorderPadH = [math]::Max(1, [math]::Min(5, $script:BorderPadH))
 
 	# --- Main Display: Stats Box ------------------------------------------------
 	# Right-side stats panel. YAML: mainDisplay.statsBox.*

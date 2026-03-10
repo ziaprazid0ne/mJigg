@@ -1,4 +1,4 @@
-﻿		function Show-QuitConfirmationDialog {
+		function Show-QuitConfirmationDialog {
 			param(
 				[ref]$HostWidthRef,
 				[ref]$HostHeightRef
@@ -7,24 +7,9 @@
 			$script:CurrentScreenState = "dialog-quit"
 
 			# Debug: Log that dialog was opened
-			if ($DebugMode) {
-			# Note: LogArray is in parent scope, accessible directly
-			$null = $LogArray.Add([PSCustomObject]@{
-				logRow = $true
-				components = @(
-					@{
-						priority = 1
-						text = (Get-Date).ToString("HH:mm:ss")
-						shortText = (Get-Date).ToString("HH:mm:ss")
-					},
-					@{
-						priority = 2
-						text = " - [DEBUG] Quit confirmation dialog opened"
-						shortText = " - [DEBUG] Quit dialog opened"
-					}
-				)
-			})
-			}
+		if ($DebugMode) {
+			Add-DebugLogEntry -LogArray $LogArray -Message "Quit confirmation dialog opened" -ShortMessage "Quit dialog opened"
+		}
 			
 			# Get current host dimensions from references
 			$currentHostWidth = $HostWidthRef.Value
@@ -33,8 +18,9 @@
 			# Dialog dimensions (same as time change dialog)
 			$dialogWidth = 35
 			$dialogHeight = 7
-			# Right-aligned, 2 chars from right edge; bottom border sits one row above the separator line
-			$dialogX = [math]::Max(0, $currentHostWidth - $dialogWidth - 2)
+			# Right edge aligns with the first column of the right-side border padding area
+			$_bpH    = [math]::Max(1, $script:BorderPadH)
+			$dialogX = [math]::Max(0, $currentHostWidth - $dialogWidth - ($_bpH - 1))
 			$menuBarY = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $currentHostHeight - 2 }
 			$dialogY = [math]::Max(0, $menuBarY - 2 - $dialogHeight)
 			
@@ -45,9 +31,8 @@
 			# Draw dialog box (exactly 35 characters per line)
 	$checkmark = [char]::ConvertFromUtf32(0x2705)  # ✅ green checkmark
 	$redX = [char]::ConvertFromUtf32(0x274C)  # ❌ red X
-$dlgIconWidth    = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
-$dlgBracketWidth = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
-$dlgParenAdj     = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+$_bl = Get-DialogButtonLayout
+$dlgIconWidth = $_bl.IconWidth; $dlgBracketWidth = $_bl.BracketWidth; $dlgParenAdj = $_bl.ParenAdj
 # Button line: border+space(2) + btn1(bracketW+iconW+"(y)es"=5) + gap(2) + btn2(bracketW+iconW+"(n)o"=4) = 13 + 2*iconWidth + 2*bracketWidth
 $bottomLinePadding = $dialogWidth - (13 + 2 * $dlgParenAdj + 2 * $dlgIconWidth + 2 * $dlgBracketWidth) - 1
 		
@@ -89,12 +74,9 @@ $bottomLinePadding = $dialogWidth - (13 + 2 * $dlgParenAdj + 2 * $dlgIconWidth +
 			for ($r = 0; $r -lt $s -and $r -le $dialogHeight; $r++) {
 					$absY = $animY + $r
 					if ($absY -ge $clipY) { continue }  # safety: never draw over separator
-					# Side padding (terminal default background)
+					# Side padding (terminal default background) — left only
 					if ($dialogX -gt 0) {
 						Write-Buffer -X ($dialogX - 1) -Y $absY -Text " "
-					}
-					if (($dialogX + $dialogWidth) -lt $currentHostWidth) {
-						Write-Buffer -X ($dialogX + $dialogWidth) -Y $absY -Text " "
 					}
 					# Background fill
 					Write-Buffer -X $dialogX -Y $absY -Text (" " * $dialogWidth) -BG $script:QuitDialogBg
@@ -111,25 +93,22 @@ $bottomLinePadding = $dialogWidth - (13 + 2 * $dlgParenAdj + 2 * $dlgIconWidth +
 			# On the last step the box is fully revealed; draw the blank top-padding row
 			if ($s -eq $animSteps -and $animY -gt 0) {
 				$aPadLeft  = [math]::Max(0, $dialogX - 1)
-				$aPadWidth = $dialogWidth + ($dialogX - $aPadLeft) + 1
+				$aPadWidth = $dialogWidth + ($dialogX - $aPadLeft)
 				Write-Buffer -X $aPadLeft -Y ($animY - 1) -Text (" " * $aPadWidth)
 			}
 			Flush-Buffer
 			if ($frameDelayMs -gt 0) { Start-Sleep -Milliseconds $frameDelayMs }
 		}
 
-		# Draw blank padding (terminal default background) — top, left, right; no bottom
+		# Draw blank padding (terminal default background) — top and left; no bottom or right
 			if ($dialogY -gt 0) {
 				$padLeft  = [math]::Max(0, $dialogX - 1)
-				$padWidth = $dialogWidth + ($dialogX - $padLeft) + 1
+				$padWidth = $dialogWidth + ($dialogX - $padLeft)
 				Write-Buffer -X $padLeft -Y ($dialogY - 1) -Text (" " * $padWidth)
 			}
 			for ($i = 0; $i -le $dialogHeight; $i++) {
 				if ($dialogX -gt 0) {
 					Write-Buffer -X ($dialogX - 1) -Y ($dialogY + $i) -Text " "
-				}
-				if (($dialogX + $dialogWidth) -lt $currentHostWidth) {
-					Write-Buffer -X ($dialogX + $dialogWidth) -Y ($dialogY + $i) -Text " "
 				}
 			}
 
@@ -227,8 +206,9 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 					Draw-MainFrame -Force -NoFlush
 					$needsRedraw = $true
 					
-				# Reposition dialog: right-aligned, one row above the separator
-				$dialogX = [math]::Max(0, $currentHostWidth - $dialogWidth - 2)
+				# Reposition dialog: right edge at first column of right-side border padding
+				$_bpH    = [math]::Max(1, $script:BorderPadH)
+				$dialogX = [math]::Max(0, $currentHostWidth - $dialogWidth - ($_bpH - 1))
 				$menuBarY = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $currentHostHeight - 2 }
 				$dialogY = [math]::Max(0, $menuBarY - 2 - $dialogHeight)
 
@@ -306,47 +286,21 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 				$key = $null
 				$char = $null
 				
-				try {
-					$peekBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' 16
-					$peekEvts = [uint32]0
-					$hIn = [mJiggAPI.Mouse]::GetStdHandle(-10)
-					if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 16, [ref]$peekEvts) -and $peekEvts -gt 0) {
-						$lastClickIdx = -1
-						$clickX = -1; $clickY = -1
-						for ($e = 0; $e -lt $peekEvts; $e++) {
-							if ($peekBuf[$e].EventType -eq 0x0002 -and $peekBuf[$e].MouseEvent.dwEventFlags -eq 0 -and ($peekBuf[$e].MouseEvent.dwButtonState -band 0x0001) -ne 0) {
-								$clickX = $peekBuf[$e].MouseEvent.dwMousePosition.X
-								$clickY = $peekBuf[$e].MouseEvent.dwMousePosition.Y
-								$lastClickIdx = $e
-							}
-						}
-						if ($lastClickIdx -ge 0) {
-							$consumeCount = [uint32]($lastClickIdx + 1)
-							$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $consumeCount
-							$flushed = [uint32]0
-							[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $consumeCount, [ref]$flushed) | Out-Null
-							
-						# Click outside dialog bounds → cancel
-						if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
-							$char = "n"; $keyProcessed = $true
-						} elseif ($clickY -eq $buttonRowY -and $clickX -ge $yesButtonStartX -and $clickX -le $yesButtonEndX) {
-							$char = "y"; $keyProcessed = $true
-						} elseif ($clickY -eq $buttonRowY -and $clickX -ge $noButtonStartX -and $clickX -le $noButtonEndX) {
-							$char = "n"; $keyProcessed = $true
-						}
-						if ($DebugMode) {
-								$clickTarget = if ($keyProcessed) { "button:$char" } else { "none" }
-							$null = $LogArray.Add([PSCustomObject]@{
-								logRow = $true
-								components = @(
-									@{ priority = 1; text = (Get-Date).ToString("HH:mm:ss"); shortText = (Get-Date).ToString("HH:mm:ss") },
-									@{ priority = 2; text = " - [DEBUG] Quit dialog click at ($clickX,$clickY), target: $clickTarget"; shortText = " - [DEBUG] Click ($clickX,$clickY) -> $clickTarget" }
-								)
-							})
-							}
-						}
-					}
-				} catch { }
+			$_click = Get-DialogMouseClick -PeekBuffer $script:_DialogPeekBuffer
+			if ($null -ne $_click) {
+				$clickX = $_click.X; $clickY = $_click.Y
+				if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
+					$char = "n"; $keyProcessed = $true
+				} elseif ($clickY -eq $buttonRowY -and $clickX -ge $yesButtonStartX -and $clickX -le $yesButtonEndX) {
+					$char = "y"; $keyProcessed = $true
+				} elseif ($clickY -eq $buttonRowY -and $clickX -ge $noButtonStartX -and $clickX -le $noButtonEndX) {
+					$char = "n"; $keyProcessed = $true
+				}
+				if ($DebugMode) {
+					$clickTarget = if ($keyProcessed) { "button:$char" } else { "none" }
+					Add-DebugLogEntry -LogArray $LogArray -Message "Quit dialog click at ($clickX,$clickY), target: $clickTarget" -ShortMessage "Click ($clickX,$clickY) -> $clickTarget"
+				}
+			}
 				
 				# Check for dialog button clicks detected by main loop
 				if (-not $keyProcessed -and $null -ne $script:DialogButtonClick) {
@@ -356,23 +310,12 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 					elseif ($buttonClick -eq "Cancel") { $char = "n"; $keyProcessed = $true }
 				}
 				
-				# Wait for key input (non-blocking check)
-				if (-not $keyProcessed) {
-					while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
-						$keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyup,AllowCtrlC")
-						$isKeyDown = $false
-						if ($null -ne $keyInfo.KeyDown) {
-							$isKeyDown = $keyInfo.KeyDown
-						}
-						
-						# Only process key UP events (skip key down)
-						if (-not $isKeyDown) {
-							$key = $keyInfo.Key
-							$char = $keyInfo.Character
-							$keyProcessed = $true
-						}
-					}
+			if (-not $keyProcessed) {
+				$keyInfo = Read-DialogKeyInput
+				if ($null -ne $keyInfo) {
+					$key = $keyInfo.Key; $char = $keyInfo.Character; $keyProcessed = $true
 				}
+			}
 				
 				if (-not $keyProcessed) {
 					# No key available, sleep briefly and check for resize again
@@ -383,45 +326,17 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 				if ($char -eq "y" -or $char -eq "Y" -or $key -eq "Enter" -or $char -eq [char]13 -or $char -eq [char]10) {
 					# Yes - confirm quit (Enter key also works as hidden function)
 					# Debug: Log quit confirmation
-					if ($DebugMode) {
-					$null = $LogArray.Add([PSCustomObject]@{
-						logRow = $true
-						components = @(
-							@{
-								priority = 1
-								text = (Get-Date).ToString("HH:mm:ss")
-								shortText = (Get-Date).ToString("HH:mm:ss")
-							},
-							@{
-								priority = 2
-								text = " - [DEBUG] Quit dialog: Confirmed"
-								shortText = " - [DEBUG] Quit: Yes"
-							}
-						)
-					})
-					}
+				if ($DebugMode) {
+					Add-DebugLogEntry -LogArray $LogArray -Message "Quit dialog: Confirmed" -ShortMessage "Quit: Yes"
+				}
 					$result = $true
 					break
 				} elseif ($char -eq "n" -or $char -eq "N" -or $char -eq "q" -or $char -eq "Q" -or $key -eq "Escape" -or ($null -ne $keyInfo -and $keyInfo.VirtualKeyCode -eq 27)) {
 					# No - cancel quit (Escape key and 'q' key also work as hidden functions)
 					# Debug: Log quit cancellation
-					if ($DebugMode) {
-					$null = $LogArray.Add([PSCustomObject]@{
-						logRow = $true
-						components = @(
-							@{
-								priority = 1
-								text = (Get-Date).ToString("HH:mm:ss")
-								shortText = (Get-Date).ToString("HH:mm:ss")
-							},
-							@{
-								priority = 2
-								text = " - [DEBUG] Quit dialog: Canceled"
-								shortText = " - [DEBUG] Quit: No"
-							}
-						)
-					})
-					}
+				if ($DebugMode) {
+					Add-DebugLogEntry -LogArray $LogArray -Message "Quit dialog: Canceled" -ShortMessage "Quit: No"
+				}
 					$result = $false
 					$needsRedraw = $false  # No redraw needed on cancel
 					break
@@ -437,22 +352,7 @@ $noButtonEndX    = $noButtonStartX + $dlgBracketWidth + $dlgIconWidth + 4 + $dlg
 				}
 			} until ($false)
 			
-			# Clear shadow before clearing dialog area
-			Clear-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight
-			
-			# Clear dialog area
-			for ($i = 0; $i -lt $dialogHeight; $i++) {
-				Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text (" " * $dialogWidth)
-			}
-			Flush-Buffer
-			
-			$script:CursorVisible = $savedCursorVisible
-			if ($script:CursorVisible) { [Console]::Write("$($script:ESC)[?25h") } else { [Console]::Write("$($script:ESC)[?25l") }
-			
-			$script:DialogButtonBounds = $null
-			$script:DialogButtonClick = $null
-			
-			$script:CurrentScreenState = if ($Output -eq "hidden") { "hidden" } else { "main" }
+		Invoke-DialogExitCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -ClearShadow
 			# Return result object with result and redraw flag
 			return @{
 				Result = $result

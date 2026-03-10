@@ -149,7 +149,8 @@ Start-mJig/
 │       ├── . Private\Dialogs\*.ps1             (remaining 4 dialogs)
 │       ├── IPC Mode Branching
 │       ├── Main Loop (:process while)
-│       │   ├── Viewer IPC read + state update
+│       │   ├── Global Hotkey Polling (standalone only; worker handles in viewer mode)
+│       │   ├── Viewer IPC read + state update (incl. togglePause/stopped from worker)
 │       │   ├── Wait Loop (50ms ticks)
 │       │   ├── Mouse Settle Detection (inline only)
 │       │   ├── Movement Execution (inline only)
@@ -170,6 +171,7 @@ Start-mJig/
 │   │   ├── Flush-Buffer.ps1                    Build VT100 string + atomic [Console]::Write()
 │   │   ├── Clear-Buffer.ps1                    Discard queued segments
 │   │   ├── Write-ButtonImmediate.ps1           Instant button redraw (click feedback)
+│   │   ├── Write-HotkeyLabel.ps1              Hotkey-parsed label renderer (split + highlight)
 │   │   ├── Draw-DialogShadow.ps1               Offset shadow effect
 │   │   ├── Clear-DialogShadow.ps1              Remove shadow
 │   │   ├── Draw-ResizeLogo.ps1                 Resize splash logo
@@ -202,7 +204,16 @@ Start-mJig/
 │       ├── Invoke-ResizeHandler.ps1            Blocking resize handler
 │       ├── Restore-ConsoleInputMode.ps1        Re-enable ENABLE_MOUSE_INPUT
 │       ├── Send-ResizeExitWakeKey.ps1          Inject VK_RMENU wake event
-│       └── Show-DiagnosticFiles.ps1            Post-exit diag file dump (countdown prompt)
+│       ├── Show-DiagnosticFiles.ps1            Post-exit diag file dump (countdown prompt)
+│       ├── Add-DebugLogEntry.ps1               Standardized debug log entry creation
+│       ├── Get-DialogButtonLayout.ps1          Dialog button width calculations
+│       ├── Get-DialogMouseClick.ps1            Dialog mouse click detection via PeekConsoleInput
+│       ├── Read-DialogKeyInput.ps1             Dialog key-up event reader
+│       ├── Invoke-DialogExitCleanup.ps1        Dialog close cleanup (shadow, area, cursor, state)
+│       ├── Invoke-PostDialogCleanup.ps1        Post-dialog redraw flag setup (no clear-host; see §3a)
+│       ├── Invoke-CursorMovement.ps1           Shared cursor animation loop with drift detection
+│       ├── Show-Notification.ps1               Windows toast notification via NotifyIcon + Dispose-Notification
+│       └── Test-GlobalHotkey.ps1               Global hotkey polling (Shift+M+P / Shift+M+Q) via GetAsyncKeyState
 │
 └── Build/
     └── Build-Module.ps1                        Combines all files into single .psm1
@@ -349,6 +360,37 @@ Flush-Buffer -ClearFirst
 5. After dialog cleanup (clear shadow + clear area)
 6. After full main UI render (`Draw-MainFrame`: header + separator + logs + stats + separator + menu)
 7. After resize logo draw (`Draw-ResizeLogo -ClearFirst` on first draw)
+
+### 3a. Render → Clear → Flush Pattern (MANDATORY for forced redraws)
+
+When transitioning back to the main frame (after dialog close, mode change, buffer resize, or any path that sets `$forceRedraw = $true`), the code **must** follow this three-step pattern to eliminate blank-screen flashes and clear the scrollback buffer:
+
+```powershell
+# Step 1: Render the full frame into the buffer (no screen output)
+Draw-MainFrame -Force:$true -Date $date -NoFlush
+
+# Step 2: Clear the console including scrollback
+clear-host
+
+# Step 3: Write the pre-built frame to screen in one atomic call
+Flush-Buffer
+```
+
+**Why this order matters:**
+- Rendering first ensures the buffer is fully populated before any screen clearing occurs.
+- `clear-host` wipes both the visible screen and the scrollback buffer, preventing users from scrolling back to a stale dialog/screen.
+- `Flush-Buffer` immediately writes the pre-built frame, so the screen transitions atomically from cleared to fully painted with zero visible blank time.
+
+**Where this pattern is applied:**
+- **Main render loop** (`Start-mJig.psm1`, main `Draw-MainFrame` call): When `$forceRedraw` is `$true`, the main loop uses render→clear→flush. Normal (non-forced) renders use `Draw-MainFrame -Date $date` (which flushes internally, no clear-host needed).
+- **PendingReopenSettings close path**: After Settings is reopened (because a sub-dialog was used) and then closed, render→clear→flush is called explicitly before continuing.
+
+**What does NOT use this pattern (by design):**
+- `Flush-Buffer -ClearFirst` (ANSI `ESC[2J`) — used for in-dialog redraws after resize. This only clears the visible area (not scrollback) and is appropriate for dialog-internal rendering where the dialog is still on screen.
+- `Clear-Host` in quit/exit paths (lines 1713, 1761) — these clear for a goodbye message before the process exits, not for main frame transitions.
+- `Clear-Host` at startup (line 352) — one-time startup clear before the render buffer is initialized.
+
+**Key rule:** `Invoke-PostDialogCleanup` does **not** call `clear-host`. It only sets `$SkipUpdate`, `$forceRedraw`, and refreshes `$oldWindowSize`/`$OldBufferSize`. The actual screen clearing is handled centrally at the main render site via the render→clear→flush pattern. This ensures a single, consistent code path for all screen transitions.
 
 **What stays as direct writes:**
 - Debug/diagnostic logging to files (`Out-File`)
@@ -954,6 +996,46 @@ for ($i = 1; $i -lt $movementPoints.Count; $i++) {
 
 **User input during animation**: After each `SetCursorPos` + sleep, the loop reads the actual cursor position and compares it to where the cursor was just placed. If the position has drifted by more than 3 pixels in either axis, the user is moving the mouse and the animation aborts immediately. On abort: `$script:userInputDetected` and `$mouseInputDetected` are set, the simulated keypress is skipped, and the auto-resume delay timer is started (if configured).
 
+### 14. Global Hotkeys & Windows Notifications
+
+**Global hotkeys** are detected via `GetAsyncKeyState` polling (already declared as `[mJiggAPI.Mouse]::GetAsyncKeyState()`). They work from any process, including the hidden headless worker, with no message pump required.
+
+**Hotkey combos:**
+- **Shift+M+P** — Toggle manual pause/resume. Sets `$script:ManualPause` (standalone) or `$manualPause` (worker). When paused, movement is skipped but the main loop continues running.
+- **Shift+M+Q** — Immediate quit with no confirmation dialog. Sends `{ type = 'quit' }` / `{ type = 'stopped'; reason = 'quit' }` as appropriate.
+
+**Detection** (`Test-GlobalHotkey` in `Private/Helpers/Test-GlobalHotkey.ps1`):
+- Polls Shift (0x10) and M (0x4D) first; if either is released, resets the debounce flag and returns `$null`.
+- If Shift+M are held and debounce is not active, checks P (0x50) and Q (0x51).
+- Returns `'togglePause'` or `'quit'`; sets `$script:_HotkeyDebounce = $true` to prevent repeated firing while keys are held.
+- Debounce resets when Shift+M is released.
+
+**Polling locations:**
+- **Standalone** (no worker): once per `:process` iteration, before the wait loop.
+- **Worker** (always, regardless of viewer connection): once per 50ms tick inside the wait loop, before `GetLastInputInfo`. When a viewer is connected, the worker sends `{ type = 'togglePause'; paused = $bool; logMsg = $hashtable }` or `{ type = 'stopped'; reason = 'quit' }` via pipe so the viewer can update its UI state.
+- **Viewer mode**: does NOT poll hotkeys — the worker's 50ms tick loop provides much faster detection than the viewer's multi-second main loop. The viewer receives hotkey state changes from the worker via pipe messages (`'togglePause'` and `'stopped'`).
+
+**Windows toast notifications** (`Show-Notification` / `Dispose-Notification` in `Private/Helpers/Show-Notification.ps1`):
+- Uses `System.Windows.Forms.NotifyIcon.ShowBalloonTip()` — the assembly is already loaded.
+- On Windows 10/11, balloon tips are routed through the OS toast notification system (modern popup appearance).
+- The `NotifyIcon` is lazily created on first use and places a small PowerShell icon in the system tray.
+- `Dispose-Notification` removes the tray icon and is called in both viewer cleanup and worker finally block.
+
+**Notification events:**
+| Event | Source | Body text |
+|---|---|---|
+| Pause (Shift+M+P) | Standalone or Worker | "Paused" |
+| Resume (Shift+M+P) | Standalone or Worker | "Resumed" |
+| Quit (Shift+M+Q) | Standalone: viewer / Worker: worker | "mJig stopped" / "Worker quit" |
+| Worker initialized | Worker | "Worker started (PID: ...)" |
+| Viewer disconnected | Worker | "Viewer disconnected" |
+| End time reached | Worker | "End time reached -- worker quit" |
+
+**Script-scoped variables:**
+- `$script:ManualPause` — `[bool]` manual pause flag (standalone/viewer)
+- `$script:_HotkeyDebounce` — `[bool]` prevents repeated hotkey firing
+- `$script:_NotifyIcon` — `[System.Windows.Forms.NotifyIcon]` lazily created, disposed on exit
+
 ---
 
 ## Performance Guidelines
@@ -979,6 +1061,15 @@ The following objects are pre-allocated before the main `:process` loop and must
 ---
 
 ## Common Modification Patterns
+
+### File Placement Rule (mandatory for all plans)
+
+All new functions must be placed in their own `.ps1` file under the appropriate `Private/` subdirectory and dot-sourced in `Start-mJig.psm1`. Never inline new functions directly into the main `.psm1`. This constraint must be acknowledged in every plan that adds new code.
+
+After adding any new files:
+1. Add a dot-source line (`. "$PSScriptRoot\Private\...\NewFunction.ps1"`) in the appropriate section of `Start-mJig.psm1`
+2. Update this `AGENTS.md` (Code Structure Map + Quick Reference table)
+3. Ensure `Build/Build-Module.ps1` picks up the new file (it recombines all dot-sourced files into a single `.psm1` in `dist/`)
 
 ### Adding a New Theme Color
 
@@ -1057,6 +1148,7 @@ $script:NewParam = $NewParam
    - Call `Clear-DialogShadow` + queue clear area via `Write-Buffer`, then `Flush-Buffer`
    - Restore `$script:CursorVisible = $savedCursorVisible` and write appropriate VT100 sequence
    - Return `@{ Result = $data; NeedsRedraw = $bool }`
+   - **Do NOT call `clear-host` inside the dialog.** The caller uses `Invoke-PostDialogCleanup` (which sets `$forceRedraw = $true`), and the main render loop's centralized render→clear→flush pattern (§3a) handles screen clearing
 
 3. Add hotkey handler in wait loop (~line 5400)
 4. Update README.md interactive controls
@@ -1231,7 +1323,9 @@ Note: The "was pressed" bit is consumed on read, so only check it once per call.
 
 In Windows Terminal, calling `[Console]::Clear()` or `clear-host` resets the console input mode, stripping the `ENABLE_MOUSE_INPUT` flag. This causes `PeekConsoleInput` to stop reporting `MOUSE_EVENT` records entirely — mouse clicks become invisible to the application while `GetAsyncKeyState` (hardware-level) still works.
 
-**Always call `Restore-ConsoleInputMode` after any `[Console]::Clear()` or `clear-host`**. The function reads the current mode via `GetConsoleMode`, ORs in `ENABLE_MOUSE_INPUT` (0x0010), and writes it back via `SetConsoleMode`. Current call sites: pre-main-loop clear, `Invoke-ResizeHandler` exit/hidden-mode, and once at the wait loop entry point (catches all dialog exit `clear-host` calls).
+**Always call `Restore-ConsoleInputMode` after any `[Console]::Clear()` or `clear-host`**. The function reads the current mode via `GetConsoleMode`, ORs in `ENABLE_MOUSE_INPUT` (0x0010), and writes it back via `SetConsoleMode`. Current call sites: pre-main-loop clear, `Invoke-ResizeHandler` exit/hidden-mode, and once at the wait loop entry point (catches all dialog exit `clear-host` calls via the centralized render→clear→flush pattern — see §3a).
+
+**Never call `clear-host` before the frame buffer is populated.** Use the render→clear→flush pattern (§3a) to ensure the screen is never visibly blank.
 
 ### Type Reloading Limitations
 
@@ -1320,7 +1414,7 @@ Windows Terminal has a setting "Automatically adjust lightness of indistinguisha
 | `Start-mJig/Private/Rendering/` | Buffered rendering functions (11 files: `Write-Buffer`, `Flush-Buffer`, `Draw-MainFrame`, etc.) |
 | `Start-mJig/Private/Dialogs/` | All 5 dialog functions (`Show-TimeChangeDialog`, `Show-MovementModifyDialog`, etc.) |
 | `Start-mJig/Private/IPC/` | IPC helpers + worker loop (5 files: `Send-PipeMessage`, `Start-WorkerLoop`, etc.) |
-| `Start-mJig/Private/Helpers/` | Utility functions (13 files: `Get-MousePosition`, `Invoke-ResizeHandler`, `Show-DiagnosticFiles`, etc.) |
+| `Start-mJig/Private/Helpers/` | Utility functions (19 files: `Get-MousePosition`, `Invoke-ResizeHandler`, `Show-DiagnosticFiles`, `Add-DebugLogEntry`, `Get-DialogButtonLayout`, `Get-DialogMouseClick`, `Read-DialogKeyInput`, `Invoke-DialogExitCleanup`, `Invoke-PostDialogCleanup`, etc.) |
 | `Start-mJig/Build/Build-Module.ps1` | Build script — combines skeleton + Private/ files into single `.psm1` in `dist/` |
 | `.github/workflows/build.yml` | GitHub Actions — runs build on `v*` tag push, creates release |
 | `README.md` | User documentation |
@@ -1409,6 +1503,7 @@ Functions are in individual `.ps1` files under `Start-mJig/Private/`. The skelet
 | Get-DirectionArrow | `Private/Helpers/Get-DirectionArrow.ps1` |
 | Write-Buffer / Flush-Buffer / Clear-Buffer | `Private/Rendering/` |
 | Write-ButtonImmediate | `Private/Rendering/Write-ButtonImmediate.ps1` |
+| Write-HotkeyLabel | `Private/Rendering/Write-HotkeyLabel.ps1` |
 | Draw-DialogShadow / Clear-DialogShadow | `Private/Rendering/` |
 | Draw-ResizeLogo | `Private/Rendering/Draw-ResizeLogo.ps1` |
 | Draw-MainFrame | `Private/Rendering/Draw-MainFrame.ps1` |
@@ -1417,6 +1512,15 @@ Functions are in individual `.ps1` files under `Start-mJig/Private/`. The skelet
 | Get-TimeSinceMs / Get-ValueWithVariance | `Private/Helpers/` |
 | Get-CachedMethod / Set-CoordinateBounds / Get-Padding | `Private/Helpers/` |
 | Restore-ConsoleInputMode / Send-ResizeExitWakeKey | `Private/Helpers/` |
+| Add-DebugLogEntry | `Private/Helpers/Add-DebugLogEntry.ps1` |
+| Get-DialogButtonLayout | `Private/Helpers/Get-DialogButtonLayout.ps1` |
+| Get-DialogMouseClick | `Private/Helpers/Get-DialogMouseClick.ps1` |
+| Read-DialogKeyInput | `Private/Helpers/Read-DialogKeyInput.ps1` |
+| Invoke-DialogExitCleanup | `Private/Helpers/Invoke-DialogExitCleanup.ps1` |
+| Invoke-PostDialogCleanup (no clear-host; see §3a) | `Private/Helpers/Invoke-PostDialogCleanup.ps1` |
+| Invoke-CursorMovement | `Private/Helpers/Invoke-CursorMovement.ps1` |
+| Show-Notification / Dispose-Notification | `Private/Helpers/Show-Notification.ps1` |
+| Test-GlobalHotkey | `Private/Helpers/Test-GlobalHotkey.ps1` |
 | Show-DiagnosticFiles | `Private/Helpers/Show-DiagnosticFiles.ps1` |
 | Send-PipeMessage / Read-PipeMessage / Send-PipeMessageNonBlocking | `Private/IPC/` |
 | Start-WorkerLoop | `Private/IPC/Start-WorkerLoop.ps1` |

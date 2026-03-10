@@ -1,4 +1,4 @@
-﻿		function Show-MovementModifyDialog {
+		function Show-MovementModifyDialog {
 			param(
 				[double]$currentIntervalSeconds,
 				[double]$currentIntervalVariance,
@@ -245,24 +245,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 			$result = $null
 			$needsRedraw = $false
 			
-			# Debug: Log that dialog input loop has started
-			if ($DebugMode) {
-			$null = $LogArray.Add([PSCustomObject]@{
-				logRow = $true
-				components = @(
-					@{
-						priority = 1
-						text = (Get-Date).ToString("HH:mm:ss")
-						shortText = (Get-Date).ToString("HH:mm:ss")
-					},
-					@{
-						priority = 2
-						text = " - [DEBUG] Movement dialog input loop started, button row Y: $buttonRowY"
-						shortText = " - [DEBUG] Dialog started"
-					}
-				)
-			})
-			}
+		if ($DebugMode) {
+			Add-DebugLogEntry -LogArray $LogArray -Message "Movement dialog input loop started, button row Y: $buttonRowY" -ShortMessage "Dialog started"
+		}
 			
 			:inputLoop do {
 				# Check for window resize
@@ -325,92 +310,66 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 				$key = $null
 				$char = $null
 				
-				try {
-					$peekBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' 16
-					$peekEvts = [uint32]0
-					$hIn = [mJiggAPI.Mouse]::GetStdHandle(-10)
-					if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 16, [ref]$peekEvts) -and $peekEvts -gt 0) {
-						$lastClickIdx = -1
-						$clickX = -1; $clickY = -1
-						for ($e = 0; $e -lt $peekEvts; $e++) {
-							if ($peekBuf[$e].EventType -eq 0x0002 -and $peekBuf[$e].MouseEvent.dwEventFlags -eq 0 -and ($peekBuf[$e].MouseEvent.dwButtonState -band 0x0001) -ne 0) {
-								$clickX = $peekBuf[$e].MouseEvent.dwMousePosition.X
-								$clickY = $peekBuf[$e].MouseEvent.dwMousePosition.Y
-								$lastClickIdx = $e
-							}
-						}
-						if ($lastClickIdx -ge 0) {
-							$consumeCount = [uint32]($lastClickIdx + 1)
-							$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $consumeCount
-							$flushed = [uint32]0
-							[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $consumeCount, [ref]$flushed) | Out-Null
-							
-						$clickedField = -1
-					# Click outside dialog bounds → cancel
-					if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
-						$char = "c"; $keyProcessed = $true
-					} elseif ($clickY -eq $buttonRowY -and $clickX -ge $updateButtonStartX -and $clickX -le $updateButtonEndX) {
-						$char = "a"; $keyProcessed = $true
-					} elseif ($clickY -eq $buttonRowY -and $clickX -ge $cancelButtonStartX -and $clickX -le $cancelButtonEndX) {
-						$char = "c"; $keyProcessed = $true
-					}
-					if (-not $keyProcessed -and $clickX -ge $dialogX -and $clickX -lt ($dialogX + $dialogWidth)) {
-								$clickFieldYOffsets = @(4, 5, 7, 8, 10, 11, 13)
-								for ($fi = 0; $fi -lt $clickFieldYOffsets.Count; $fi++) {
-									$fy = $dialogY + $clickFieldYOffsets[$fi]
-									if ($clickY -eq $fy) {
-										$clickedField = $fi
-										break
-									}
-								}
-								if ($clickedField -ge 0 -and $clickedField -ne $currentField) {
-									$previousField = $currentField
-									$currentField = $clickedField
-									$errorMessage = ""
-									$lastFieldWithInput = -1
-									
-									$fieldLabels = @("Interval (sec): ", "Variance (sec): ", "Distance (px): ", "Variance (px): ", "Speed (sec): ", "Variance (sec): ", "Delay (sec): ")
-									$fieldValues = @($intervalSecondsInput, $intervalVarianceInput, $travelDistanceInput, $travelVarianceInput, $moveSpeedInput, $moveVarianceInput, $autoResumeDelaySecondsInput)
-									
-									Write-SimpleFieldRow -x $dialogX -y ($dialogY + $clickFieldYOffsets[$previousField]) -width $dialogWidth `
-										-label $fieldLabels[$previousField] -longestLabel $longestLabel -fieldValue $fieldValues[$previousField] `
-										-fieldWidth $fieldWidth -fieldIndex $previousField -currentFieldIndex $currentField -backgroundColor DarkBlue
-									
-								Write-SimpleFieldRow -x $dialogX -y ($dialogY + $clickFieldYOffsets[$currentField]) -width $dialogWidth `
-									-label $fieldLabels[$currentField] -longestLabel $longestLabel -fieldValue $fieldValues[$currentField] `
-									-fieldWidth $fieldWidth -fieldIndex $currentField -currentFieldIndex $currentField -backgroundColor DarkBlue
-								Flush-Buffer
-								
-								$fieldY = $dialogY + $clickFieldYOffsets[$currentField]
-								$currentInputRef = switch ($currentField) {
-										0 { [ref]$intervalSecondsInput }
-										1 { [ref]$intervalVarianceInput }
-										2 { [ref]$travelDistanceInput }
-										3 { [ref]$travelVarianceInput }
-										4 { [ref]$moveSpeedInput }
-										5 { [ref]$moveVarianceInput }
-										6 { [ref]$autoResumeDelaySecondsInput }
-									}
-									$cursorX = $dialogX + $inputBoxStartX + 1 + $currentInputRef.Value.Length
-									[Console]::SetCursorPosition($cursorX, $fieldY)
-									$keyProcessed = $true
-								}
-							}
-							if ($DebugMode) {
-								$clickTarget = "none"
-								if ($keyProcessed -and $char) { $clickTarget = "button:$char" }
-								elseif ($clickedField -ge 0) { $clickTarget = "field:$clickedField" }
-							$null = $LogArray.Add([PSCustomObject]@{
-								logRow = $true
-								components = @(
-									@{ priority = 1; text = (Get-Date).ToString("HH:mm:ss"); shortText = (Get-Date).ToString("HH:mm:ss") },
-									@{ priority = 2; text = " - [DEBUG] Movement dialog click at ($clickX,$clickY), target: $clickTarget"; shortText = " - [DEBUG] Click ($clickX,$clickY) -> $clickTarget" }
-								)
-							})
-							}
+			$_click = Get-DialogMouseClick -PeekBuffer $script:_DialogPeekBuffer
+			if ($null -ne $_click) {
+				$clickX = $_click.X; $clickY = $_click.Y
+				$clickedField = -1
+				if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
+					$char = "c"; $keyProcessed = $true
+				} elseif ($clickY -eq $buttonRowY -and $clickX -ge $updateButtonStartX -and $clickX -le $updateButtonEndX) {
+					$char = "a"; $keyProcessed = $true
+				} elseif ($clickY -eq $buttonRowY -and $clickX -ge $cancelButtonStartX -and $clickX -le $cancelButtonEndX) {
+					$char = "c"; $keyProcessed = $true
+				}
+				if (-not $keyProcessed -and $clickX -ge $dialogX -and $clickX -lt ($dialogX + $dialogWidth)) {
+					$clickFieldYOffsets = @(4, 5, 7, 8, 10, 11, 13)
+					for ($fi = 0; $fi -lt $clickFieldYOffsets.Count; $fi++) {
+						$fy = $dialogY + $clickFieldYOffsets[$fi]
+						if ($clickY -eq $fy) {
+							$clickedField = $fi
+							break
 						}
 					}
-				} catch { }
+					if ($clickedField -ge 0 -and $clickedField -ne $currentField) {
+						$previousField = $currentField
+						$currentField = $clickedField
+						$errorMessage = ""
+						$lastFieldWithInput = -1
+						
+						$fieldLabels = @("Interval (sec): ", "Variance (sec): ", "Distance (px): ", "Variance (px): ", "Speed (sec): ", "Variance (sec): ", "Delay (sec): ")
+						$fieldValues = @($intervalSecondsInput, $intervalVarianceInput, $travelDistanceInput, $travelVarianceInput, $moveSpeedInput, $moveVarianceInput, $autoResumeDelaySecondsInput)
+						
+						Write-SimpleFieldRow -x $dialogX -y ($dialogY + $clickFieldYOffsets[$previousField]) -width $dialogWidth `
+							-label $fieldLabels[$previousField] -longestLabel $longestLabel -fieldValue $fieldValues[$previousField] `
+							-fieldWidth $fieldWidth -fieldIndex $previousField -currentFieldIndex $currentField -backgroundColor DarkBlue
+						
+						Write-SimpleFieldRow -x $dialogX -y ($dialogY + $clickFieldYOffsets[$currentField]) -width $dialogWidth `
+							-label $fieldLabels[$currentField] -longestLabel $longestLabel -fieldValue $fieldValues[$currentField] `
+							-fieldWidth $fieldWidth -fieldIndex $currentField -currentFieldIndex $currentField -backgroundColor DarkBlue
+						Flush-Buffer
+						
+						$fieldY = $dialogY + $clickFieldYOffsets[$currentField]
+						$currentInputRef = switch ($currentField) {
+							0 { [ref]$intervalSecondsInput }
+							1 { [ref]$intervalVarianceInput }
+							2 { [ref]$travelDistanceInput }
+							3 { [ref]$travelVarianceInput }
+							4 { [ref]$moveSpeedInput }
+							5 { [ref]$moveVarianceInput }
+							6 { [ref]$autoResumeDelaySecondsInput }
+						}
+						$cursorX = $dialogX + $inputBoxStartX + 1 + $currentInputRef.Value.Length
+						[Console]::SetCursorPosition($cursorX, $fieldY)
+						$keyProcessed = $true
+					}
+				}
+				if ($DebugMode) {
+					$clickTarget = "none"
+					if ($keyProcessed -and $char) { $clickTarget = "button:$char" }
+					elseif ($clickedField -ge 0) { $clickTarget = "field:$clickedField" }
+					Add-DebugLogEntry -LogArray $LogArray -Message "Movement dialog click at ($clickX,$clickY), target: $clickTarget" -ShortMessage "Click ($clickX,$clickY) -> $clickTarget"
+				}
+			}
 				
 				# Check for dialog button clicks detected by main loop
 				if (-not $keyProcessed -and $null -ne $script:DialogButtonClick) {
@@ -420,22 +379,12 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 				elseif ($buttonClick -eq "Cancel") { $char = "c"; $keyProcessed = $true }
 			}
 			
-			# Wait for key input (non-blocking check)
-			if (-not $keyProcessed) {
-				while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
-					$keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyUp,AllowCtrlC")
-						$isKeyDown = $false
-						if ($null -ne $keyInfo.KeyDown) {
-							$isKeyDown = $keyInfo.KeyDown
-						}
-						# Process key-up events (when key is released)
-						if (-not $isKeyDown) {
-							$key = $keyInfo.Key
-							$char = $keyInfo.Character
-							$keyProcessed = $true
-						}
-					}
-				}
+		if (-not $keyProcessed) {
+			$keyInfo = Read-DialogKeyInput
+			if ($null -ne $keyInfo) {
+				$key = $keyInfo.Key; $char = $keyInfo.Character; $keyProcessed = $true
+			}
+		}
 				
 				if (-not $keyProcessed) {
 					Start-Sleep -Milliseconds 50
@@ -455,24 +404,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 				
 			if ($char -eq "a" -or $char -eq "A" -or $key -eq "Enter" -or $char -eq [char]13 -or $char -eq [char]10) {
 				# Apply - validate and save all values
-					# Debug: Log movement dialog update
-					if ($DebugMode) {
-					$null = $LogArray.Add([PSCustomObject]@{
-						logRow = $true
-						components = @(
-							@{
-								priority = 1
-								text = (Get-Date).ToString("HH:mm:ss")
-								shortText = (Get-Date).ToString("HH:mm:ss")
-							},
-							@{
-								priority = 2
-								text = " - [DEBUG] Movement dialog: Update clicked"
-								shortText = " - [DEBUG] Movement: Update"
-							}
-						)
-					})
-					}
+				if ($DebugMode) {
+					Add-DebugLogEntry -LogArray $LogArray -Message "Movement dialog: Update clicked" -ShortMessage "Movement: Update"
+				}
 					$errorMessage = ""
 					try {
 						$newIntervalSeconds = [double]$intervalSecondsInput
@@ -519,24 +453,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 				Flush-Buffer
 			} elseif ($char -eq "c" -or $char -eq "C" -or $char -eq "t" -or $char -eq "T" -or $key -eq "Escape" -or ($null -ne $keyInfo -and $keyInfo.VirtualKeyCode -eq 27)) {
 					# Cancel
-					# Debug: Log movement dialog cancel
-					if ($DebugMode) {
-					$null = $LogArray.Add([PSCustomObject]@{
-						logRow = $true
-						components = @(
-							@{
-								priority = 1
-								text = (Get-Date).ToString("HH:mm:ss")
-								shortText = (Get-Date).ToString("HH:mm:ss")
-							},
-							@{
-								priority = 2
-								text = " - [DEBUG] Movement dialog: Cancel clicked"
-								shortText = " - [DEBUG] Movement: Cancel"
-							}
-						)
-					})
-					}
+				if ($DebugMode) {
+					Add-DebugLogEntry -LogArray $LogArray -Message "Movement dialog: Cancel clicked" -ShortMessage "Movement: Cancel"
+				}
 					$result = $null
 					$needsRedraw = $false
 					break
@@ -741,22 +660,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 				}
 			} until ($false)
 			
-			# Clear shadow before clearing dialog area
-			Clear-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight
-			
-		# Clear dialog area
-		for ($i = 0; $i -lt $dialogHeight; $i++) {
-			Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text (" " * $dialogWidth)
-		}
-		Flush-Buffer
-			
-			$script:CursorVisible = $savedCursorVisible
-			if ($script:CursorVisible) { [Console]::Write("$($script:ESC)[?25h") } else { [Console]::Write("$($script:ESC)[?25l") }
-			
-			$script:DialogButtonBounds = $null
-			$script:DialogButtonClick = $null
-			
-			$script:CurrentScreenState = if ($Output -eq "hidden") { "hidden" } else { "main" }
+		Invoke-DialogExitCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -ClearShadow
 			# Return result object
 			return @{
 				Result = $result

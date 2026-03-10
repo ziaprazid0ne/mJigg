@@ -1,4 +1,4 @@
-﻿		function Start-WorkerLoop {
+		function Start-WorkerLoop {
 			$_wDiag = $script:DiagEnabled
 			$_wDiagFile = $null
 			if ($_wDiag) {
@@ -16,7 +16,8 @@
 			)
 			$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 			if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - WORKER STARTED pipe=$($script:PipeName) bufSize=65536" | Out-File $_wDiagFile -Append }
-			
+			Show-Notification -Title 'mJig' -Body "Worker started (PID: $PID)"
+
 			$pipeReader = $null
 			$pipeWriter = $null
 			$viewerConnected = $false
@@ -38,7 +39,9 @@
 			$_workerReadTask = $null
 			$_pendingWriteFlush = $null
 			$_workerSettingsEpoch = 0
-			
+			$manualPause = $false
+			$script:_HotkeyDebounce = $false
+
 			try {
 				:workerLoop while ($true) {
 					$workerLoopIteration++
@@ -127,6 +130,7 @@
 						# Check viewer disconnection
 					if ($viewerConnected -and -not $pipeServer.IsConnected) {
 						if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DISCONNECTED (pipe not connected)" | Out-File $_wDiagFile -Append }
+						Show-Notification -Title 'mJig' -Body 'Viewer disconnected'
 						$_workerReadTask = $null
 						$_pendingWriteFlush = $null
 						$viewerConnected = $false
@@ -186,10 +190,18 @@
 											if ($null -ne $msg.epoch) { $_workerSettingsEpoch = [int]$msg.epoch }
 											if ($null -ne $msg.mode) { $script:Output = $msg.mode }
 										}
+										'togglePause' {
+											if ($null -ne $msg.paused) {
+												$manualPause = [bool]$msg.paused
+											} else {
+												$manualPause = -not $manualPause
+											}
+										}
 										'quit' {
 											if ($viewerConnected) {
 												try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
 											}
+											Show-Notification -Title 'mJig' -Body 'Worker quit'
 											return
 										}
 									}
@@ -216,6 +228,37 @@
 						}
 					}
 						
+						# Global hotkey polling (Shift+M+P / Shift+M+Q)
+						# The worker always handles detection (fast 50ms tick loop).
+						# When a viewer is connected, it forwards the state via pipe.
+						$_wGlobalAction = $null
+						try { $_wGlobalAction = Test-GlobalHotkey } catch {}
+						if ($_wGlobalAction -eq 'togglePause') {
+							try {
+								$manualPause = -not $manualPause
+								Show-Notification -Title 'mJig' -Body $(if ($manualPause) { 'Paused' } else { 'Resumed' })
+								$_pauseLogMsg = @{
+									type = 'log'
+									components = @(
+										@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
+										@{ priority = 2; text = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' }) (hotkey)"; shortText = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' })" }
+									)
+								}
+								if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
+								$null = $script:LogReplayBuffer.Enqueue($_pauseLogMsg)
+								if ($viewerConnected) {
+									try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message @{ type = 'togglePause'; paused = $manualPause; logMsg = $_pauseLogMsg } -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
+								}
+							} catch {}
+						}
+						if ($_wGlobalAction -eq 'quit') {
+							try { Show-Notification -Title 'mJig' -Body 'Worker quit' } catch {}
+							if ($viewerConnected) {
+								try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
+							}
+							return
+						}
+
 						# GetLastInputInfo idle check (system-wide)
 						# Only check after the first movement completes — before that,
 						# we have no baseline to distinguish real user input from system noise,
@@ -338,7 +381,7 @@
 					}
 					
 				$_isFirstWorkerRun = ($workerLoopIteration -eq 1)
-				$SkipUpdate = $_anyInputThisIteration -or $cooldownActive -or $_isFirstWorkerRun
+				$SkipUpdate = $_anyInputThisIteration -or $cooldownActive -or $_isFirstWorkerRun -or $manualPause
 				
 				if (-not $SkipUpdate) {
 					# Movement execution (same logic as main loop)
@@ -358,7 +401,7 @@
 						$x = [Math]::Round($pos.X + ($distance * [Math]::Cos($angle)))
 						$y = [Math]::Round($pos.Y + ($distance * [Math]::Sin($angle)))
 						
-						$vScreen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+						$vScreen = $script:_VirtualScreen
 						$sLeft   = $vScreen.Left
 						$sTop    = $vScreen.Top
 						$sRight  = $vScreen.Right  - 1
@@ -378,30 +421,9 @@
 						$movementPoints = $movementPath.Points
 						$workerLastMovementDurationMs = $movementPath.TotalTimeMs
 						
-						$movementAborted = $false
-						if ($movementPoints.Count -gt 1) {
-							$stepIntervalMs = 5
-							Start-Sleep -Milliseconds 1
-							for ($i = 1; $i -lt $movementPoints.Count; $i++) {
-								$point = $movementPoints[$i]
-								[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point ($point.X, $point.Y)
-								if ($i -lt $movementPoints.Count - 1) {
-									Start-Sleep -Milliseconds $stepIntervalMs
-									$actualPos = Get-MousePosition
-									if ($null -ne $actualPos) {
-										$driftX = [Math]::Abs($actualPos.X - $point.X)
-										$driftY = [Math]::Abs($actualPos.Y - $point.Y)
-										if ($driftX -gt 3 -or $driftY -gt 3) {
-											$movementAborted = $true
-											$workerLastPos = $actualPos
-											break
-										}
-									}
-								}
-							}
-						} else {
-							[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point ($x, $y)
-						}
+					$_moveResult = Invoke-CursorMovement -Points $movementPoints -FallbackX $x -FallbackY $y
+					$movementAborted = $_moveResult.Aborted
+					if ($movementAborted) { $workerLastPos = $_moveResult.ActualPosition }
 						
 						if (-not $movementAborted) {
 							$newPos = Get-MousePosition
@@ -460,10 +482,13 @@
 							)
 						}
 					}
-					if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
-					$null = $script:LogReplayBuffer.Enqueue($logMsg)
-					if ($viewerConnected) {
-						try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message $logMsg -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
+					if ($manualPause -and -not $_isFirstWorkerRun) { $logMsg = $null }
+					if ($null -ne $logMsg) {
+						if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
+						$null = $script:LogReplayBuffer.Enqueue($logMsg)
+						if ($viewerConnected) {
+							try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message $logMsg -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
+						}
 					}
 					
 					if ($null -eq $workerLastMovementTime) { $workerLastMovementTime = Get-Date }
@@ -478,12 +503,14 @@
 								if ($viewerConnected) {
 									try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'endtime' } } catch {}
 								}
+								Show-Notification -Title 'mJig' -Body 'End time reached -- worker quit'
 								return
 							}
 						} catch {}
 					}
 				}
 			} finally {
+				Dispose-Notification
 				if ($null -ne $pipeReader) { try { $pipeReader.Dispose() } catch {} }
 				if ($null -ne $pipeWriter) { try { $pipeWriter.Dispose() } catch {} }
 				if ($null -ne $pipeServer) { try { $pipeServer.Dispose() } catch {} }

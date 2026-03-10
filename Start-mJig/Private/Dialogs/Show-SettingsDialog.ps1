@@ -1,4 +1,4 @@
-﻿	function Show-SettingsDialog {
+	function Show-SettingsDialog {
 		param(
 			[ref]$HostWidthRef,
 			[ref]$HostHeightRef,
@@ -22,9 +22,9 @@
 	#  10: [🐛|(d)ebug: On/Off]  (inline checkbox)  11: blank  12: bottom border
 	$dialogHeight = 12
 
-		# Left-aligned above the settings button; clamp so dialog fits on screen
-		$settingsBtnX = if ($null -ne $script:SettingsButtonStartX) { $script:SettingsButtonStartX } else { 0 }
-		$dialogX      = [math]::Max(0, [math]::Min($settingsBtnX, $currentHostWidth - $dialogWidth))
+		# Left edge aligns with the first column of the border padding area
+		$_bpH    = [math]::Max(1, $script:BorderPadH)
+		$dialogX = [math]::Max(0, [math]::Min($_bpH - 1, $currentHostWidth - $dialogWidth))
 		$menuBarY     = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $currentHostHeight - 2 }
 		$dialogY      = [math]::Max(0, $menuBarY - 2 - $dialogHeight)
 
@@ -39,10 +39,9 @@
 		$emojiDebug     = [char]::ConvertFromUtf32(0x1F50D) # 🔍
 
 		# Button width / position helper — dot-source to populate current scope
-		$calcButtonVars = {
-			$dlgIconWidth    = if ($script:DialogButtonShowIcon)         { 2 + $script:DialogButtonSeparator.Length } else { 0 }
-			$dlgBracketWidth = if ($script:DialogButtonShowBrackets)     { 2 } else { 0 }
-			$dlgParenAdj     = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+	$calcButtonVars = {
+		$_bl = Get-DialogButtonLayout
+		$dlgIconWidth = $_bl.IconWidth; $dlgBracketWidth = $_bl.BracketWidth; $dlgParenAdj = $_bl.ParenAdj
 		# Per-button right padding: dialogWidth - border(1) - space(1) - btnChars - border(1)
 		# "end_(t)ime"=10, "(m)ouse_movement"=16; output/debug pads are computed dynamically in render
 		$timePad  = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 10 + $dlgParenAdj + 1)
@@ -83,7 +82,6 @@
 			for ($r = 0; $r -lt $s -and $r -le $dialogHeight; $r++) {
 				$absY = $animY + $r
 				if ($absY -ge $clipY) { continue }
-				if ($dialogX -gt 0) { Write-Buffer -X ($dialogX - 1) -Y $absY -Text " " }
 				if (($dialogX + $dialogWidth) -lt $currentHostWidth) { Write-Buffer -X ($dialogX + $dialogWidth) -Y $absY -Text " " }
 				Write-Buffer -X $dialogX -Y $absY -Text (" " * $dialogWidth) -BG $script:SettingsDialogBg
 				if ($r -eq 0) {
@@ -96,23 +94,20 @@
 				}
 			}
 			if ($s -eq $animSteps -and $animY -gt 0) {
-				$aPadLeft  = [math]::Max(0, $dialogX - 1)
-				$aPadWidth = $dialogWidth + ($dialogX - $aPadLeft) + 1
-				Write-Buffer -X $aPadLeft -Y ($animY - 1) -Text (" " * $aPadWidth)
+				$aPadWidth = $dialogWidth + 1
+				Write-Buffer -X $dialogX -Y ($animY - 1) -Text (" " * $aPadWidth)
 			}
 			Flush-Buffer
 			if ($frameDelayMs -gt 0) { Start-Sleep -Milliseconds $frameDelayMs }
 		}
 	}
 
-		# ── Blank padding (terminal default BG) — top, left, right; no bottom ──
+		# ── Blank padding (terminal default BG) — top and right; no bottom or left ──
 		if ($dialogY -gt 0) {
-			$padLeft  = [math]::Max(0, $dialogX - 1)
-			$padWidth = $dialogWidth + ($dialogX - $padLeft) + 1
-			Write-Buffer -X $padLeft -Y ($dialogY - 1) -Text (" " * $padWidth)
+			$padWidth = $dialogWidth + 1
+			Write-Buffer -X $dialogX -Y ($dialogY - 1) -Text (" " * $padWidth)
 		}
 		for ($i = 0; $i -le $dialogHeight; $i++) {
-			if ($dialogX -gt 0) { Write-Buffer -X ($dialogX - 1) -Y ($dialogY + $i) -Text " " }
 			if (($dialogX + $dialogWidth) -lt $currentHostWidth) { Write-Buffer -X ($dialogX + $dialogWidth) -Y ($dialogY + $i) -Text " " }
 		}
 
@@ -218,8 +213,8 @@
 				$currentHostHeight   = $stableSize.Height
 				Draw-MainFrame -Force -NoFlush
 
-				$settingsBtnX = if ($null -ne $script:SettingsButtonStartX) { $script:SettingsButtonStartX } else { 0 }
-				$dialogX      = [math]::Max(0, [math]::Min($settingsBtnX, $currentHostWidth - $dialogWidth))
+				$_bpH    = [math]::Max(1, $script:BorderPadH)
+				$dialogX = [math]::Max(0, [math]::Min($_bpH - 1, $currentHostWidth - $dialogWidth))
 				$menuBarY     = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $currentHostHeight - 2 }
 				$dialogY      = [math]::Max(0, $menuBarY - 2 - $dialogHeight)
 				. $calcButtonVars
@@ -244,39 +239,21 @@
 			$keyProcessed = $false
 			$char = $null; $key = $null; $keyInfo = $null
 
-			try {
-				$peekBuf  = New-Object 'mJiggAPI.INPUT_RECORD[]' 16
-				$peekEvts = [uint32]0
-				$hIn = [mJiggAPI.Mouse]::GetStdHandle(-10)
-				if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 16, [ref]$peekEvts) -and $peekEvts -gt 0) {
-					$lastClickIdx = -1; $clickX = -1; $clickY = -1
-					for ($e = 0; $e -lt $peekEvts; $e++) {
-						if ($peekBuf[$e].EventType -eq 0x0002 -and $peekBuf[$e].MouseEvent.dwEventFlags -eq 0 -and ($peekBuf[$e].MouseEvent.dwButtonState -band 0x0001) -ne 0) {
-							$clickX = $peekBuf[$e].MouseEvent.dwMousePosition.X
-							$clickY = $peekBuf[$e].MouseEvent.dwMousePosition.Y
-							$lastClickIdx = $e
-						}
-					}
-					if ($lastClickIdx -ge 0) {
-						$consumeCount = [uint32]($lastClickIdx + 1)
-						$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $consumeCount
-						$flushed  = [uint32]0
-						[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $consumeCount, [ref]$flushed) | Out-Null
-					# Click outside dialog bounds → close
-				if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
-					$char = "s"; $keyProcessed = $true
+		$_click = Get-DialogMouseClick -PeekBuffer $script:_DialogPeekBuffer
+		if ($null -ne $_click) {
+			$clickX = $_click.X; $clickY = $_click.Y
+			if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
+				$char = "s"; $keyProcessed = $true
 			} elseif ($clickY -eq $timeButtonRowY -and $clickX -ge $timeButtonStartX -and $clickX -le $timeButtonEndX) {
 				$char = "t"; $keyProcessed = $true
-				} elseif ($clickY -eq $moveButtonRowY -and $clickX -ge $moveButtonStartX -and $clickX -le $moveButtonEndX) {
-					$char = "m"; $keyProcessed = $true
-				} elseif ($clickY -eq $outputButtonRowY -and $clickX -ge $outputButtonStartX -and $clickX -le $outputButtonEndX) {
-					$char = "o"; $keyProcessed = $true
-				} elseif ($clickY -eq $debugButtonRowY -and $clickX -ge $debugButtonStartX -and $clickX -le $debugButtonEndX) {
-					$char = "d"; $keyProcessed = $true
-				}
-				}
-				}
-			} catch { }
+			} elseif ($clickY -eq $moveButtonRowY -and $clickX -ge $moveButtonStartX -and $clickX -le $moveButtonEndX) {
+				$char = "m"; $keyProcessed = $true
+			} elseif ($clickY -eq $outputButtonRowY -and $clickX -ge $outputButtonStartX -and $clickX -le $outputButtonEndX) {
+				$char = "o"; $keyProcessed = $true
+			} elseif ($clickY -eq $debugButtonRowY -and $clickX -ge $debugButtonStartX -and $clickX -le $debugButtonEndX) {
+				$char = "d"; $keyProcessed = $true
+			}
+		}
 
 			if (-not $keyProcessed -and $null -ne $script:DialogButtonClick) {
 				$buttonClick = $script:DialogButtonClick
@@ -285,14 +262,12 @@
 				elseif ($buttonClick -eq "Cancel") { $char = "m"; $keyProcessed = $true }
 			}
 
-			if (-not $keyProcessed) {
-				while ($Host.UI.RawUI.KeyAvailable -and -not $keyProcessed) {
-					$keyInfo = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyup,AllowCtrlC")
-					$isKeyDown = $false
-					if ($null -ne $keyInfo.KeyDown) { $isKeyDown = $keyInfo.KeyDown }
-					if (-not $isKeyDown) { $key = $keyInfo.Key; $char = $keyInfo.Character; $keyProcessed = $true }
-				}
+		if (-not $keyProcessed) {
+			$keyInfo = Read-DialogKeyInput
+			if ($null -ne $keyInfo) {
+				$key = $keyInfo.Key; $char = $keyInfo.Character; $keyProcessed = $true
 			}
+		}
 
 			if (-not $keyProcessed) { Start-Sleep -Milliseconds 50; continue }
 
@@ -310,8 +285,8 @@
 					$dialogWidth  = $_stgDialogWidth
 					$dialogHeight = $_stgDialogHeight
 					$dialogLines  = $_stgDialogLines
-					$sBtnX    = if ($null -ne $script:SettingsButtonStartX) { $script:SettingsButtonStartX } else { 0 }
-					$parentDX = [math]::Max(0, [math]::Min($sBtnX, $w - $dialogWidth))
+					$_bpH     = [math]::Max(1, $script:BorderPadH)
+					$parentDX = [math]::Max(0, [math]::Min($_bpH - 1, $w - $dialogWidth))
 					$mBarY    = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $h - 2 }
 					$parentDY = [math]::Max(0, $mBarY - 2 - $dialogHeight)
 					& $drawSettingsDialog $parentDX $parentDY $false
@@ -374,8 +349,8 @@
 					$dialogWidth  = $_stgDialogWidth
 					$dialogHeight = $_stgDialogHeight
 					$dialogLines  = $_stgDialogLines
-					$sBtnX    = if ($null -ne $script:SettingsButtonStartX) { $script:SettingsButtonStartX } else { 0 }
-					$parentDX = [math]::Max(0, [math]::Min($sBtnX, $w - $dialogWidth))
+					$_bpH     = [math]::Max(1, $script:BorderPadH)
+					$parentDX = [math]::Max(0, [math]::Min($_bpH - 1, $w - $dialogWidth))
 					$mBarY    = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $h - 2 }
 					$parentDY = [math]::Max(0, $mBarY - 2 - $dialogHeight)
 					& $drawSettingsDialog $parentDX $parentDY $false
@@ -470,18 +445,6 @@
 			} catch { }
 		} until ($false)
 
-		# ── Clear dialog area ─────────────────────────────────────────────────────
-		for ($i = 0; $i -le $dialogHeight; $i++) {
-			Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text (" " * $dialogWidth)
-		}
-		Flush-Buffer
-
-		$script:CursorVisible = $savedCursorVisible
-		if ($script:CursorVisible) { [Console]::Write("$($script:ESC)[?25h") } else { [Console]::Write("$($script:ESC)[?25l") }
-
-		$script:DialogButtonBounds = $null
-		$script:DialogButtonClick  = $null
-
-		$script:CurrentScreenState = if ($Output -eq "hidden") { "hidden" } else { "main" }
+	Invoke-DialogExitCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -IncludeBorderRow
 		return @{ NeedsRedraw = $needsRedraw; ReopenSettings = $settingsReopen }
 	}

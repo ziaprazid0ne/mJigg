@@ -1,4 +1,4 @@
-﻿	function Show-StartupComplete {
+	function Show-StartupComplete {
 		param([bool]$HasParams)
 
 		$endTimeDisplay    = if ($EndTime -and $EndTime -ne "0") { $EndTime } else { "none" }
@@ -44,42 +44,6 @@
 		}
 
 		function getSize { @{ W = $Host.UI.RawUI.WindowSize.Width; H = $Host.UI.RawUI.WindowSize.Height } }
-
-	# Shared helper: wait for any non-modifier key-UP via PeekConsoleInput (5ms poll).
-	# Returns when a qualifying key-up is detected; flushes all buffered events so the
-	# main loop starts with a clean input queue.  Falls back to KeyAvailable if the
-	# Win32 API is unavailable.
-	$modifierVKs = @(0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C)
-	$waitForKeyUp = {
-		$hIn = [mJiggAPI.Mouse]::GetStdHandle(-10)
-		$peekBuf  = New-Object 'mJiggAPI.INPUT_RECORD[]' 32
-		$peekEvts = [uint32]0
-		$detected = $false
-		while (-not $detected) {
-			Start-Sleep -Milliseconds 5
-			try {
-				if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 32, [ref]$peekEvts) -and $peekEvts -gt 0) {
-					for ($e = 0; $e -lt [int]$peekEvts; $e++) {
-						if ($peekBuf[$e].EventType -eq 0x0001 -and $peekBuf[$e].KeyEvent.bKeyDown -eq 0 -and
-						    $peekBuf[$e].KeyEvent.wVirtualKeyCode -notin $modifierVKs) {
-							$detected = $true; break
-						}
-					}
-					if ($detected) {
-						$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $peekEvts
-						$flushed  = [uint32]0
-						[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $peekEvts, [ref]$flushed) | Out-Null
-					}
-				}
-			} catch {
-				# Fallback: accept any buffered key
-				if ($Host.UI.RawUI.KeyAvailable) {
-					try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,IncludeKeyUp,AllowCtrlC") } catch {}
-					$detected = $true
-				}
-			}
-		}
-	}
 
 	if (-not $HasParams) {
 		# Wait for key-up; check for resize every 50ms while polling

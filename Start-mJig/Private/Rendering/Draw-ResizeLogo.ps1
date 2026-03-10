@@ -1,4 +1,4 @@
-﻿	function Draw-ResizeLogo {
+	function Draw-ResizeLogo {
 			param(
 				[switch]$ClearFirst,
 				[object]$WindowSize = $null
@@ -33,13 +33,12 @@
 					$script:CurrentResizeQuote = $script:ResizeQuotes | Get-Random
 				}
 				
-				# Box-drawing characters
-				$boxTL = [char]0x250C      # ┌
-				$boxTR = [char]0x2510      # ┐
-				$boxBL = [char]0x2514      # └
-				$boxBR = [char]0x2518      # ┘
-				$boxH = [char]0x2500       # ─
-				$boxV = [char]0x2502       # │
+			$boxTL = $script:BoxTopLeft
+			$boxTR = $script:BoxTopRight
+			$boxBL = $script:BoxBottomLeft
+			$boxBR = $script:BoxBottomRight
+			$boxH = $script:BoxHorizontal
+			$boxV = $script:BoxVertical
 				
 				# Logo display width: mJig( (5) + emoji (2) + ) (1) = 8
 				$logoDisplayWidth = 8

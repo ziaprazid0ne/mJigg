@@ -6,9 +6,57 @@ All notable changes to `start-mjig.ps1` are documented in this file.
 
 ## [Latest] - Unreleased
 
-Changes since last commit (c39052d - "IPC stability: settings epoch guard, non-blocking worker writes, error stream cleanup"):
+Changes since last commit (bd3766d - "Optimization, global hotkeys, toast notifications, pause/resume, helper extraction"):
+
+*(No changes yet)*
+
+---
+
+## [bd3766d] - 2026-03-09
+
+Changes since last commit (435dc34 - "Multi-file module split, post-exit diagnostic dump, unified exit flow"):
 
 ### Added
+- **Windows toast notifications** (`Private/Helpers/Show-Notification.ps1`) — uses `System.Windows.Forms.NotifyIcon.ShowBalloonTip()` (no new dependencies; assembly already loaded). Fires on: worker init, viewer disconnect, worker quit/endtime, manual pause/resume. `Dispose-Notification` cleans up the tray icon on exit.
+- **Global hotkeys** (`Private/Helpers/Test-GlobalHotkey.ps1`) — `Shift+M+P` toggles manual pause/resume; `Shift+M+Q` performs an immediate quit (no confirmation dialog). Uses `GetAsyncKeyState` polling (already declared in `mJiggAPI.Mouse`), works from any process including the hidden headless worker. Debounce flag prevents repeat firing. In viewer mode the **worker** is the sole hotkey detector (fast 50ms tick loop); it forwards state changes to the viewer via pipe (`togglePause` / `stopped` messages). In standalone mode the main loop polls directly.
+- **Manual pause/resume** — new `$script:ManualPause` flag skips movement when set. Toggled via `Shift+M+P` global hotkey. While paused, new log entries are suppressed (discarded in both standalone and viewer IPC paths). A "Paused (hotkey)" / "Resumed (hotkey)" log entry is added to the main window on each toggle.
+- **Viewer `togglePause` IPC handler** — both viewer IPC read loops (main-loop path and wait-loop path) now handle incoming `'togglePause'` messages from the worker, updating `$script:ManualPause` and adding the worker-provided log entry to `$LogArray`.
+- **VK constants** — added `VK_SHIFT`, `VK_M`, `VK_P`, `VK_Q` to `mJiggAPI.Keyboard` class in `Initialize-PInvoke.ps1`.
+- **`Add-DebugLogEntry` helper** (`Private/Helpers/`) — standardized debug log entry creation, replacing 11+ inline `[PSCustomObject]@{...}` boilerplate sites in the main loop and dialogs.
+- **Dialog shared helpers** (`Private/Helpers/`) — extracted 5 helper functions from duplicated dialog code:
+  - `Get-DialogButtonLayout` — centralized button width calculations (icon, bracket, paren adjustments).
+  - `Get-DialogMouseClick` — PeekConsoleInput-based mouse click detection, reuses pre-allocated buffer.
+  - `Read-DialogKeyInput` — key-up event reader consuming from console input.
+  - `Invoke-DialogExitCleanup` — standardized dialog close sequence (shadow clear, area erase, cursor restore, state reset).
+  - `Invoke-PostDialogCleanup` — post-dialog redraw flag setup via `[ref]` parameters + `clear-host`.
+- **`Invoke-CursorMovement` helper** (`Private/Helpers/`) — shared cursor animation loop with drift detection, used by both main loop and `Start-WorkerLoop`. Returns abort info (step, drift, actual position) for caller-specific side effects.
+- **`Write-HotkeyLabel` helper** (`Private/Rendering/`) — hotkey-parsed label renderer replacing 6 identical `-split "([()])"` + loop + `Write-Buffer` blocks in `Draw-MainFrame` and `Write-ButtonImmediate`.
+
+### Changed
+- **Global hotkey detection moved to worker-only** — in viewer mode, the viewer's main loop (multi-second iterations) was too slow to reliably catch `GetAsyncKeyState` key state. Hotkey detection now runs exclusively in the worker's 50ms tick loop. The worker sends `{ type = 'togglePause'; paused = $bool; logMsg = $hashtable }` or `{ type = 'stopped'; reason = 'quit' }` to the viewer via pipe. The viewer no longer calls `Test-GlobalHotkey` when `$_isViewerMode` is true. Standalone mode (no worker) still polls hotkeys directly in the main loop.
+- **`Draw-DialogShadow` / `Clear-DialogShadow` merged** — `Draw-DialogShadow` now accepts a `-Clear` switch; `Clear-DialogShadow` is a thin backward-compatible wrapper.
+- **Pre-allocated hot-path objects** — `System.Drawing.Point` and `mJiggAPI.POINT` reused in `Get-MousePosition`; `INPUT_RECORD[]` buffer shared across all dialogs; main loop `$flushBuffer` reuses existing peek buffer.
+- **Cached constants at script scope** — emoji characters (`MouseEmoji`, `HourglassEmoji`, `LockEmoji`, `GearEmoji`, `RedXEmoji`, `CheckmarkEmoji`) and `VirtualScreen` bounds computed once at startup instead of per-frame/per-call.
+- **Reduced `Get-Date` calls** — `Draw-MainFrame` now accepts a `-Date` parameter from the main loop's existing `$date` variable.
+- **Deduplicated stats box variables** — removed redundant `$boxWidth`/`$showStatsBox`/`$logWidth` recalculation in `Draw-MainFrame`.
+- **Replaced `Where-Object` pipelines** — `$intervalMouseInputs | Where-Object` replaced with `foreach` loops in both main loop and viewer mode input aggregation.
+- **Optimized `Write-Buffer` segment allocation** — uses `[object[]]::new(6)` with index assignment instead of `@(...)` array expression.
+- **`Draw-ResizeLogo`** — uses existing script-scoped box-drawing characters instead of redefining them locally.
+- **All 5 dialogs refactored** — `Show-TimeChangeDialog`, `Show-QuitConfirmationDialog`, `Show-SettingsDialog`, `Show-InfoDialog`, and `Show-MovementModifyDialog` now use the extracted helper functions.
+
+### Fixed
+- **`PeekConsoleInput` return type** — corrected from `uint` to `bool` with `[return: MarshalAs(UnmanagedType.Bool)]` in the P/Invoke declaration.
+- **Removed duplicate `$LogArray` initialization** — redundant `New-Object` call removed; single initialization covers all paths.
+- **Removed dead `$waitForKeyUp` scriptblock** — unused code in `Show-StartupComplete`.
+- **Fixed unused variables** — `$testKey` replaced with `$null`; `$addTypeResult` replaced with `$null`.
+
+---
+
+## [435dc34] - 2026-03-08
+
+### Added
+- **Multi-file module split** — split monolithic `Start-mJig.psm1` (~9,000 lines) into ~39 dot-sourced `.ps1` files under `Private/` (Config, Startup, Rendering, Dialogs, IPC, Helpers). Skeleton retains params, provisioner, init, and main loop (~3,000 lines). All files are dot-sourced inside the `Start-mJig` function body to preserve PowerShell's scope chain.
+- **Build pipeline** — `Start-mJig/Build/Build-Module.ps1` recombines skeleton + Private/ files into a single monolithic `.psm1` in `dist/`. GitHub Actions workflow (`.github/workflows/build.yml`) runs the build on `v*` tag push and creates a release.
 - **Post-exit diagnostic dump (`Show-DiagnosticFiles`)** — when running with `-Diag`, after quitting (or end time reached) a 15-second countdown prompt offers to print all diagnostic files to the console. Each file is displayed in a distinct color (startup=Cyan, settle=Yellow, input=Green, ipc=Magenta, worker-ipc=DarkCyan), limited to 100 rows per file. Files exceeding the limit show a truncation message with the full file path. Auto-skips on timeout or N/Escape; flushes buffered keypresses before prompting to prevent accidental input.
 
 ### Changed
