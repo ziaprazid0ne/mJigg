@@ -471,7 +471,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 					$VK_RSHIFT = 0xA1  # Right Shift virtual key code
 					$isShiftPressed = $false
 					try {
-						$shiftState = [mJiggAPI.Mouse]::GetAsyncKeyState($VK_LSHIFT) -bor [mJiggAPI.Mouse]::GetAsyncKeyState($VK_RSHIFT)
+						$shiftState = $script:MouseAPI::GetAsyncKeyState($VK_LSHIFT) -bor $script:MouseAPI::GetAsyncKeyState($VK_RSHIFT)
 						$isShiftPressed = (($shiftState -band 0x8000) -ne 0)
 					} catch {
 						# Fallback to ControlKeyState if API call fails

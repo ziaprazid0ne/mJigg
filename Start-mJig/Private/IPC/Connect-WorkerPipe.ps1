@@ -1,4 +1,4 @@
-﻿		function Connect-WorkerPipe {
+		function Connect-WorkerPipe {
 			param(
 				[string]$PipeName,
 				[int]$ConnectTimeoutMs = 5000
@@ -48,10 +48,22 @@
 				return $null
 			}
 			
+			# Send encrypted auth handshake
+			try {
+				Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'auth'; token = $script:PipeAuthToken }
+			} catch {
+				Write-Host "ERROR: Failed to send auth handshake." -ForegroundColor $script:TextError
+				try { $pipeClient.Dispose() } catch {}
+				return $null
+			}
+			
 			$welcome = $null
 			try {
 				$welcomeLine = $pipeReader.ReadLine()
-				if ($null -ne $welcomeLine) { $welcome = $welcomeLine | ConvertFrom-Json }
+				if ($null -ne $welcomeLine -and $welcomeLine.Length -gt 0) {
+					$json = Unprotect-PipeMessage -CipherText $welcomeLine -Key $script:PipeEncryptionKey
+					$welcome = $json | ConvertFrom-Json
+				}
 			} catch {}
 			if ($null -eq $welcome -or $welcome.type -ne 'welcome') {
 				Write-Host "ERROR: Invalid response from worker." -ForegroundColor $script:TextError

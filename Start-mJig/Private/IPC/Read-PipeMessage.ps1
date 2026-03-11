@@ -1,4 +1,4 @@
-﻿		function Read-PipeMessage {
+		function Read-PipeMessage {
 			param(
 				[System.IO.StreamReader]$Reader,
 				[ref]$PendingTask
@@ -13,7 +13,8 @@
 				$line = $PendingTask.Value.GetAwaiter().GetResult()
 				$PendingTask.Value = $null
 				if ($null -ne $line -and $line.Length -gt 0) {
-					return $line | ConvertFrom-Json
+					$json = Unprotect-PipeMessage -CipherText $line -Key $script:PipeEncryptionKey
+					return $json | ConvertFrom-Json
 				}
 			} catch {
 				$PendingTask.Value = $null

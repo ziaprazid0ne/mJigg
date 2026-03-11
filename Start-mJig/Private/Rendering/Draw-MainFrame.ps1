@@ -58,8 +58,8 @@
 					$headerLeftWidth += 13  # " - DEBUGMODE" = 13 chars
 				}
 				
-				# Time section: "Current`u{23F3}/" + time + " ➣  " + "End`u{23F3}/" + time (or "none")
-				# Components: "Current" (7) + emoji (2) + "/" (1) + time + " ➣  " (4) + "End" (3) + emoji (2) + "/" (1) + time
+				# Time section: "Current`u{23F3}/" + time + " arrow " + "End`u{23F3}/" + time (or "none")
+				# Components: "Current" (7) + emoji (2) + "/" (1) + time + " arrow " (4) + "End" (3) + emoji (2) + "/" (1) + time
 				$timeSectionBaseWidth = 7 + 2 + 1 + 4 + 3 + 2 + 1  # Fixed text parts
 				# Determine end time display text
 				if ($endTimeInt -eq -1 -or [string]::IsNullOrEmpty($endTimeStr)) {
@@ -70,15 +70,11 @@
 				$timeSectionTimeWidth = $currentTime.Length + $endTimeDisplay.Length
 				$timeSectionWidth = $timeSectionBaseWidth + $timeSectionTimeWidth
 				
-		# Right part: output button (clickable, right-aligned)
-		# Format: [(o)utput]|Full — button is just [(o)utput], separator and mode name are plain trailing text
-		# Separator char uses $script:MenuButtonSeparator but is not part of the clickable button.
-	$modeName = if ($Output -eq "full") { "Full" } else { " Min" }  # pad Min to match Full width
-	$modeBracketWidth = if ($script:MenuButtonShowBrackets) { 2 } else { 0 }
-	$hotkeyParenAdj = if ($script:MenuButtonShowHotkeyParens) { 0 } else { -2 }
-	$modeButtonOnlyWidth = $modeBracketWidth + 8 + $hotkeyParenAdj   # brackets + "(o)utput"
-		# Total display width: button + " " + separator + " " + modeName
-		$modeButtonWidth = $modeButtonOnlyWidth + 1 + $script:MenuButtonSeparator.Length + 1 + $modeName.Length
+		# Right part: pause/resume symbol (clickable) + separator + clickable mode label
+		# Format: pause | Full -- pause symbol is clickable (toggles pause), mode label is clickable (toggles output)
+	$modeName = if ($Output -eq "full") { "Full" } else { " Min" }
+	$pauseSymbolWidth = 2  # wide emoji: pause or play
+		$modeButtonWidth = $pauseSymbolWidth + 1 + $script:MenuButtonSeparator.Length + 1 + $modeName.Length
 			$rightMarginWidth = 0  # inner right padding handled by inset writes
 
 			# Calculate spacing to center times between left and right parts
@@ -105,7 +101,7 @@
 			Write-Buffer -Text (" " * $spacingBeforeTimes) -BG $_hrBg
 			$curX += $spacingBeforeTimes
 			
-		# Write times (Current first, then End) — hidden click regions track each section
+		# Write times (Current first, then End) -- hidden click regions track each section
 		$currentTimeSectionStartX = $curX
 		Write-Buffer -Text "Current" -FG $script:HeaderTimeLabel -BG $_hrBg
 		$hourglassX1 = $curX + 7  # "Current" = 7 chars
@@ -115,9 +111,9 @@
 		Write-Buffer -Text "$currentTime" -FG $script:HeaderTimeValue -BG $_hrBg
 		$curX += $currentTime.Length
 		$script:HeaderCurrentTimeBounds = @{ y = $Outputline; startX = $currentTimeSectionStartX; endX = $curX - 1 }
-		$arrowTriangle = [char]0x27A3  # ➣
+		$arrowTriangle = [char]0x27A3  # arrow (U+27A3)
 		Write-Buffer -Text " $arrowTriangle  " -BG $_hrBg
-		$curX += 4  # " ➣  " = 4 display chars
+		$curX += 4  # " arrow " = 4 display chars
 		$endTimeSectionStartX = $curX
 		Write-Buffer -Text "End" -FG $script:HeaderTimeLabel -BG $_hrBg
 		$hourglassX2 = $curX + 3  # "End" = 3 chars
@@ -131,28 +127,27 @@
 			# Add spacing after times and write view tag aligned to the right
 			Write-Buffer -Text (" " * $spacingAfterTimes) -BG $_hrBg
 			$curX += $spacingAfterTimes
-		# Render mode button (clickable) then separator + mode name (plain, non-clickable)
-	$modeButtonStartX = $curX
-	if ($script:MenuButtonShowBrackets) {
-		Write-Buffer -X $modeButtonStartX -Y $Outputline -Text "[" -FG $script:MenuButtonBracketFg -BG $script:MenuButtonBracketBg
-		if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:MenuButtonText -BG $script:MenuButtonBg } else { Write-Buffer -Text "" -BG $script:MenuButtonBg }
+		# Render pause/resume symbol (clickable) then separator + mode label (clickable)
+	$pauseBtnStartX = $curX
+	if ($script:ManualPause) {
+		Write-Buffer -X $pauseBtnStartX -Y $Outputline -Text $script:PlayEmoji -FG 'White' -BG $_hrBg -Wide
 	} else {
-		if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -X $modeButtonStartX -Y $Outputline -Text "(" -FG $script:MenuButtonText -BG $script:MenuButtonBg } else { Write-Buffer -X $modeButtonStartX -Y $Outputline -Text "" -BG $script:MenuButtonBg }
+		Write-Buffer -X $pauseBtnStartX -Y $Outputline -Text $script:PauseEmoji -FG 'White' -BG $_hrBg
 	}
-	Write-Buffer -Text "o" -FG $script:MenuButtonHotkey -BG $script:MenuButtonBg
-	if ($script:MenuButtonShowHotkeyParens) { Write-Buffer -Text ")" -FG $script:MenuButtonText -BG $script:MenuButtonBg }
-	Write-Buffer -Text "utput" -FG $script:MenuButtonText -BG $script:MenuButtonBg
-	if ($script:MenuButtonShowBrackets) {
-		Write-Buffer -Text "]" -FG $script:MenuButtonBracketFg -BG $script:MenuButtonBracketBg
-	}
-	# Separator and mode name are plain header text — not part of the clickable area
-	Write-Buffer -Text " $($script:MenuButtonSeparator)" -FG $script:MenuButtonSeparatorFg -BG $_hrBg
-	Write-Buffer -Text " $modeName" -FG $script:HeaderViewTag -BG $_hrBg
+	Write-Buffer -X ($pauseBtnStartX + 2) -Y $Outputline -Text " $($script:MenuButtonSeparator) " -FG $script:MenuButtonSeparatorFg -BG $_hrBg
+	$modeLabelStartX = $pauseBtnStartX + 2 + 1 + $script:MenuButtonSeparator.Length + 1
+	Write-Buffer -X $modeLabelStartX -Y $Outputline -Text $modeName -FG $script:HeaderViewTag -BG $_hrBg
 		$curX += $modeButtonWidth
 		$script:ModeButtonBounds = @{
 			y      = $Outputline
-			startX = $modeButtonStartX
-			endX   = $modeButtonStartX + $modeButtonOnlyWidth - 1
+			startX = $pauseBtnStartX
+			endX   = $pauseBtnStartX + 1
+		}
+		$_modeTextOffset = $modeName.Length - $modeName.TrimStart().Length
+		$script:ModeLabelBounds = @{
+			y      = $Outputline
+			startX = $modeLabelStartX + $_modeTextOffset
+			endX   = $modeLabelStartX + $modeName.Length - 1
 		}
 
 		# Clear any remaining characters on the line
@@ -505,11 +500,11 @@
 				
 			# Restore pressed-button highlight when appropriate:
 			# - Immediate actions (toggle, hide): clear on the very first render after the click (no dialog opened)
-			# - Popup actions (dialogs): the dialog is blocking so this render only runs after it closes — clear then too
+			# - Popup actions (dialogs): the dialog is blocking so this render only runs after it closes -- clear then too
 			# - While a dialog IS open: skip this block so the button stays highlighted throughout the dialog
 			if ($script:PendingDialogCheck -and $null -ne $script:PressedMenuButton) {
 				if ($null -eq $script:DialogButtonBounds) {
-					# No dialog is open: either the action was immediate or the dialog just closed — clear now
+					# No dialog is open: either the action was immediate or the dialog just closed -- clear now
 					$script:PressedMenuButton  = $null
 					$script:ButtonClickedAt    = $null
 					$script:PendingDialogCheck = $false
@@ -811,9 +806,9 @@
 		} else {
 			Write-Buffer -X 0 -Y $Outputline -Text (" " * $HostWidth) -BG $_fBg -NoWrap
 		}
-		# Do NOT increment $Outputline — reserved row is the scroll guard.
+		# Do NOT increment $Outputline -- reserved row is the scroll guard.
 	} else {
-		# For bpV≥2 write the 1-minimum FooterBg blank (transparent outer, group-bg inner)
+		# For bpV>=2 write the 1-minimum FooterBg blank (transparent outer, group-bg inner)
 		if ($_bpH -gt 1) { Write-Buffer -X 0                    -Y $Outputline -Text (" " * ($_bpH - 1)) }                           # transparent left
 		Write-Buffer -X ($_bpH - 1)          -Y $Outputline -Text (" " * ($HostWidth - 2*$_bpH + 2)) -BG $_fBg                       # group-bg centre
 		if ($_bpH -gt 1) { Write-Buffer -X ($HostWidth-$_bpH+1) -Y $Outputline -Text (" " * ($_bpH - 1)) }                           # transparent right
@@ -834,6 +829,7 @@
 		}
 	} elseif ($Output -eq "hidden") {
 		$script:ModeButtonBounds        = $null  # Header not rendered in hidden mode
+		$script:ModeLabelBounds         = $null
 		$script:HeaderEndTimeBounds     = $null
 		$script:HeaderCurrentTimeBounds = $null
 		$script:HeaderLogoBounds        = $null

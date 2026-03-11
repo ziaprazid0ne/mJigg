@@ -2,11 +2,12 @@ function Show-DiagnosticFiles {
 	if (-not $script:DiagEnabled -or -not $script:DiagFolder) { return }
 
 	$diagFiles = @(
-		@{ Name = 'startup.txt';    Color = 'Cyan' }
-		@{ Name = 'settle.txt';     Color = 'Yellow' }
-		@{ Name = 'input.txt';      Color = 'Green' }
-		@{ Name = 'ipc.txt';        Color = 'Magenta' }
-		@{ Name = 'worker-ipc.txt'; Color = 'DarkCyan' }
+		@{ Name = 'startup.txt';        Color = 'Cyan' }
+		@{ Name = 'settle.txt';         Color = 'Yellow' }
+		@{ Name = 'input.txt';          Color = 'Green' }
+		@{ Name = 'ipc.txt';            Color = 'Magenta' }
+		@{ Name = 'worker-startup.txt'; Color = 'DarkYellow' }
+		@{ Name = 'worker-ipc.txt';     Color = 'DarkCyan' }
 	)
 
 	$existingFiles = @()

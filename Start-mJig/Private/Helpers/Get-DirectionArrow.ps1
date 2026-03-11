@@ -1,4 +1,4 @@
-﻿		function Get-DirectionArrow {
+		function Get-DirectionArrow {
 			param(
 				[int]$deltaX,
 				[int]$deltaY,
@@ -6,24 +6,24 @@
 			)
 			
 			# Define emoji arrows using ConvertFromUtf32 for cross-version compatibility
-			$arrowRight = [char]::ConvertFromUtf32(0x27A1)  # ➡
-			$arrowLeft = [char]::ConvertFromUtf32(0x2B05)   # ⬅
-			$arrowDown = [char]::ConvertFromUtf32(0x2B07)   # ⬇
-			$arrowUp = [char]::ConvertFromUtf32(0x2B06)     # ⬆
-			$arrowSE = [char]::ConvertFromUtf32(0x2198)     # ↘
-			$arrowNE = [char]::ConvertFromUtf32(0x2197)     # ↗
-			$arrowSW = [char]::ConvertFromUtf32(0x2199)     # ↙
-			$arrowNW = [char]::ConvertFromUtf32(0x2196)     # ↖
+			$arrowRight = [char]::ConvertFromUtf32(0x27A1)  # U+27A1
+			$arrowLeft = [char]::ConvertFromUtf32(0x2B05)   # U+2B05
+			$arrowDown = [char]::ConvertFromUtf32(0x2B07)   # U+2B07
+			$arrowUp = [char]::ConvertFromUtf32(0x2B06)     # U+2B06
+			$arrowSE = [char]::ConvertFromUtf32(0x2198)     # U+2198
+			$arrowNE = [char]::ConvertFromUtf32(0x2197)     # U+2197
+			$arrowSW = [char]::ConvertFromUtf32(0x2199)     # U+2199
+			$arrowNW = [char]::ConvertFromUtf32(0x2196)     # U+2196
 			
 			# Simple arrows (BMP characters, work with [char])
-			$simpleRight = [char]0x2192  # →
-			$simpleLeft = [char]0x2190   # ←
-			$simpleDown = [char]0x2193   # ↓
-			$simpleUp = [char]0x2191     # ↑
-			$simpleSE = [char]0x2198     # ↘
-			$simpleNE = [char]0x2197     # ↗
-			$simpleSW = [char]0x2199     # ↙
-			$simpleNW = [char]0x2196     # ↖
+			$simpleRight = [char]0x2192  # U+2192
+			$simpleLeft = [char]0x2190   # U+2190
+			$simpleDown = [char]0x2193   # U+2193
+			$simpleUp = [char]0x2191     # U+2191
+			$simpleSE = [char]0x2198     # U+2198
+			$simpleNE = [char]0x2197     # U+2197
+			$simpleSW = [char]0x2199     # U+2199
+			$simpleNW = [char]0x2196     # U+2196
 			
 			# Calculate angle and determine primary direction
 			# Use a threshold to determine if movement is primarily horizontal, vertical, or diagonal

@@ -1,4 +1,29 @@
 		function Start-WorkerLoop {
+			# Suppress PowerShell logging in the worker session
+			try {
+				$GPField = [ref].Assembly.GetType('System.Management.Automation.Utils').GetField(
+					'cachedGroupPolicySettings', 'NonPublic,Static')
+				if ($GPField) {
+					$GPS = $GPField.GetValue($null)
+					if ($GPS) {
+						foreach ($key in @('ScriptBlockLogging', 'ModuleLogging', 'Transcription')) {
+							if ($GPS.ContainsKey($key)) {
+								foreach ($prop in @($GPS[$key].Keys)) {
+									$GPS[$key][$prop] = if ($prop -eq 'OutputDirectory') { '' } else { 0 }
+								}
+							}
+						}
+					}
+				}
+			} catch {}
+			try {
+				$xscript = Stop-Transcript *>&1 | Out-String
+				if ($xscript -match 'output file is\s+(.+?)(\r?\n|$)') {
+					$xPath = $Matches[1].Trim()
+					if (Test-Path $xPath) { Remove-Item $xPath -Force -ErrorAction SilentlyContinue }
+				}
+			} catch {}
+
 			$_wDiag = $script:DiagEnabled
 			$_wDiagFile = $null
 			if ($_wDiag) {
@@ -6,15 +31,11 @@
 				"=== mJig Worker IPC Diag: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') PID=$PID ===" | Out-File $_wDiagFile
 			}
 			
-			$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
-				$script:PipeName,
-				[System.IO.Pipes.PipeDirection]::InOut,
-				1,
-				[System.IO.Pipes.PipeTransmissionMode]::Byte,
-				[System.IO.Pipes.PipeOptions]::Asynchronous,
-				65536, 65536
-			)
+			if ($script:_wsDiagFile) { "$(Get-Date -Format 'HH:mm:ss.fff') [6] Creating New-SecurePipeServer  PipeName=$($script:PipeName)" | Out-File $script:_wsDiagFile -Append }
+			$pipeServer = New-SecurePipeServer -PipeName $script:PipeName
+			if ($script:_wsDiagFile) { "$(Get-Date -Format 'HH:mm:ss.fff') [7] Pipe server created OK, calling BeginWaitForConnection" | Out-File $script:_wsDiagFile -Append }
 			$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+			if ($script:_wsDiagFile) { "$(Get-Date -Format 'HH:mm:ss.fff') [8] Listening for viewer connections" | Out-File $script:_wsDiagFile -Append }
 			if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - WORKER STARTED pipe=$($script:PipeName) bufSize=65536" | Out-File $_wDiagFile -Append }
 			Show-Notification -Title 'mJig' -Body "Worker started (PID: $PID)"
 
@@ -34,8 +55,8 @@
 			$workerStateTicks = 0
 			$_writeSkipCount = 0
 			
-			$lii = New-Object mJiggAPI.LASTINPUTINFO
-			$lii.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf([type][mJiggAPI.LASTINPUTINFO])
+			$lii = New-Object $script:LastInputType
+			$lii.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($lii)
 			$_workerReadTask = $null
 			$_pendingWriteFlush = $null
 			$_workerSettingsEpoch = 0
@@ -79,8 +100,22 @@
 								$pipeReader = New-Object System.IO.StreamReader($pipeServer, [System.Text.Encoding]::UTF8)
 								$pipeWriter = New-Object System.IO.StreamWriter($pipeServer, [System.Text.Encoding]::UTF8)
 								$_pendingWriteFlush = $null
+
+								# Validate auth handshake from viewer
+								$_authLine = $pipeReader.ReadLine()
+								if ($null -ne $_authLine) {
+									$_authJson = Unprotect-PipeMessage -CipherText $_authLine -Key $script:PipeEncryptionKey
+									$_authMsg = $_authJson | ConvertFrom-Json
+								} else { $_authMsg = $null }
+								if ($null -eq $_authMsg -or $_authMsg.type -ne 'auth' -or $_authMsg.token -ne $script:PipeAuthToken) {
+									if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - AUTH FAILED, disconnecting" | Out-File $_wDiagFile -Append }
+									$pipeServer.Disconnect()
+									$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
+									continue
+								}
+
 								$viewerConnected = $true
-								if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER CONNECTED" | Out-File $_wDiagFile -Append }
+								if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER CONNECTED (auth OK)" | Out-File $_wDiagFile -Append }
 								
 								Send-PipeMessage -Writer $pipeWriter -Message @{
 									type = 'welcome'
@@ -119,9 +154,7 @@
 								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 							} catch {
 								try { $pipeServer.Dispose() } catch {}
-								$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
-									$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
-									[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
+								$pipeServer = New-SecurePipeServer -PipeName $script:PipeName
 								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 							}
 						}
@@ -143,9 +176,7 @@
 							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 						} catch {
 							try { $pipeServer.Dispose() } catch {}
-							$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
-								$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
-								[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
+							$pipeServer = New-SecurePipeServer -PipeName $script:PipeName
 							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 						}
 						}
@@ -220,9 +251,7 @@
 								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 							} catch {
 								try { $pipeServer.Dispose() } catch {}
-								$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
-									$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
-									[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
+								$pipeServer = New-SecurePipeServer -PipeName $script:PipeName
 								$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 							}
 						}
@@ -260,13 +289,13 @@
 						}
 
 						# GetLastInputInfo idle check (system-wide)
-						# Only check after the first movement completes — before that,
+						# Only check after the first movement completes -- before that,
 						# we have no baseline to distinguish real user input from system noise,
 						# and the null simulated/autoMove filters cause a permanent skip deadlock.
 						if ($null -ne $workerLastAutomatedMouseMovement) {
 						try {
-							if ([mJiggAPI.Mouse]::GetLastInputInfo([ref]$lii)) {
-								$tickNow = [uint64][mJiggAPI.Mouse]::GetTickCount64()
+							if ($script:MouseAPI::GetLastInputInfo([ref]$lii)) {
+								$tickNow = [uint64]$script:MouseAPI::GetTickCount64()
 								$systemIdleMs = $tickNow - [uint64]$lii.dwTime
 								$recentSimulated = ($null -ne $workerLastSimulatedKeyPress) -and ((Get-TimeSinceMs -startTime $workerLastSimulatedKeyPress) -lt 500)
 								$recentAutoMove = (Get-TimeSinceMs -startTime $workerLastAutomatedMouseMovement) -lt 500
@@ -357,9 +386,7 @@
 							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 						} catch {
 							try { $pipeServer.Dispose() } catch {}
-							$pipeServer = New-Object System.IO.Pipes.NamedPipeServerStream(
-								$script:PipeName, [System.IO.Pipes.PipeDirection]::InOut, 1,
-								[System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 65536, 65536)
+							$pipeServer = New-SecurePipeServer -PipeName $script:PipeName
 							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 						}
 					}
@@ -433,9 +460,9 @@
 							# Simulate Right Alt keypress
 							try {
 								$vkCode = [byte]0xA5
-								[mJiggAPI.Keyboard]::keybd_event($vkCode, [byte]0, [uint32]0, [int]0)
+								$script:KeyboardAPI::keybd_event($vkCode, [byte]0, [uint32]0, [int]0)
 								Start-Sleep -Milliseconds 10
-								[mJiggAPI.Keyboard]::keybd_event($vkCode, [byte]0, [uint32]0x0002, [int]0)
+								$script:KeyboardAPI::keybd_event($vkCode, [byte]0, [uint32]0x0002, [int]0)
 								$workerLastSimulatedKeyPress = Get-Date
 								Start-Sleep -Milliseconds 50
 							} catch {}

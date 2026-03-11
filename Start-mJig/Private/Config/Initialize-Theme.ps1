@@ -6,7 +6,7 @@
 	# each section maps to a top-level YAML key as documented below.
 	#
 	# YAML key              PS variable prefix
-	# ─────────────────     ──────────────────────────
+	# ------------------     --------------------------
 	# general.*             Text*
 	# mainDisplay.header.*  Header*
 	# mainDisplay.statsBox.*StatsBox*
@@ -53,7 +53,7 @@
 	# Background applied only to the menu bar row (not the separator or blank).
 	# YAML: mainDisplay.footer.rowBg
 	$script:MenuRowBg        = "DarkCyan"
-	# Blank-line/column border around the chrome. Clamped to 1–5 below.
+	# Blank-line/column border around the chrome. Clamped to 1-5 below.
 	# Only the innermost row/column on each side receives the Header/FooterBg; extras stay transparent.
 	# YAML: mainDisplay.borderPadV (top/bottom rows)
 	$script:BorderPadV       = 1
@@ -86,13 +86,13 @@
 	$script:MenuButtonOnClickSeparatorFg = "Black"
 
 	# --- Menu Bar: Icon Prefix -------------------------------------------------
-	# The emoji + separator rendered before the button label (e.g. "👁 |").
+	# The emoji + separator rendered before the button label (e.g. "eye |").
 	# YAML: menuBar.icon.*
 	$script:MenuButtonShowIcon  = $true   # Show/hide the icon prefix
 	$script:MenuButtonSeparator = "|"     # Character between icon and label
 
 	# --- Menu Bar: Bracket Wrapping --------------------------------------------
-	# Optional [ ] wrapping around the full button (e.g. "[👁 |toggle_(v)iew]").
+	# Optional [ ] wrapping around the full button (e.g. "[eye |toggle_(v)iew]").
 	# YAML: menuBar.brackets.*
 	$script:MenuButtonShowBrackets     = $true
 	$script:MenuButtonBracketFg        = "DarkCyan"

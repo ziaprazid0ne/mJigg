@@ -9,7 +9,7 @@
 				$winWidth = $winSize.Width
 				$winHeight = $winSize.Height
 
-			# Lock height during resize: WindowSize.Height can transiently fluctuate by ±1 row
+			# Lock height during resize: WindowSize.Height can transiently fluctuate by +/-1 row
 			# when only the width is being changed (Windows Terminal reflow). Lock the height
 			# at resize-start and only update it if it changes by more than 1 row, so small
 			# transient fluctuations never affect the vertical center calculation.
@@ -19,7 +19,7 @@
 				} elseif ([math]::Abs($winHeight - $script:ResizeLogoLockedHeight) -gt 1) {
 					$script:ResizeLogoLockedHeight = $winHeight
 				}
-				# else: change is ≤1 row — treat as transient, hold the locked value
+				# else: change is <=1 row - treat as transient, hold the locked value
 				$winHeight = $script:ResizeLogoLockedHeight
 			}
 				

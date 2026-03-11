@@ -17,9 +17,9 @@
 	$dialogWidth  = 26
 	# Layout (13 rows, indices 0-12):
 	#  0: top border   1: title   2: divider   3: blank
-	#  4: [⏳|end_(t)ime]  5: blank   6: [🖱|(m)ouse_movement]  7: blank
-	#  8: [💻|(o)utput: Full/Min] (inline toggle)   9: blank
-	#  10: [🐛|(d)ebug: On/Off]  (inline checkbox)  11: blank  12: bottom border
+	#  4: [hourglass|end_(t)ime]  5: blank   6: [mouse|(m)ouse_movement]  7: blank
+	#  8: [gear|(o)ptions] (opens sub-dialog)   9: blank
+	#  10: [palette|(t)heme] (placeholder, no-op)  11: blank  12: bottom border
 	$dialogHeight = 12
 
 		# Left edge aligns with the first column of the border padding area
@@ -33,28 +33,29 @@
 		[Console]::Write("$($script:ESC)[?25l")
 
 		# Icon emojis used in buttons
-	$emojiHourglass = [char]::ConvertFromUtf32(0x23F3)  # ⏳
-	$emojiMouse     = [char]::ConvertFromUtf32(0x1F5B1) # 🖱
-		$emojiScreen    = [char]::ConvertFromUtf32(0x1F4BB) # 💻
-		$emojiDebug     = [char]::ConvertFromUtf32(0x1F50D) # 🔍
+	$emojiHourglass = [char]::ConvertFromUtf32(0x23F3)  # U+23F3 hourglass
+	$emojiMouse     = [char]::ConvertFromUtf32(0x1F5B1) # U+1F5B1 mouse
+		$emojiOptions   = [char]::ConvertFromUtf32(0x2699)  # U+2699 gear
+		$emojiTheme     = [char]::ConvertFromUtf32(0x1F3A8) # U+1F3A8 palette
 
-		# Button width / position helper — dot-source to populate current scope
+		# Button width / position helper -- dot-source to populate current scope
 	$calcButtonVars = {
 		$_bl = Get-DialogButtonLayout
 		$dlgIconWidth = $_bl.IconWidth; $dlgBracketWidth = $_bl.BracketWidth; $dlgParenAdj = $_bl.ParenAdj
 		# Per-button right padding: dialogWidth - border(1) - space(1) - btnChars - border(1)
-		# "end_(t)ime"=10, "(m)ouse_movement"=16; output/debug pads are computed dynamically in render
-		$timePad  = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 10 + $dlgParenAdj + 1)
-		$movePad  = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 16 + $dlgParenAdj + 1)
-		$timeButtonStartX  = $dialogX + 2
-		$timeButtonEndX    = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 10 + $dlgParenAdj - 1
-		$moveButtonStartX  = $dialogX + 2
-		$moveButtonEndX    = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 16 + $dlgParenAdj - 1
-			# Output/debug rows: full inner-row clickable area
-			$outputButtonStartX = $dialogX + 1
-			$outputButtonEndX   = $dialogX + $dialogWidth - 2
-			$debugButtonStartX  = $dialogX + 1
-			$debugButtonEndX    = $dialogX + $dialogWidth - 2
+		# "end_(t)ime"=10, "(m)ouse_movement"=16, "(o)ptions"=9, "(t)heme"=6
+		$timePad    = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 10 + $dlgParenAdj + 1)
+		$movePad    = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 16 + $dlgParenAdj + 1)
+		$optionsPad = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 9  + $dlgParenAdj + 1)
+		$themePad   = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 6  + $dlgParenAdj + 1)
+		$timeButtonStartX    = $dialogX + 2
+		$timeButtonEndX      = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 10 + $dlgParenAdj - 1
+		$moveButtonStartX    = $dialogX + 2
+		$moveButtonEndX      = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 16 + $dlgParenAdj - 1
+		$optionsButtonStartX = $dialogX + 2
+		$optionsButtonEndX   = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 9  + $dlgParenAdj - 1
+		$themeButtonStartX   = $dialogX + 2
+		$themeButtonEndX     = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 6  + $dlgParenAdj - 1
 		}
 		. $calcButtonVars
 
@@ -65,13 +66,13 @@
 		$line2      = $script:BoxVerticalRight + ($hLine * $inner) + $script:BoxVerticalLeft
 		$lineBlank  = $script:BoxVertical   + (" "   * $inner) + $script:BoxVertical
 		$lineBottom = $script:BoxBottomLeft + ($hLine * $inner) + $script:BoxBottomRight
-		# indices 0-12; rows 4, 6, 8, 10 are $null — drawn as inline toggle rows
+		# indices 0-12; rows 4, 6, 8, 10 are $null -- drawn as inline toggle rows
 		$dialogLines = @($line0, $null, $line2, $lineBlank, $null, $lineBlank, $null, $lineBlank, $null, $lineBlank, $null, $lineBlank, $lineBottom)
 		$_stgDialogWidth  = $dialogWidth
 		$_stgDialogHeight = $dialogHeight
 		$_stgDialogLines  = $dialogLines
 
-	# ── Slide-up-from-behind animation (skipped on reopen after sub-dialog) ──
+	# -- Slide-up-from-behind animation (skipped on reopen after sub-dialog) --
 	if (-not $SkipAnimation) {
 		$clipY        = $menuBarY - 1
 		$animSteps    = $dialogHeight + 1
@@ -102,7 +103,7 @@
 		}
 	}
 
-		# ── Blank padding (terminal default BG) — top and right; no bottom or left ──
+		# -- Blank padding (terminal default BG) -- top and right; no bottom or left --
 		if ($dialogY -gt 0) {
 			$padWidth = $dialogWidth + 1
 			Write-Buffer -X $dialogX -Y ($dialogY - 1) -Text (" " * $padWidth)
@@ -111,7 +112,7 @@
 			if (($dialogX + $dialogWidth) -lt $currentHostWidth) { Write-Buffer -X ($dialogX + $dialogWidth) -Y ($dialogY + $i) -Text " " }
 		}
 
-		# ── Render helper: one button row ─────────────────────────────────────────
+		# -- Render helper: one button row -----------------------------------------
 		# Reads $cBg/$cBorder/$cBtnBg/$cBtnText/$cBtnHotkey set by $drawSettingsDialog
 		$drawSettingsBtnRow = {
 			param($dx, $absRowY, $emoji, $hotkeyChar, $labelSuffix, $rowPad, $labelPrefix = "")
@@ -135,7 +136,7 @@
 			Write-Buffer -Text $script:BoxVertical -FG $cBorder -BG $cBg
 		}
 
-		# ── Render helper: full dialog — $focused selects onfocus vs offfocus ─────
+		# -- Render helper: full dialog -- $focused selects onfocus vs offfocus -----
 		$drawSettingsDialog = {
 			param($dx, $dy, [bool]$focused = $true)
 			# Resolve color set for this draw
@@ -161,16 +162,9 @@
 		} elseif ($i -eq 6) {
 			& $drawSettingsBtnRow $dx $absY $emojiMouse "m" "ouse_movement" $movePad
 			} elseif ($i -eq 8) {
-				# Output inline toggle — shows current mode
-				$_outName   = if ($script:Output -eq "full") { "Full" } else { "Min " }
-				$_outSuffix = "utput: $_outName"
-				$_outPad    = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 3 + $_outSuffix.Length + $dlgParenAdj + 1)
-				& $drawSettingsBtnRow $dx $absY $emojiScreen "o" $_outSuffix ([math]::Max(0, $_outPad))
+				& $drawSettingsBtnRow $dx $absY $emojiOptions "o" "ptions" $optionsPad
 			} elseif ($i -eq 10) {
-				# Debug inline checkbox — shows current state
-				$_dbgSuffix = if ($script:DebugMode) { "ebug: On " } else { "ebug: Off" }
-				$_dbgPad    = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 3 + $_dbgSuffix.Length + $dlgParenAdj + 1)
-				& $drawSettingsBtnRow $dx $absY $emojiDebug "d" $_dbgSuffix ([math]::Max(0, $_dbgPad))
+				& $drawSettingsBtnRow $dx $absY $emojiTheme "t" "heme" ([math]::Max(0, $themePad))
 			} elseif ($i -eq $dialogHeight) {
 					Write-Buffer -X $dx -Y $absY -Text $lineBottom -FG $cBorder -BG $cBg
 				} elseif ($null -ne $dialogLines[$i]) {
@@ -182,11 +176,11 @@
 		& $drawSettingsDialog $dialogX $dialogY $true
 		Flush-Buffer
 
-	# ── Button row Y coordinates ───────────────────────────────────────────────
-	$timeButtonRowY   = $dialogY + 4
-	$moveButtonRowY   = $dialogY + 6
-	$outputButtonRowY = $dialogY + 8
-	$debugButtonRowY  = $dialogY + 10
+	# -- Button row Y coordinates -----------------------------------------------
+	$timeButtonRowY    = $dialogY + 4
+	$moveButtonRowY    = $dialogY + 6
+	$optionsButtonRowY = $dialogY + 8
+	$themeButtonRowY   = $dialogY + 10
 
 	$script:DialogButtonBounds = @{
 		buttonRowY   = $timeButtonRowY
@@ -197,11 +191,11 @@
 	}
 		$script:DialogButtonClick = $null
 
-		$needsRedraw     = $false  # set true whenever a sub-dialog makes changes
-		$settingsReopen  = $false  # set true to break and re-open after full screen clear
+		$needsRedraw     = $false
+		$settingsReopen  = $false
 
-		:settingsLoop do {
-			# ── Resize check ───────────────────────────────────────────────────────
+	:settingsLoop do {
+			# -- Resize check -------------------------------------------------------
 			$pshost        = Get-Host
 			$pswindow      = $pshost.UI.RawUI
 			$newWindowSize = $pswindow.WindowSize
@@ -222,10 +216,10 @@
 				& $drawSettingsDialog $dialogX $dialogY $true
 				Flush-Buffer -ClearFirst
 
-		$timeButtonRowY   = $dialogY + 4
-		$moveButtonRowY   = $dialogY + 6
-		$outputButtonRowY = $dialogY + 8
-		$debugButtonRowY  = $dialogY + 10
+		$timeButtonRowY    = $dialogY + 4
+		$moveButtonRowY    = $dialogY + 6
+		$optionsButtonRowY = $dialogY + 8
+		$themeButtonRowY   = $dialogY + 10
 		$script:DialogButtonBounds = @{
 			buttonRowY   = $timeButtonRowY
 			updateStartX = $timeButtonStartX
@@ -235,7 +229,7 @@
 		}
 		}
 
-			# ── Mouse input ────────────────────────────────────────────────────────
+			# -- Mouse input --------------------------------------------------------
 			$keyProcessed = $false
 			$char = $null; $key = $null; $keyInfo = $null
 
@@ -248,10 +242,10 @@
 				$char = "t"; $keyProcessed = $true
 			} elseif ($clickY -eq $moveButtonRowY -and $clickX -ge $moveButtonStartX -and $clickX -le $moveButtonEndX) {
 				$char = "m"; $keyProcessed = $true
-			} elseif ($clickY -eq $outputButtonRowY -and $clickX -ge $outputButtonStartX -and $clickX -le $outputButtonEndX) {
+			} elseif ($clickY -eq $optionsButtonRowY -and $clickX -ge $optionsButtonStartX -and $clickX -le $optionsButtonEndX) {
 				$char = "o"; $keyProcessed = $true
-			} elseif ($clickY -eq $debugButtonRowY -and $clickX -ge $debugButtonStartX -and $clickX -le $debugButtonEndX) {
-				$char = "d"; $keyProcessed = $true
+			} elseif ($clickY -eq $themeButtonRowY -and $clickX -ge $themeButtonStartX -and $clickX -le $themeButtonEndX) {
+				$keyProcessed = $true
 			}
 		}
 
@@ -271,9 +265,9 @@
 
 			if (-not $keyProcessed) { Start-Sleep -Milliseconds 50; continue }
 
-			# ── Dispatch ───────────────────────────────────────────────────────────
+			# -- Dispatch -----------------------------------------------------------
 		if ($char -eq "t" -or $char -eq "T") {
-			# ── Go offfocus while time dialog is open ──────────────────────────
+			# -- Go offfocus while time dialog is open --------------------------
 				& $drawSettingsDialog $dialogX $dialogY $false
 				Flush-Buffer
 				$script:DialogButtonBounds = $null  # prevent outer loop interference
@@ -331,13 +325,13 @@
 					}
 				}
 
-			# Sub-dialog dirtied the background — break out so the caller can do a
+			# Sub-dialog dirtied the background -- break out so the caller can do a
 			# full screen repaint and then reopen settings cleanly.
 			$settingsReopen = $true
 			break :settingsLoop
 
 			} elseif ($char -eq "m" -or $char -eq "M") {
-				# ── Go offfocus while movement dialog is open ──────────────────────
+				# -- Go offfocus while movement dialog is open ----------------------
 				& $drawSettingsDialog $dialogX $dialogY $false
 				Flush-Buffer
 				$script:DialogButtonBounds = $null
@@ -400,39 +394,42 @@
 					}
 				}
 
-			# Sub-dialog dirtied the background — break out so the caller can do a
+			# Sub-dialog dirtied the background -- break out so the caller can do a
 			# full screen repaint and then reopen settings cleanly.
 			$settingsReopen = $true
 			break :settingsLoop
 
 	} elseif ($char -eq "o" -or $char -eq "O") {
-		# ── Inline output toggle: cycle Full ↔ Min ─────────────────────────
-		$oldOutput = $script:Output
-		$script:Output = if ($script:Output -eq "full") { "min" } else { "full" }
-		$needsRedraw = $true
-		$modeNames = @{ 'full' = 'Full'; 'min' = 'Minimal' }
-		$oldName = if ($modeNames.ContainsKey($oldOutput))       { $modeNames[$oldOutput] }       else { $oldOutput }
-		$newName = if ($modeNames.ContainsKey($script:Output)) { $modeNames[$script:Output] } else { $script:Output }
-		$cd = Get-Date
-		$LogArrayRef.Value += [PSCustomObject]@{ logRow = $true; components = @(
-			@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
-			@{ priority = 2; text = " - Output mode: $oldName $([char]0x2192) $newName"; shortText = " - Output: $newName" }
-		)}
-		& $drawSettingsDialog $dialogX $dialogY $true
+		# -- Go offfocus while options dialog is open -----------------------
+		& $drawSettingsDialog $dialogX $dialogY $false
 		Flush-Buffer
+		$script:DialogButtonBounds = $null
 
-	} elseif ($char -eq "d" -or $char -eq "D") {
-		# ── Inline debug toggle ─────────────────────────────────────────────
-		$script:DebugMode = -not $script:DebugMode
-		$needsRedraw = $true
-		$cd = Get-Date
-		$dbgLabel = if ($script:DebugMode) { "enabled" } else { "disabled" }
-		$LogArrayRef.Value += [PSCustomObject]@{ logRow = $true; components = @(
-			@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
-			@{ priority = 2; text = " - Debug mode: $dbgLabel"; shortText = " - Debug: $dbgLabel" }
-		)}
-		& $drawSettingsDialog $dialogX $dialogY $true
-		Flush-Buffer
+		$subHostWidthRef  = $HostWidthRef
+		$subHostHeightRef = $HostHeightRef
+		$settingsParentRedraw = {
+			param($w, $h)
+			$dialogWidth  = $_stgDialogWidth
+			$dialogHeight = $_stgDialogHeight
+			$dialogLines  = $_stgDialogLines
+			$_bpH     = [math]::Max(1, $script:BorderPadH)
+			$parentDX = [math]::Max(0, [math]::Min($_bpH - 1, $w - $dialogWidth))
+			$mBarY    = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $h - 2 }
+			$parentDY = [math]::Max(0, $mBarY - 2 - $dialogHeight)
+			& $drawSettingsDialog $parentDX $parentDY $false
+		}
+		$optionsResult = Show-OptionsDialog -HostWidthRef $subHostWidthRef -HostHeightRef $subHostHeightRef -ParentRedrawCallback $settingsParentRedraw -LogArrayRef $LogArrayRef
+		$currentHostWidth  = $subHostWidthRef.Value
+		$currentHostHeight = $subHostHeightRef.Value
+		$HostWidthRef.Value  = $currentHostWidth
+		$HostHeightRef.Value = $currentHostHeight
+
+		if ($null -ne $optionsResult -and $optionsResult.NeedsRedraw) {
+			$needsRedraw = $true
+		}
+
+		$settingsReopen = $true
+		break :settingsLoop
 
 	} elseif ($char -eq "s" -or $char -eq "S" -or $char -eq "q" -or $char -eq "Q" -or
 		          $key -eq "Escape" -or $key -eq "Enter" -or $char -eq [char]13 -or $char -eq [char]10 -or

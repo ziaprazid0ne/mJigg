@@ -1,4 +1,4 @@
-﻿	function Invoke-ResizeHandler {
+	function Invoke-ResizeHandler {
 		param([string]$PreviousScreenState = $script:CurrentScreenState)
 		$script:LastResizePreviousState = $PreviousScreenState
 		$psw       = (Get-Host).UI.RawUI
@@ -33,7 +33,7 @@
 			# Stability + LMB gate: only exit once size is stable AND mouse is released
 			$elapsed = ((Get-Date) - $lastDetected).TotalMilliseconds
 			if ($elapsed -ge $ResizeThrottleMs) {
-				$lmbHeld = ([mJiggAPI.Mouse]::GetAsyncKeyState(0x01) -band 0x8000) -ne 0
+				$lmbHeld = ($script:MouseAPI::GetAsyncKeyState(0x01) -band 0x8000) -ne 0
 				if (-not $lmbHeld) {
 					[Console]::Clear()
 					Restore-ConsoleInputMode

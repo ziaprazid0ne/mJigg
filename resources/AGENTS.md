@@ -41,23 +41,28 @@ The codebase is split across ~39 files under `Start-mJig/Private/`. The skeleton
 
 ### IPC Background Worker Architecture
 
-By default, `Start-mJig` spawns a hidden background worker process that performs the actual mouse jiggling, then the calling terminal becomes a viewer connected to the worker via a named pipe (`\\.\pipe\mJig_IPC`). This allows the worker to persist independently of the terminal.
+By default, `Start-mJig` spawns a hidden background worker process that performs the actual mouse jiggling, then the calling terminal becomes a viewer connected to the worker via a named pipe with a SHA256-derived hex name (no 'mJig' string in the pipe name). This allows the worker to persist independently of the terminal.
 
 **Behavior matrix:**
 - **`Start-mJig`** (no running instance): Spawns hidden worker, enters viewer mode
 - **`Start-mJig`** (instance running): Connects to existing worker as a viewer
+- **`Start-mJig -Headless`** (no running instance): Spawns hidden worker, exits immediately
+- **`Start-mJig -Headless`** (instance running): Exits immediately
 - **`Start-mJig -Inline`**: Legacy single-process mode, no IPC
 - **`Start-mJig -_WorkerMode`** (internal): Headless worker entry point
 
-**IPC protocol:** JSON lines over `NamedPipeServerStream` / `NamedPipeClientStream`. Worker sends `welcome`, `state` (every 500ms), `log`, and `stopped` messages. Viewer sends `settings`, `endtime`, `output`, and `quit` commands. State messages include `mouseInputDetected`, `keyboardInputDetected`, `keyboardInferred`, `userInputDetected`, `cooldownActive`, `cooldownRemaining`, and `epoch` so the viewer can display live input detection and cooldown status and discard stale state messages.
+**IPC protocol:** JSON lines over `NamedPipeServerStream` / `NamedPipeClientStream`. All messages are encrypted with AES-256-CBC (per-message random IV) via `Protect-PipeMessage` / `Unprotect-PipeMessage`. The first message from the viewer is an auth handshake containing the `$script:PipeAuthToken`; the worker validates it before accepting the connection. Worker sends `welcome`, `state` (every 500ms), `log`, and `stopped` messages. Viewer sends `settings`, `endtime`, `output`, and `quit` commands. State messages include `mouseInputDetected`, `keyboardInputDetected`, `keyboardInferred`, `userInputDetected`, `cooldownActive`, `cooldownRemaining`, and `epoch` so the viewer can display live input detection and cooldown status and discard stale state messages.
 
 **Key functions:**
 - `Start-WorkerLoop` — headless jiggling loop with pipe server; accepts one viewer at a time. Resilient pipe reconnection: all `BeginWaitForConnection` calls are wrapped in try/catch; if the call fails (e.g. broken pipe after abrupt viewer death), the `NamedPipeServerStream` is disposed and recreated from scratch. All `NamedPipeServerStream` instances use 64KB (65536) in/out buffer sizes to prevent pipe saturation during viewer dialog interactions.
-- `Connect-WorkerPipe` — connection-only function; returns pipe client/reader/writer or `$null` on failure
+- `Connect-WorkerPipe` — connection-only function; returns pipe client/reader/writer or `$null` on failure. The welcome handshake uses a synchronous `ReadLine()` (not `Read-PipeMessage`'s async path) to avoid racing async and sync reads on the same stream. If the connection fails, `Show-DiagnosticFiles` is called before returning when `-Diag` is enabled.
 - `Send-PipeMessage` / `Read-PipeMessage` — JSON-line IPC helpers. `Read-PipeMessage` uses asynchronous `ReadLineAsync()` with a `[ref]$PendingTask` parameter to prevent blocking on named pipes when no data is available. Each caller maintains its own pending task variable (`$_workerReadTask` / `$_viewerReadTask`).
 - `Send-PipeMessageNonBlocking` — async write variant using `FlushAsync()` with a `[ref]$PendingFlush` pattern. If a previous flush hasn't completed (viewer not draining, e.g. during a dialog), the message is skipped instead of blocking the worker. Used for periodic `state` and `log` messages. Critical messages (`welcome`, `stopped`, log replay) use synchronous `Send-PipeMessage`. The `$_pendingWriteFlush` variable is reset at all disconnect/reconnect paths and on new viewer connect.
+- `New-SecurePipeServer` — creates `NamedPipeServerStream` with `PipeSecurity` ACL restricting access to the current user. Includes a try/catch fallback: if `PipeSecurity` is unavailable (e.g., missing `System.IO.Pipes.AccessControl` on some .NET runtimes), falls back to creating the pipe without ACL.
+- `Protect-PipeMessage` / `Unprotect-PipeMessage` — AES-256-CBC encryption/decryption with per-message random IV
+- `Get-SessionIdentifier` — SHA256-based session identifier derivation; produces pipe name, encryption key, and auth token from a single hash
 
-**Worker process spawning:** Uses `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` (WMI) to spawn the worker outside the terminal's job object, ensuring the worker survives when the viewer terminal tab is closed. Falls back to `Start-Process` if WMI is unavailable. The executable path is determined dynamically via `[System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName` to match the running PowerShell version (pwsh.exe on PS 7, powershell.exe on 5.1).
+**Worker process spawning:** Uses `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` (WMI) to spawn the worker outside the terminal's job object, ensuring the worker survives when the viewer terminal tab is closed. Falls back to `Start-Process` if WMI is unavailable. The executable path is determined dynamically via `[System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName` to match the running PowerShell version (pwsh.exe on PS 7, powershell.exe on 5.1). The worker command is passed via `-EncodedCommand` (Base64-encoded script block) instead of `-Command` to avoid shell escaping issues.
 
 **Worker input detection bootstrap:** `GetLastInputInfo` and mouse position tracking in the worker are guarded with `if ($null -ne $workerLastAutomatedMouseMovement)`. This skips input detection until the first automated movement completes, preventing a permanent "User input skip" deadlock where the null filter timestamps cause every system tick to be classified as user input.
 
@@ -94,10 +99,14 @@ When the viewer connects (via `Connect-WorkerPipe`), it sets `$_isViewerMode = $
 8. Initialize variables, theme colors, parse end time
 9. Define helper functions (including IPC helpers, Start-WorkerLoop, Connect-WorkerPipe)
 10. IPC Mode Branching:
-    a. -_WorkerMode → Start-WorkerLoop (headless IPC server + jiggling loop), return
+    a. -_WorkerMode → write worker-startup diag checkpoints [1]-[5] (if -Diag), Start-WorkerLoop
+       (headless IPC server + jiggling loop), wrapped in try/catch that logs [FATAL] to both
+       worker-startup.txt and worker-ipc.txt, then return
     b. $_viewerReconnect → Connect-WorkerPipe, set $_isViewerMode = $true, fall through to main loop
+       (if connection fails and -Diag, calls Show-DiagnosticFiles then returns)
     c. -Inline not set + mutex acquired → Spawn hidden worker via WMI (Invoke-CimMethod Win32_Process),
        Connect-WorkerPipe (15s timeout), set $_isViewerMode = $true, fall through to main loop
+       (if connection fails and -Diag, calls Show-DiagnosticFiles then returns)
     d. -Inline + mutex acquired → fall through to main loop (inline mode, $_isViewerMode = $false)
 11. Show-StartupScreen / Show-StartupComplete (inline mode only)
 12. Initialize $oldWindowSize / $OldBufferSize to current state
@@ -184,14 +193,18 @@ Start-mJig/
 │   │   ├── Show-MovementModifyDialog.ps1       Movement parameter editor (~765 lines)
 │   │   ├── Show-QuitConfirmationDialog.ps1     Quit confirmation (~460 lines)
 │   │   ├── Show-SettingsDialog.ps1             Settings slide-up (~490 lines)
-│   │   └── Show-InfoDialog.ps1                 About & version (~300 lines)
+│   │   ├── Show-InfoDialog.ps1                 About & version (~300 lines)
+│   │   └── Show-OptionsDialog.ps1              Options sub-dialog
 │   ├── IPC/
 │   │   ├── Send-PipeMessage.ps1                Synchronous JSON-line write
 │   │   ├── Read-PipeMessage.ps1                Async ReadLineAsync reader
 │   │   ├── Send-PipeMessageNonBlocking.ps1     FlushAsync writer (skips on backpressure)
 │   │   ├── Start-WorkerLoop.ps1                Headless IPC server + jiggling loop (~500 lines)
-│   │   └── Connect-WorkerPipe.ps1              Pipe connection + welcome handshake
+│   │   ├── Connect-WorkerPipe.ps1              Pipe connection + welcome handshake
+│   │   ├── New-SecurePipeServer.ps1            ACL-restricted named pipe server creation
+│   │   └── Protect-PipeMessage.ps1             AES-256-CBC encrypt/decrypt helpers
 │   └── Helpers/
+│       ├── Get-SessionIdentifier.ps1           SHA256-based session identifier derivation
 │       ├── Get-SmoothMovementPath.ps1          Ease-in-out-cubic path generator
 │       ├── Get-DirectionArrow.ps1              Movement direction arrow emoji
 │       ├── Get-CachedMethod.ps1                Reflection method cache
@@ -262,7 +275,16 @@ These can be modified at runtime via the Modify Movement dialog. When accessing 
 - `$script:LastMouseMovementTime` - Stutter prevention timing
 - `$script:ResizeQuotes` - Playful quotes array
 - `$script:CurrentResizeQuote` - Currently displayed quote
-- `$script:PipeName` - Named pipe identifier for IPC (default `'mJig_IPC'`)
+- `$script:PipeName` - Named pipe identifier for IPC (SHA256-derived hex name, no 'mJig' string)
+- `$script:SessionId` - Hashtable with `PipeName`, `AesKey`, `AuthToken` derived from SHA256
+- `$script:PipeEncryptionKey` - AES-256 key (bytes 8–23 of session hash)
+- `$script:PipeAuthToken` - Auth handshake token (bytes 24–31 of session hash)
+- `$script:NotificationsEnabled` - Toggle for toast notifications (default `$true`)
+- `$script:TitlePresets` - Array of preset window title disguises
+- `$script:TitlePresetIndex` - Current index in the preset cycle
+- `$script:MouseAPI` / `$script:KeyboardAPI` - Runtime type references for randomized P/Invoke namespace
+- `$script:PointType` / `$script:LastInputType` / `$script:InputRecordType` / `$script:CSBIType` - String type names for `New-Object`
+- `$script:_ApiNamespace` - Randomized namespace string (e.g. `"ns_a3f7c019b2e84d01"`)
 - `$script:LogReplayBuffer` - `Queue[hashtable]` (capacity 30) in worker mode; replayed to viewer on connect
 - `$_isViewerMode` - `$true` when running as a viewer connected to a background worker; controls main loop dual-mode behavior (local, not `$script:`)
 - `$_viewerPipeClient` / `$_viewerPipeReader` / `$_viewerPipeWriter` - Pipe objects for viewer IPC (local)
@@ -275,37 +297,48 @@ These can be modified at runtime via the Modify Movement dialog. When accessing 
 
 ### 2. P/Invoke (Platform Invoke)
 
-The script defines Win32 API types in a C# code block via `Add-Type`. All types are in the `mJiggAPI` namespace:
+The script defines Win32 API types in a C# code block via `Add-Type`. The `mJiggAPI` namespace is **randomized at startup** (e.g. `ns_a3f7c019b2e84d01`) to avoid type conflicts across sessions. The old `[mJiggAPI.Mouse]::` syntax is no longer used directly. Instead, types are accessed via script-scoped variables:
+
+- `$script:MouseAPI` — runtime type reference for the Mouse class (replaces `[mJiggAPI.Mouse]`)
+- `$script:KeyboardAPI` — runtime type reference for the Keyboard class (replaces `[mJiggAPI.Keyboard]`)
+- `$script:PointType` — string type name for `New-Object` (replaces `mJiggAPI.POINT`)
+- `$script:LastInputType` — string type name for `New-Object` (replaces `mJiggAPI.LASTINPUTINFO`)
+- `$script:InputRecordType` — string type name for `New-Object` (replaces `mJiggAPI.INPUT_RECORD`)
+- `$script:CSBIType` — string type name for `New-Object` (replaces `mJiggAPI.CONSOLE_SCREEN_BUFFER_INFO`)
+- `$script:_ApiNamespace` — the randomized namespace string (e.g. `"ns_a3f7c019b2e84d01"`)
 
 ```powershell
 # Mouse position
-$point = New-Object mJiggAPI.POINT
-[mJiggAPI.Mouse]::GetCursorPos([ref]$point)
-[mJiggAPI.Mouse]::SetCursorPos($x, $y)
+$point = New-Object $script:PointType
+$script:MouseAPI::GetCursorPos([ref]$point)
+$script:MouseAPI::SetCursorPos($x, $y)
 
 # Mouse button state (only used for 0x01-0x06 mouse buttons)
-$state = [mJiggAPI.Mouse]::GetAsyncKeyState($keyCode)
+$state = $script:MouseAPI::GetAsyncKeyState($keyCode)
 
 # Simulate keypress
-[mJiggAPI.Keyboard]::keybd_event($VK_RMENU, 0, 0, 0)  # Key down
-[mJiggAPI.Keyboard]::keybd_event($VK_RMENU, 0, $KEYEVENTF_KEYUP, 0)  # Key up
+$script:KeyboardAPI::keybd_event($VK_RMENU, 0, 0, 0)  # Key down
+$script:KeyboardAPI::keybd_event($VK_RMENU, 0, $KEYEVENTF_KEYUP, 0)  # Key up
 
 # System-wide input detection (keyboard, mouse, scroll -- passive, no scanning)
-$lii = New-Object mJiggAPI.LASTINPUTINFO
-[mJiggAPI.Mouse]::GetLastInputInfo([ref]$lii)
+$lii = New-Object $script:LastInputType
+$lii.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($lii)  # pass INSTANCE, not type
+$script:MouseAPI::GetLastInputInfo([ref]$lii)
 
 # Window detection
-$handle = [mJiggAPI.Mouse]::GetForegroundWindow()
-$consoleHandle = [mJiggAPI.Mouse]::GetConsoleWindow()
+$handle = $script:MouseAPI::GetForegroundWindow()
+$consoleHandle = $script:MouseAPI::GetConsoleWindow()
 ```
 
-**Key structs:**
-- `mJiggAPI.POINT` - X/Y coordinates
-- `mJiggAPI.COORD` - Console coordinates (short X, short Y)
-- `mJiggAPI.LASTINPUTINFO` - System idle time tracking (cbSize, dwTime)
-- `mJiggAPI.KEY_EVENT_RECORD` - Console keyboard event (bKeyDown, wVirtualKeyCode, etc.)
-- `mJiggAPI.MOUSE_EVENT_RECORD` - Console mouse event (dwMousePosition, dwEventFlags, etc.)
-- `mJiggAPI.INPUT_RECORD` - Console input union (EventType + MouseEvent/KeyEvent overlay at offset 4)
+> **`Marshal.SizeOf` gotcha on .NET Core:** Never pass `($script:LastInputType -as [type])` to `[Marshal]::SizeOf()`. PowerShell resolves the generic `SizeOf<T>(T instance)` overload instead of `SizeOf(Type type)`, causing a `MethodInvocationException`. Always pass an already-created struct instance: `[Marshal]::SizeOf($lii)`.
+
+**Key structs** (accessed via `$script:*Type` string variables with `New-Object`):
+- `POINT` (`$script:PointType`) - X/Y coordinates
+- `COORD` - Console coordinates (short X, short Y)
+- `LASTINPUTINFO` (`$script:LastInputType`) - System idle time tracking (cbSize, dwTime)
+- `KEY_EVENT_RECORD` - Console keyboard event (bKeyDown, wVirtualKeyCode, etc.)
+- `MOUSE_EVENT_RECORD` - Console mouse event (dwMousePosition, dwEventFlags, etc.)
+- `INPUT_RECORD` (`$script:InputRecordType`) - Console input union (EventType + MouseEvent/KeyEvent overlay at offset 4)
 
 **Key APIs:**
 - `GetCursorPos` / `SetCursorPos` - Mouse position read/write
@@ -486,7 +519,7 @@ $script:QuitDialogTitle = "Yellow"
 | `MenuButtonOnClickBracketFg` / `MenuButtonOnClickBracketBg` | Pressed-state bracket colors for main menu buttons |
 | `DialogButtonShowIcon` / `DialogButtonSeparator` | Dialog button icon prefix visibility and separator char |
 | `DialogButtonShowBrackets` / `DialogButtonBracketFg` / `DialogButtonBracketBg` | Dialog button bracket wrapping and bracket colors (`BracketBg = $null` = transparent) |
-| `MenuButtonShowHotkeyParens` | Hides/shows `()` around hotkey letters on menu bar + header mode button; letter remains highlighted |
+| `MenuButtonShowHotkeyParens` | Hides/shows `()` around hotkey letters on menu bar buttons; letter remains highlighted |
 | `DialogButtonShowHotkeyParens` | Hides/shows `()` around hotkey letters on all dialog box buttons; independent of the menu bar setting |
 | `Header*` | Top header line |
 | `HeaderBg` | Background for the 3-row header group (top blank + header row + top separator); outer `$_bpH-1` cols transparent |
@@ -787,7 +820,7 @@ Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minim
 - Draws a one-line status: `HH:mm:ss | running...` at row 0
 - Draws `(i)` button using `$script:MenuButtonText`/`Bg`/`Hotkey` colors, positioned at `($newW - 4, $newH - 2)`
 - Registers a single entry in `$script:MenuItemsBounds` with `hotkey = "i"`
-- Clears `$script:ModeButtonBounds`, `$script:HeaderEndTimeBounds`, `$script:HeaderCurrentTimeBounds`, `$script:HeaderLogoBounds` since those regions aren't rendered
+- Clears `$script:ModeButtonBounds`, `$script:ModeLabelBounds`, `$script:HeaderEndTimeBounds`, `$script:HeaderCurrentTimeBounds`, `$script:HeaderLogoBounds` since those regions aren't rendered
 
 **Entering incognito**: `$PreviousView = $Output; $Output = "hidden"; $script:MenuItemsBounds.Clear()`
 **Exiting incognito**: `$Output = $PreviousView` (or `"min"` if `$PreviousView` is null); `$PreviousView = $null`
@@ -796,12 +829,13 @@ Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minim
 
 `Show-SettingsDialog` is a slide-up mini-dialog that appears above the `(s)ettings` menu button. It is the consolidated entry point for time, movement, output mode, and debug mode configuration.
 
-**Layout (13 rows, height = 12):**
+**Layout (15 rows, height = 14):**
 ```
 0: top border    1: title    2: divider    3: blank
 4: [⏳|(t)ime]   5: blank    6: [🛠|(m)ovement]    7: blank
-8: [💻|(o)utput: Full/Min]  (inline toggle)   9: blank
-10: [🔍|(d)ebug: On/Off]    (inline checkbox) 11: blank   12: bottom border
+8: [⚙|(o)ptions]  (opens sub-dialog)   9: blank
+10: [🎨|(t)heme]   (placeholder, no-op) 11: blank
+12: [💻|output: Full/Min]  (inline toggle)   13: blank   14: bottom border
 ```
 
 **Key behaviors:**
@@ -822,6 +856,25 @@ Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minim
 - `SettingsDialogOffFocus{Bg,Border,Title,Text,ButtonBg,ButtonText,ButtonHotkey}` — offfocus (sub-dialog open)
 - `SettingsButton{Bg,Text,Hotkey,SeparatorFg,BracketFg,BracketBg}` — normal menu button colors
 - `SettingsButtonOnClick{Bg,Fg,Hotkey,SeparatorFg,BracketFg,BracketBg}` — pressed/open state (defaults match dialog colors)
+
+### 8b. Options Dialog
+
+`Show-OptionsDialog` is a sub-dialog opened from the Settings dialog via the `(o)ptions` button. It provides advanced configuration options.
+
+**Layout:**
+```
+0: top border    1: title ("Options")    2: divider    3: blank
+4: [🔍|(d)ebug: On/Off]       (inline checkbox)    5: blank
+6: [🔔|(n)otifications: On/Off]  (inline checkbox)  7: blank
+8: bottom border
+```
+
+**Key behaviors:**
+- **Opened from Settings**: When the user presses `o` in the Settings dialog, Settings enters offfocus mode and `Show-OptionsDialog` is invoked.
+- **Inline debug toggle** (`d`): Toggles `$script:DebugMode`, redraws the row, stays in the options loop.
+- **Inline notifications toggle** (`n`): Toggles `$script:NotificationsEnabled`, redraws the row, stays in the options loop.
+- **Close**: Escape or clicking outside closes the dialog and returns to Settings.
+- **Returns**: `@{ NeedsRedraw = $bool; ReopenSettings = $bool }`
 
 ### 9. Menu Item Bounds Tracking & Click Detection
 
@@ -1021,11 +1074,17 @@ for ($i = 1; $i -lt $movementPoints.Count; $i++) {
 - The `NotifyIcon` is lazily created on first use and places a small PowerShell icon in the system tray.
 - `Dispose-Notification` removes the tray icon and is called in both viewer cleanup and worker finally block.
 
+**Header pause/resume button:** The header right side now shows a ⏸ (running) or ▶ (paused) symbol instead of the old `(o)utput` button. Clicking the symbol toggles `$script:ManualPause` and triggers the same logic as `Shift+M+P` (notification, log entry, pipe message to worker in viewer mode). The adjacent "Full"/"Min" label is now clickable and toggles output mode (replacing the removed `o` keyboard hotkey). The `o` hotkey is kept in the Settings dialog.
+
+**Click bounds:**
+- `$script:ModeButtonBounds` — tracks the ⏸/▶ pause button (2 display chars)
+- `$script:ModeLabelBounds` — tracks the "Full"/"Min" label click region
+
 **Notification events:**
 | Event | Source | Body text |
 |---|---|---|
-| Pause (Shift+M+P) | Standalone or Worker | "Paused" |
-| Resume (Shift+M+P) | Standalone or Worker | "Resumed" |
+| Pause (Shift+M+P or header click) | Standalone or Worker | "Paused" |
+| Resume (Shift+M+P or header click) | Standalone or Worker | "Resumed" |
 | Quit (Shift+M+Q) | Standalone: viewer / Worker: worker | "mJig stopped" / "Worker quit" |
 | Worker initialized | Worker | "Worker started (PID: ...)" |
 | Viewer disconnected | Worker | "Viewer disconnected" |
@@ -1035,6 +1094,8 @@ for ($i = 1; $i -lt $movementPoints.Count; $i++) {
 - `$script:ManualPause` — `[bool]` manual pause flag (standalone/viewer)
 - `$script:_HotkeyDebounce` — `[bool]` prevents repeated hotkey firing
 - `$script:_NotifyIcon` — `[System.Windows.Forms.NotifyIcon]` lazily created, disposed on exit
+- `$script:PauseEmoji` / `$script:PlayEmoji` — cached ⏸/▶ characters (avoid recomputation)
+- `$script:ModeLabelBounds` — click region for "Full"/"Min" label
 
 ---
 
@@ -1426,12 +1487,13 @@ Windows Terminal has a setting "Automatically adjust lightness of indistinguisha
 | `_diag/settle.txt` | Mouse settle detection logs (created with `-Diag`) |
 | `_diag/input.txt` | PeekConsoleInput + GetLastInputInfo input detection logs (created with `-Diag`) |
 | `_diag/ipc.txt` | Viewer-side IPC diagnostics: dialog open/close, pipe send attempts, main loop re-entry (created with `-Diag`) |
-| `_diag/worker-ipc.txt` | Worker-side IPC diagnostics: viewer connect/disconnect, command recv, state send/skip counts (created with `-Diag`, forwarded to worker via spawn command) |
+| `_diag/worker-startup.txt` | Worker process initialization trace: checkpoints [1]-[8] covering process start, session derivation, mutex, P/Invoke load, pipe creation. Includes `[FATAL]` with exception and stack trace if worker crashes (created with `-Diag`, forwarded to worker via spawn command) |
+| `_diag/worker-ipc.txt` | Worker-side IPC diagnostics: viewer connect/disconnect, command recv, state send/skip counts. Also receives `[FATAL]` entries from the worker crash handler (created with `-Diag`, forwarded to worker via spawn command) |
 | `_diag/welcome.txt` | Welcome screen resize detection diagnostics (**always written**, no `-Diag` flag needed) |
 
 The `_diag/` folder is relative to `$PSScriptRoot` (i.e. `Start-mJig\_diag\`). `welcome.txt` is always written regardless of `-Diag`; all other diag files require the `-Diag` flag. `-Diag` is automatically forwarded to the worker process when spawned. All diag files are git-ignored.
 
-**Post-exit diagnostic dump:** When `-Diag` is enabled, `Show-DiagnosticFiles` runs after the main loop exits (all exit paths: quit confirmation, end time reached). It lists available diagnostic files with line counts, then prompts `Print diagnostics to console? [Y/N]` with a 15-second countdown that auto-skips. If the user presses Y, each file is printed in a distinct color (startup=Cyan, settle=Yellow, input=Green, ipc=Magenta, worker-ipc=DarkCyan), limited to 100 rows per file. Files exceeding 100 rows show a truncation message with the full file path.
+**Post-exit diagnostic dump:** When `-Diag` is enabled, `Show-DiagnosticFiles` runs after the main loop exits (all exit paths: quit confirmation, end time reached, pipe connection failure). It lists available diagnostic files with line counts, then prompts `Print diagnostics to console? [Y/N]` with a 15-second countdown that auto-skips. If the user presses Y, each file is printed in a distinct color (startup=Cyan, settle=Yellow, input=Green, ipc=Magenta, worker-startup=DarkYellow, worker-ipc=DarkCyan), limited to 100 rows per file. Files exceeding 100 rows show a truncation message with the full file path.
 
 > **TEMPORARY TEST SCRIPTS**: When an agent creates a throwaway `.ps1` script to test or experiment with something (e.g. testing rendering logic, validating a calculation), place it in `resources/`. All `resources/*.ps1` files are git-ignored. Do NOT place temp scripts in the project root or elsewhere. Note: `_diag/` is separate — it is for runtime diagnostic output produced by the script itself (via `-Diag` or always-on), not for agent-authored test scripts.
 
@@ -1442,9 +1504,10 @@ The `_diag/` folder is relative to `$PSScriptRoot` (i.e. `Start-mJig\_diag\`). `
 Get-Content ".\_diag\input.txt"
 Get-Content ".\_diag\startup.txt"
 Get-Content ".\_diag\settle.txt"
-Get-Content ".\_diag\ipc.txt"          # viewer IPC: dialog open/close, pipe sends
-Get-Content ".\_diag\worker-ipc.txt"   # worker IPC: connect/disconnect, recv, state send/skip
-Get-Content ".\_diag\welcome.txt"      # always present, no -Diag flag needed
+Get-Content ".\_diag\ipc.txt"              # viewer IPC: dialog open/close, pipe sends
+Get-Content ".\_diag\worker-startup.txt"   # worker init trace: checkpoints [1]-[8], [FATAL] on crash
+Get-Content ".\_diag\worker-ipc.txt"       # worker IPC: connect/disconnect, recv, state send/skip
+Get-Content ".\_diag\welcome.txt"          # always present, no -Diag flag needed
 # Or full paths:
 Get-Content "c:\Projects\mJig\_diag\welcome.txt"
 ```
@@ -1469,7 +1532,7 @@ The provisioner is a ~30-line block at the top of `Start-mJig` (immediately afte
 **Error stream handling (line ~148):**
 Non-terminating errors from the child runspace are accumulated in `$_ps.Streams.Error` during the entire session. In normal mode these are silently suppressed. In `-DebugMode` they are deduplicated by message+line number and shown as a compact summary after exit. This prevents the wall of hundreds of identical errors (e.g., null-reference errors from rendering edge cases) that would otherwise dump on quit.
 
-**Exit flow:** All exit paths (quit confirmation via mouse click or keyboard `q`, and end time reached) use `break process` to exit the `:process` main loop and fall through to the cleanup section: viewer pipe disposal → `Show-DiagnosticFiles` prompt (if `-Diag`) → mutex release. The provisioner's `finally` block then disposes the runspace and restores console state. The `-DebugMode` error summary prints after the cleanup section completes.
+**Exit flow:** All exit paths (quit confirmation via mouse click or keyboard `q`, and end time reached) use `break process` to exit the `:process` main loop and fall through to the cleanup section: viewer pipe disposal → `Show-DiagnosticFiles` prompt (if `-Diag`) → mutex release. If the viewer fails to connect to the worker (pipe timeout), the early-return paths also call `Show-DiagnosticFiles` before exiting when `-Diag` is enabled. The provisioner's `finally` block then disposes the runspace and restores console state. The `-DebugMode` error summary prints after the cleanup section completes.
 
 **Why `$Host` must be passed to `CreateRunspace`:**
 - Without it the runspace gets a default automation host with no console
@@ -1525,10 +1588,14 @@ Functions are in individual `.ps1` files under `Start-mJig/Private/`. The skelet
 | Send-PipeMessage / Read-PipeMessage / Send-PipeMessageNonBlocking | `Private/IPC/` |
 | Start-WorkerLoop | `Private/IPC/Start-WorkerLoop.ps1` |
 | Connect-WorkerPipe | `Private/IPC/Connect-WorkerPipe.ps1` |
+| New-SecurePipeServer | `Private/IPC/New-SecurePipeServer.ps1` |
+| Protect-PipeMessage / Unprotect-PipeMessage | `Private/IPC/Protect-PipeMessage.ps1` |
+| Get-SessionIdentifier | `Private/Helpers/Get-SessionIdentifier.ps1` |
 | Show-TimeChangeDialog | `Private/Dialogs/Show-TimeChangeDialog.ps1` |
 | Show-MovementModifyDialog | `Private/Dialogs/Show-MovementModifyDialog.ps1` |
 | Show-QuitConfirmationDialog | `Private/Dialogs/Show-QuitConfirmationDialog.ps1` |
 | Show-SettingsDialog | `Private/Dialogs/Show-SettingsDialog.ps1` |
+| Show-OptionsDialog | `Private/Dialogs/Show-OptionsDialog.ps1` |
 | Show-InfoDialog | `Private/Dialogs/Show-InfoDialog.ps1` |
 | Mutex check / Console setup | `Start-mJig.psm1` |
 | End Time Calculation | `Start-mJig.psm1` |

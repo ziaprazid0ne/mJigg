@@ -6,6 +6,7 @@
 				[string]$Icon = 'Info',
 				[int]$DurationMs = 2000
 			)
+			if (-not $script:NotificationsEnabled) { return }
 			try {
 				if ($null -eq $script:_NotifyIcon) {
 					$script:_NotifyIcon = New-Object System.Windows.Forms.NotifyIcon

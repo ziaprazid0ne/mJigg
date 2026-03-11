@@ -22,8 +22,8 @@
 			$script:CursorVisible = $true
 			[Console]::Write("$($script:ESC)[?25h")
 			
-		$checkmark = [char]::ConvertFromUtf32(0x2705)  # ✅ green checkmark
-		$redX = [char]::ConvertFromUtf32(0x274C)  # ❌ red X
+		$checkmark = [char]::ConvertFromUtf32(0x2705)  # U+2705 green checkmark
+		$redX = [char]::ConvertFromUtf32(0x274C)  # U+274C red X
 $_bl = Get-DialogButtonLayout
 $dlgIconWidth = $_bl.IconWidth; $dlgBracketWidth = $_bl.BracketWidth; $dlgParenAdj = $_bl.ParenAdj
 # Button line: border+space(2) + btn1(bracketW+iconW+"(a)pply"=7) + gap(2) + btn2(bracketW+iconW+"(c)ancel"=8) = 19 + 2*iconWidth + 2*bracketWidth

@@ -8,9 +8,20 @@
         pwsh -NoProfile -File .\Start-mJig\diag-worker.ps1
 #>
 param(
-    [string]$PipeName = 'mJig_IPC',
-    [string]$MutexName = 'Global\mJig_SingleInstance'
+    [string]$PipeName,
+    [string]$MutexName
 )
+
+# Derive stealth session identifiers (same logic as main module)
+$_diagBytes = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Windows').ShutdownTime
+$_diagShutdown = [DateTime]::FromFileTime([BitConverter]::ToInt64($_diagBytes, 0))
+$_diagSeed = "$env:COMPUTERNAME|$env:USERNAME|$($_diagShutdown.ToString('yyyyMMddHHmmssfffffff'))"
+$_diagHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+    [System.Text.Encoding]::UTF8.GetBytes($_diagSeed)
+)
+$_diagSessionId = -join ($_diagHash[0..7] | ForEach-Object { '{0:x2}' -f $_ })
+if (-not $PipeName) { $PipeName = $_diagSessionId }
+if (-not $MutexName) { $MutexName = "Global\$_diagSessionId" }
 
 $ErrorActionPreference = 'Continue'
 $script:PassCount = 0
@@ -46,7 +57,7 @@ if ($psPath) {
     $ps5ver = & powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' 2>&1
     Write-Info "PS 5.1 version  : $ps5ver"
 } else {
-    Write-Warn "powershell.exe not found — worker spawn would fail"
+    Write-Warn "powershell.exe not found -- worker spawn would fail"
 }
 
 # ---- 2. Module import test ----
@@ -90,7 +101,7 @@ try {
     if ($mutexOwned) {
         Write-Pass "Mutex acquired (no other instance running)"
     } else {
-        Write-Warn "Mutex NOT acquired — another process holds it"
+        Write-Warn "Mutex NOT acquired -- another process holds it"
         # Try to find who holds it
         $allPwsh = Get-Process pwsh, powershell -ErrorAction SilentlyContinue
         if ($allPwsh) {
@@ -104,7 +115,7 @@ try {
     }
 } catch [System.Threading.AbandonedMutexException] {
     $mutexOwned = $true
-    Write-Warn "Mutex was ABANDONED (previous owner crashed) — acquired it"
+    Write-Warn "Mutex was ABANDONED (previous owner crashed) -- acquired it"
 } catch {
     Write-Fail "Mutex error: $($_.Exception.Message)"
 } finally {
@@ -115,7 +126,7 @@ try {
 }
 
 # ---- 4. Named Pipe (standalone) ----
-Write-Step "4. Named Pipe — standalone create + connect"
+Write-Step "4. Named Pipe -- standalone create + connect"
 $pipeServer = $null
 $pipeClient = $null
 try {
@@ -175,7 +186,7 @@ try {
         [System.IO.Pipes.PipeOptions]::Asynchronous
     )
     $existingPipe.Connect(1000)
-    Write-Pass "Connected to existing $PipeName pipe — a worker IS listening"
+    Write-Pass "Connected to existing $PipeName pipe -- a worker IS listening"
     # Try to read welcome
     $r = New-Object System.IO.StreamReader($existingPipe, [System.Text.Encoding]::UTF8)
     $line = $r.ReadLine()
@@ -211,7 +222,7 @@ $spawnExe = if ($PSVersionTable.PSEdition -eq 'Core') {
     'powershell.exe'
 }
 Write-Info "Spawn executable: $spawnExe"
-Write-Info "NOTE: The actual Start-mJig code uses 'powershell.exe' (5.1) — see line 6069"
+Write-Info "NOTE: The actual Start-mJig code uses 'powershell.exe' (5.1) -- see line 6069"
 
 # First, grab the mutex so we can release it for the worker
 $spawnMutex = $null
@@ -224,7 +235,7 @@ try {
 } catch {}
 
 if (-not $spawnMutexOwned) {
-    Write-Warn "Cannot acquire mutex for spawn test — another instance holds it"
+    Write-Warn "Cannot acquire mutex for spawn test -- another instance holds it"
     Write-Info "Kill stale processes first, then re-run this diagnostic"
 } else {
     # Release it so the worker can acquire it
@@ -289,7 +300,7 @@ if (-not $spawnMutexOwned) {
 
         if (-not $pipeFound -and -not $workerProc51.HasExited) {
             Write-Fail "Pipe never became available (15s timeout, $attempt attempts)"
-            Write-Info "Worker process is still running (PID: $($workerProc51.Id)) — check its window for errors"
+            Write-Info "Worker process is still running (PID: $($workerProc51.Id)) -- check its window for errors"
         }
     } catch {
         Write-Fail "Failed to spawn worker: $($_.Exception.Message)"
@@ -359,7 +370,7 @@ if (-not $spawnMutexOwned) {
 
             if (-not $pipeFound -and -not $workerProcPwsh.HasExited) {
                 Write-Fail "Pipe never became available (15s timeout, $attempt attempts)"
-                Write-Info "Worker process is still running (PID: $($workerProcPwsh.Id)) — check its window for errors"
+                Write-Info "Worker process is still running (PID: $($workerProcPwsh.Id)) -- check its window for errors"
             }
         } catch {
             Write-Fail "Failed to spawn worker: $($_.Exception.Message)"

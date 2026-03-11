@@ -29,8 +29,8 @@
 			[Console]::Write("$($script:ESC)[?25l")
 			
 			# Draw dialog box (exactly 35 characters per line)
-	$checkmark = [char]::ConvertFromUtf32(0x2705)  # ✅ green checkmark
-	$redX = [char]::ConvertFromUtf32(0x274C)  # ❌ red X
+	$checkmark = [char]::ConvertFromUtf32(0x2705)  # U+2705 green checkmark
+	$redX = [char]::ConvertFromUtf32(0x274C)  # U+274C red X
 $_bl = Get-DialogButtonLayout
 $dlgIconWidth = $_bl.IconWidth; $dlgBracketWidth = $_bl.BracketWidth; $dlgParenAdj = $_bl.ParenAdj
 # Button line: border+space(2) + btn1(bracketW+iconW+"(y)es"=5) + gap(2) + btn2(bracketW+iconW+"(n)o"=4) = 13 + 2*iconWidth + 2*bracketWidth
@@ -65,16 +65,16 @@ $bottomLinePadding = $dialogWidth - (13 + 2 * $dlgParenAdj + 2 * $dlgIconWidth +
 		# Slide-up-from-behind animation: the box rises from behind the separator/menu bar.
 		# Each step moves the box 2 rows up and draws only the rows above the separator,
 		# so the menu bar acts as a mask and the box appears to emerge from behind it.
-		$clipY        = $menuBarY - 1   # separator row — nothing drawn at or below this Y
+		$clipY        = $menuBarY - 1   # separator row -- nothing drawn at or below this Y
 		$animSteps    = $dialogHeight + 1  # steps to fully reveal the box
-		$frameDelayMs = 15  # 15ms per frame — at the Windows timer floor for consistency
+		$frameDelayMs = 15  # 15ms per frame -- at the Windows timer floor for consistency
 		for ($step = 2; $step -le ($animSteps + 1); $step += 2) {
 			$s     = [math]::Min($step, $animSteps)
 			$animY = $menuBarY - 1 - $s  # top of box this step (rises 2 rows each step)
 			for ($r = 0; $r -lt $s -and $r -le $dialogHeight; $r++) {
 					$absY = $animY + $r
 					if ($absY -ge $clipY) { continue }  # safety: never draw over separator
-					# Side padding (terminal default background) — left only
+					# Side padding (terminal default background) -- left only
 					if ($dialogX -gt 0) {
 						Write-Buffer -X ($dialogX - 1) -Y $absY -Text " "
 					}
@@ -100,7 +100,7 @@ $bottomLinePadding = $dialogWidth - (13 + 2 * $dlgParenAdj + 2 * $dlgIconWidth +
 			if ($frameDelayMs -gt 0) { Start-Sleep -Milliseconds $frameDelayMs }
 		}
 
-		# Draw blank padding (terminal default background) — top and left; no bottom or right
+		# Draw blank padding (terminal default background) -- top and left; no bottom or right
 			if ($dialogY -gt 0) {
 				$padLeft  = [math]::Max(0, $dialogX - 1)
 				$padWidth = $dialogWidth + ($dialogX - $padLeft)

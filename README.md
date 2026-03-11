@@ -91,6 +91,8 @@ Start-mJig -Inline
 | `-TravelDistance` | double | `100` | Base cursor travel distance in pixels |
 | `-TravelVariance` | double | `5` | Random variance for travel distance |
 | `-AutoResumeDelaySeconds` | double | `0` | Cooldown after user input before resuming |
+| `-Title` | string | `""` | Custom window title override (e.g., `"Windows Update"`) |
+| `-Headless` | switch | `$false` | Fire-and-forget: spawn worker then exit (no TUI) |
 | `-Inline` | switch | `$false` | Run without background worker (legacy single-process mode) |
 | `-DebugMode` | switch | `$false` | Enable debug logging |
 | `-Diag` | switch | `$false` | Enable diagnostic file output |
@@ -108,6 +110,8 @@ While running, use these keyboard shortcuts:
 | `o` | Toggle between full/min output view |
 | `i` | Toggle incognito (hidden) mode |
 | `?` or `/` | Open Info/About dialog |
+| `Shift+M+P` | Toggle manual pause/resume (global hotkey, works from any window) |
+| `Shift+M+Q` | Immediate quit (global hotkey, no confirmation dialog) |
 
 You can also click menu buttons with your mouse. Buttons respond visually on press (onclick highlight color) and fire the action on release. Dragging the mouse off a button before releasing cancels the action. When a button opens a dialog, it stays highlighted for the duration of that dialog to indicate which menu is active. Clicking the mJig logo in the header opens the Info dialog.
 
@@ -116,8 +120,14 @@ You can also click menu buttons with your mouse. Buttons respond visually on pre
 **Settings** (`s` key) — slide-up dialog above the menu bar:
 - `end_(t)ime` — open end-time picker
 - `mouse_(m)ovement` — open movement settings
+- `(o)ptions` — open Options sub-dialog (output, debug, notifications, window title)
+- `(t)heme` — placeholder (coming soon)
+
+**Options** (via Settings → Options):
 - `(o)utput: Full/Min` — inline toggle between full and minimal view
 - `(d)ebug: On/Off` — inline toggle for debug mode
+- `(n)otifications: On/Off` — enable/disable Windows toast notifications
+- `(w)indow Title` — cycle through preset window title disguises
 
 **Modify Movement Settings** (`m` key or via Settings):
 - Interval timing and variance
@@ -196,11 +206,54 @@ Enable with `-Diag` flag. Creates log files in `_diag/` relative to the module d
 - `input.txt` - Input detection logs (PeekConsoleInput + GetLastInputInfo)
 - `welcome.txt` - Welcome-screen resize diagnostics (**always written** even without `-Diag`)
 - `ipc.txt` - Viewer-side IPC diagnostics (dialog open/close, pipe send/receive, epoch tracking)
+- `worker-startup.txt` - Worker process initialization trace (checkpoints [1]-[8], `[FATAL]` on crash)
 - `worker-ipc.txt` - Worker-side IPC diagnostics (viewer connect/disconnect, command receipt, state send/skip events)
 
 The `-Diag` flag is automatically forwarded to the background worker process when it is spawned.
 
-After quitting, a 15-second countdown prompt offers to print all diagnostic files directly to the console. Each file is displayed in a distinct color and limited to 100 rows; files exceeding the limit show a truncation notice with the full file path.
+After quitting (or if the viewer fails to connect to the worker), a 15-second countdown prompt offers to print all diagnostic files directly to the console. Each file is displayed in a distinct color and limited to 100 rows; files exceeding the limit show a truncation notice with the full file path.
+
+## Scheduling Tasks
+
+### Headless Mode
+
+Use `-Headless` for fire-and-forget execution. In headless mode, mJig spawns the background worker and exits immediately (no TUI). If a worker is already running, it exits silently.
+
+Headless mode is also auto-detected when the console window is hidden (e.g., from a scheduled task with `-WindowStyle Hidden`).
+
+### Time-Based Schedule (Mon-Fri at 8:00 AM)
+
+**PowerShell one-liner:**
+
+```powershell
+$action = New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument '-NoProfile -WindowStyle Hidden -EncodedCommand <base64>'
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At 8am
+Register-ScheduledTask -TaskName 'SystemHealthCheck' -Action $action -Trigger $trigger -RunLevel Limited
+```
+
+### Login Trigger
+
+```powershell
+$action = New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument '-NoProfile -WindowStyle Hidden -EncodedCommand <base64>'
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+Register-ScheduledTask -TaskName 'SystemHealthCheck' -Action $action -Trigger $trigger -RunLevel Limited
+```
+
+### Generating the EncodedCommand
+
+```powershell
+$cmd = "Import-Module 'C:\Path\To\Start-mJig\Start-mJig.psm1'; Start-mJig -Headless -EndTime 1730"
+$encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($cmd))
+# Use $encoded as the -EncodedCommand argument above
+```
+
+### Stealth Best Practices
+
+- Use `-Headless` for fire-and-forget (no visible window)
+- Use `-Title "Windows Update"` to disguise the window title
+- Use `-EncodedCommand` in the task action (arguments appear as opaque Base64)
+- Give the scheduled task a generic name (e.g., "SystemHealthCheck")
+- Pipe and mutex names are automatically randomized per boot session
 
 ## License
 

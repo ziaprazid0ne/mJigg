@@ -1,4 +1,4 @@
-﻿		function Send-PipeMessageNonBlocking {
+		function Send-PipeMessageNonBlocking {
 			param(
 				[System.IO.StreamWriter]$Writer,
 				[hashtable]$Message,
@@ -16,7 +16,8 @@
 				$PendingFlush.Value = $null
 			}
 			$json = $Message | ConvertTo-Json -Compress -Depth 3
-			$Writer.WriteLine($json)
+			$encrypted = Protect-PipeMessage -PlainText $json -Key $script:PipeEncryptionKey
+			$Writer.WriteLine($encrypted)
 			$PendingFlush.Value = $Writer.FlushAsync()
 			return $true
 		}

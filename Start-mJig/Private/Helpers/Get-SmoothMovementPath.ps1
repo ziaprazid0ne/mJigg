@@ -1,4 +1,4 @@
-﻿		function Get-SmoothMovementPath {
+		function Get-SmoothMovementPath {
 			param(
 				[int]$startX,
 				[int]$startY,
@@ -54,7 +54,7 @@
 			$perpendicularY =  $deltaX / $distance
 		}
 
-		# Start arc — window [0, 0.3], peaks at t=0.15: curve develops quickly after departure.
+		# Start arc -- window [0, 0.3], peaks at t=0.15: curve develops quickly after departure.
 		# Amplitude 1-10% of distance (was 5-20%), and only present ~50% of the time so it
 		# ranges naturally from nonexistent to subtle.
 		$startArcAmount = 0.0
@@ -64,7 +64,7 @@
 			$startArcSign   = if ((Get-Random -Maximum 2) -eq 0) { 1 } else { -1 }
 		}
 
-		# Body curve — subtle background curve over the remaining 70% of travel [0.3, 1].
+		# Body curve -- subtle background curve over the remaining 70% of travel [0.3, 1].
 		# Randomly U-shaped (half-sine: bows one way and returns) or S-shaped (full-sine:
 		# crosses sides at the midpoint). Amplitude 3-10% of distance keeps it natural.
 		$bodyCurveAmount = 0.0
@@ -84,7 +84,7 @@
 			$t = $i / $numPoints
 			
 			# Ease-in-out-cubic function: accelerates then decelerates
-			# f(t) = t < 0.5 ? 4t³ : 1 - pow(-2t + 2, 3)/2
+			# f(t) = t < 0.5 ? 4t3 : 1 - pow(-2t + 2, 3)/2
 			if ($t -lt 0.5) {
 				$easedT = 4 * $t * $t * $t
 			} else {
@@ -95,17 +95,17 @@
 			$baseX = $startX + $deltaX * $easedT
 			$baseY = $startY + $deltaY * $easedT
 			
-			# Start arc: window [0, 0.3] → peaks at t=0.15
+			# Start arc: window [0, 0.3] -> peaks at t=0.15
 			if ($startArcAmount -gt 0 -and $t -le 0.3) {
 				$lateralOffset = $startArcSign * $startArcAmount * [Math]::Sin([Math]::PI * $t / 0.3)
 				$baseX += $perpendicularX * $lateralOffset
 				$baseY += $perpendicularY * $lateralOffset
 			}
 
-			# Body curve: window [0.3, 1] — both shapes use squared-sine envelopes so the
+			# Body curve: window [0.3, 1] -- both shapes use squared-sine envelopes so the
 			# derivative is zero at both window boundaries (smooth departure AND smooth landing).
-			#   U-shape: sin(π·bodyT)²                     — always same side, peaks at t=0.65
-			#   S-shape: sin(2π·bodyT) · sin(π·bodyT)      — crosses sides at t=0.65
+			#   U-shape: sin(pi*bodyT)^2                     -- always same side, peaks at t=0.65
+			#   S-shape: sin(2pi*bodyT) * sin(pi*bodyT)      -- crosses sides at t=0.65
 			# Neither shape produces a hook; both glide naturally into the endpoint.
 			if ($bodyCurveAmount -gt 0 -and $t -ge 0.3) {
 				$bodyT   = ($t - 0.3) / 0.7  # normalise to [0,1] over the body segment

@@ -1,9 +1,9 @@
 		function Get-DialogMouseClick {
-			param([mJiggAPI.INPUT_RECORD[]]$PeekBuffer)
+			param([array]$PeekBuffer)
 			try {
 				$peekEvts = [uint32]0
-				$hIn = [mJiggAPI.Mouse]::GetStdHandle(-10)
-				if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $PeekBuffer, $PeekBuffer.Length, [ref]$peekEvts) -and $peekEvts -gt 0) {
+				$hIn = $script:MouseAPI::GetStdHandle(-10)
+				if ($script:MouseAPI::PeekConsoleInput($hIn, $PeekBuffer, $PeekBuffer.Length, [ref]$peekEvts) -and $peekEvts -gt 0) {
 					$lastClickIdx = -1
 					$clickX = -1; $clickY = -1
 					for ($e = 0; $e -lt $peekEvts; $e++) {
@@ -16,7 +16,7 @@
 					if ($lastClickIdx -ge 0) {
 						$consumeCount = [uint32]($lastClickIdx + 1)
 						$flushed = [uint32]0
-						[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $PeekBuffer, $consumeCount, [ref]$flushed) | Out-Null
+						$script:MouseAPI::ReadConsoleInput($hIn, $PeekBuffer, $consumeCount, [ref]$flushed) | Out-Null
 						return @{ X = $clickX; Y = $clickY }
 					}
 				}

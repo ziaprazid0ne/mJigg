@@ -49,8 +49,8 @@
 		# Wait for key-up; check for resize every 50ms while polling
 		drawCompleteScreen "Press any key to continue..."
 		$lastSize   = getSize
-		$hIn        = [mJiggAPI.Mouse]::GetStdHandle(-10)
-		$peekBuf    = New-Object 'mJiggAPI.INPUT_RECORD[]' 32
+		$hIn        = $script:MouseAPI::GetStdHandle(-10)
+		$peekBuf    = New-Object "$($script:_ApiNamespace).INPUT_RECORD[]" 32
 		$peekEvts   = [uint32]0
 		# Drain events buffered before the prompt appeared (e.g. Enter key-up from launch)
 		try { $Host.UI.RawUI.FlushInputBuffer() } catch {}
@@ -69,7 +69,7 @@
 				}
 			}
 			try {
-				if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 32, [ref]$peekEvts) -and $peekEvts -gt 0) {
+				if ($script:MouseAPI::PeekConsoleInput($hIn, $peekBuf, 32, [ref]$peekEvts) -and $peekEvts -gt 0) {
 					for ($e = 0; $e -lt [int]$peekEvts; $e++) {
 						if ($peekBuf[$e].EventType -eq 0x0001 -and $peekBuf[$e].KeyEvent.bKeyDown -eq 0 -and
 						    $peekBuf[$e].KeyEvent.wVirtualKeyCode -notin $modifierVKs) {
@@ -77,9 +77,9 @@
 						}
 					}
 					if ($detected) {
-						$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $peekEvts
+						$flushBuf = New-Object "$($script:_ApiNamespace).INPUT_RECORD[]" $peekEvts
 						$flushed  = [uint32]0
-						[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $peekEvts, [ref]$flushed) | Out-Null
+						$script:MouseAPI::ReadConsoleInput($hIn, $flushBuf, $peekEvts, [ref]$flushed) | Out-Null
 					}
 				}
 			} catch {
@@ -92,8 +92,8 @@
 	} else {
 		# Countdown: 7 seconds, 1s per tick, key-up skips immediately
 		$lastSize = getSize
-		$hIn      = [mJiggAPI.Mouse]::GetStdHandle(-10)
-		$peekBuf  = New-Object 'mJiggAPI.INPUT_RECORD[]' 32
+		$hIn      = $script:MouseAPI::GetStdHandle(-10)
+		$peekBuf  = New-Object "$($script:_ApiNamespace).INPUT_RECORD[]" 32
 		$peekEvts = [uint32]0
 		# Drain events buffered before the prompt appeared (e.g. Enter key-up from launch)
 		try { $Host.UI.RawUI.FlushInputBuffer() } catch {}
@@ -117,7 +117,7 @@
 					}
 				}
 				try {
-					if ([mJiggAPI.Mouse]::PeekConsoleInput($hIn, $peekBuf, 32, [ref]$peekEvts) -and $peekEvts -gt 0) {
+					if ($script:MouseAPI::PeekConsoleInput($hIn, $peekBuf, 32, [ref]$peekEvts) -and $peekEvts -gt 0) {
 						for ($e = 0; $e -lt [int]$peekEvts; $e++) {
 							if ($peekBuf[$e].EventType -eq 0x0001 -and $peekBuf[$e].KeyEvent.bKeyDown -eq 0 -and
 							    $peekBuf[$e].KeyEvent.wVirtualKeyCode -notin $modifierVKs) {
@@ -125,9 +125,9 @@
 							}
 						}
 						if ($detected) {
-							$flushBuf = New-Object 'mJiggAPI.INPUT_RECORD[]' $peekEvts
+							$flushBuf = New-Object "$($script:_ApiNamespace).INPUT_RECORD[]" $peekEvts
 							$flushed  = [uint32]0
-							[mJiggAPI.Mouse]::ReadConsoleInput($hIn, $flushBuf, $peekEvts, [ref]$flushed) | Out-Null
+							$script:MouseAPI::ReadConsoleInput($hIn, $flushBuf, $peekEvts, [ref]$flushed) | Out-Null
 						}
 					}
 				} catch {

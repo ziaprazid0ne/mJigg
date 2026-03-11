@@ -8,7 +8,36 @@ All notable changes to `start-mjig.ps1` are documented in this file.
 
 Changes since last commit (bd3766d - "Optimization, global hotkeys, toast notifications, pause/resume, helper extraction"):
 
-*(No changes yet)*
+### Added
+- **`-Title` parameter** — custom window title override (e.g., `Start-mJig -Title "Windows Update"`).
+- **`-Headless` switch** — fire-and-forget mode: spawns the background worker then exits immediately (no TUI). Auto-detected when the console window is hidden (e.g., from a scheduled task).
+- **Options sub-dialog** (`Show-OptionsDialog.ps1`) — accessed via Settings → `(o)ptions`. Contains output mode toggle, debug toggle, notification enable/disable, and window title preset cycler.
+- **Notification toggle** — `$script:NotificationsEnabled` guard; toggled via Options dialog.
+- **Window title presets** — cycle through disguise titles ("Windows Update", "System Health Check", etc.) via Options dialog.
+- **Stealth pipe/mutex names** (`Get-SessionIdentifier.ps1`) — deterministic SHA256-derived hex names from system boot properties. No "mJig" string in pipe or mutex names.
+- **Randomized P/Invoke namespace** — `mJiggAPI` replaced with a random `ns_*` namespace on each session. All call sites use `$script:MouseAPI` / `$script:KeyboardAPI` type variables.
+- **Pipe ACL** (`New-SecurePipeServer.ps1`) — restricts named pipe to the current user via `PipeSecurity`.
+- **Pipe authentication handshake** — viewer sends encrypted auth token after connecting; worker validates before accepting commands.
+- **Pipe message encryption** (`Protect-PipeMessage.ps1`) — AES-256-CBC encryption for all IPC traffic with per-message random IV. Key derived from session identifier.
+- **Encoded worker spawn** — worker process arguments use `-EncodedCommand` (Base64) instead of plaintext `-Command`.
+- **PowerShell logging suppression** — disables Script Block Logging, Module Logging, and Transcription in the current session via reflection (no admin, no registry changes).
+- **`IsWindowVisible` P/Invoke** — added to Mouse class for headless auto-detection.
+
+### Changed
+- **Settings dialog** — row 8 is now `(o)ptions` (opens sub-dialog); row 10 is `(t)heme` (placeholder, no-op). Output and debug toggles moved into Options sub-dialog.
+- **Header pause/resume button** — replaced the `(o)utput` button with a clickable pause (⏸) / resume (▶) symbol that toggles `$script:ManualPause` (same behavior as `Shift+M+P` hotkey: notification, log entry, pipe message to worker in viewer mode). Symbol turns green when paused.
+- **Clickable "Full"/"Min" label** — the output-mode label next to the pause button is now clickable and toggles between `full` and `min` output (replaces the `o` keyboard shortcut in the main loop).
+- **Removed `o` keyboard hotkey** from the main loop — output mode can now only be toggled by clicking the header label or via the Settings dialog's `(o)utput` toggle.
+- Added `$script:PauseEmoji` and `$script:PlayEmoji` cached emoji constants.
+- Added `$script:ModeLabelBounds` for the clickable mode label hit region; `$script:ModeButtonBounds` now tracks the pause button instead of the old output button.
+- `ModeLabelBounds` is nulled alongside `ModeButtonBounds` in hidden/incognito mode.
+
+### Fixed
+- **`Marshal.SizeOf` crash in worker process** — `[Marshal]::SizeOf(($script:LastInputType -as [type]))` threw `MethodInvocationException` on .NET Core because PowerShell resolved the generic `SizeOf<T>(T)` overload instead of `SizeOf(Type)`. Passing the already-created struct instance (`$lii`) avoids the overload ambiguity. Fixed in both `Start-WorkerLoop.ps1` (worker) and `Start-mJig.psm1` (viewer main loop).
+- **`New-SecurePipeServer` crash when `PipeSecurity` unavailable** — the `NamedPipeServerStream` constructor overload accepting `PipeSecurity` is not available on all .NET runtimes. Added try/catch fallback: attempts ACL-restricted pipe first, falls back to standard pipe without ACL if it throws.
+- **Viewer "Invalid response from worker" on connect** — `Connect-WorkerPipe` used `Read-PipeMessage` (async `ReadLineAsync`) to read the welcome message. If the task wasn't immediately complete, it returned `$null`, then a fallback synchronous `ReadLine()` raced with the still-pending async task on the same stream. Replaced with a clean synchronous `ReadLine()` → decrypt → parse for the welcome handshake.
+- **Worker fatal errors silently swallowed** — the `try/catch` around `Start-WorkerLoop` only logged to `$script:_wsDiagFile` which could be null. Now also writes `[FATAL]` entries to `worker-ipc.txt` (always available when `-Diag` is set).
+- **Pipe connection failure exits without diagnostic prompt** — both early-return paths after `Connect-WorkerPipe` returns `$null` (viewer reconnect and fresh spawn) now call `Show-DiagnosticFiles` before exiting when `-Diag` is enabled.
 
 ---
 

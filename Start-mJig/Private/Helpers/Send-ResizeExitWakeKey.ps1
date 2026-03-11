@@ -1,8 +1,8 @@
-﻿	function Send-ResizeExitWakeKey {
+	function Send-ResizeExitWakeKey {
 		try {
 			$vkCode = [byte]0xA5  # VK_RMENU (Right Alt)
-			[mJiggAPI.Keyboard]::keybd_event($vkCode, [byte]0, [uint32]0, [int]0)        # key down
+			$script:KeyboardAPI::keybd_event($vkCode, [byte]0, [uint32]0, [int]0)        # key down
 			Start-Sleep -Milliseconds 10
-			[mJiggAPI.Keyboard]::keybd_event($vkCode, [byte]0, [uint32]0x0002, [int]0)   # key up
+			$script:KeyboardAPI::keybd_event($vkCode, [byte]0, [uint32]0x0002, [int]0)   # key up
 		} catch { }
 	}

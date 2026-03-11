@@ -7,13 +7,13 @@
     # Authorship
     Author            = 'ziaprazid0ne'
     CompanyName       = ''
-    Copyright         = 'CC BY-ND 4.0 — https://creativecommons.org/licenses/by-nd/4.0/'
+    Copyright         = 'CC BY-ND 4.0 -- https://creativecommons.org/licenses/by-nd/4.0/'
     Description       = 'Feature-rich PowerShell mouse jiggler with a console-based TUI. Keeps your system active with natural-looking mouse movements and intelligent user input detection.'
 
     # Compatibility
     PowerShellVersion = '5.1'
 
-    # Exports — only the public entry point is exposed
+    # Exports -- only the public entry point is exposed
     FunctionsToExport = @('Start-mJig')
     CmdletsToExport   = @()
     VariablesToExport = @()
