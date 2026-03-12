@@ -158,6 +158,8 @@
 	$script:SettingsDialogButtonHotkey = "Yellow"
 	# Off-focus: used while a sub-dialog launched from settings is open
 	# YAML: dialogs.settings.offFocus.*
+	$script:SettingsDialogShadow               = "DarkBlue"
+
 	$script:SettingsDialogOffFocusBg           = "DarkGray"
 	$script:SettingsDialogOffFocusBorder       = "Gray"
 	$script:SettingsDialogOffFocusTitle        = "DarkYellow"

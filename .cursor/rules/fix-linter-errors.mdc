@@ -1,0 +1,19 @@
+---
+description: ALWAYS fix linter errors. Never dismiss, ignore, or rationalize them.
+alwaysApply: true
+---
+
+# Linter Errors Are NEVER Acceptable
+
+Every linter error and warning MUST be fixed. No exceptions.
+
+## Rules
+
+1. After ANY edit, run ReadLints on every file you touched.
+2. If there are errors or warnings, FIX THEM before doing anything else.
+3. NEVER tell the user linter errors are "false positives", "pre-existing", "expected", "safe to ignore", or "known issues".
+4. NEVER dismiss PSScriptAnalyzer warnings about unused variables. If the linter says a variable is unused, restructure the code so the linter is satisfied.
+5. NEVER dismiss PowerShell parse errors about missing braces or keywords. If the linter reports a structural error, the code structure must be changed until the error is gone.
+6. If you cannot figure out how to fix a linter error, tell the user honestly. Do NOT hand-wave it away.
+7. Do NOT proceed to the next task, respond to the user, or consider your work done while linter errors exist in files you edited.
+8. Treat every linter error with the same urgency as a runtime crash.

@@ -1,11 +1,11 @@
-﻿		function Flush-Buffer {
+		function Flush-Buffer {
 			param([switch]$ClearFirst)
 			if ($script:RenderQueue.Count -eq 0) { return }
 			$c = $script:CSI
 			$sb = $script:FrameBuilder
 			[void]$sb.Clear()
 			[void]$sb.Append($c).Append('?25l')
-			if ($ClearFirst) { [void]$sb.Append($c).Append('2J') }
+			if ($ClearFirst) { [void]$sb.Append($c).Append('2J').Append($c).Append('3J') }
 			$lastFG = -1
 			$lastBG = -1
 		foreach ($seg in $script:RenderQueue) {

@@ -37,7 +37,7 @@
 			$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 			if ($script:_wsDiagFile) { "$(Get-Date -Format 'HH:mm:ss.fff') [8] Listening for viewer connections" | Out-File $script:_wsDiagFile -Append }
 			if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - WORKER STARTED pipe=$($script:PipeName) bufSize=65536" | Out-File $_wDiagFile -Append }
-			Show-Notification -Title 'mJig' -Body "Worker started (PID: $PID)"
+			Show-Notification -Title $script:WindowTitle -Body "Worker started (PID: $PID)" -Action started
 
 			$pipeReader = $null
 			$pipeWriter = $null
@@ -163,7 +163,7 @@
 						# Check viewer disconnection
 					if ($viewerConnected -and -not $pipeServer.IsConnected) {
 						if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DISCONNECTED (pipe not connected)" | Out-File $_wDiagFile -Append }
-						Show-Notification -Title 'mJig' -Body 'Viewer disconnected'
+						Show-Notification -Title $script:WindowTitle -Body 'Viewer disconnected' -Action disconnected
 						$_workerReadTask = $null
 						$_pendingWriteFlush = $null
 						$viewerConnected = $false
@@ -217,11 +217,15 @@
 												}
 											}
 										}
-										'output' {
-											if ($null -ne $msg.epoch) { $_workerSettingsEpoch = [int]$msg.epoch }
-											if ($null -ne $msg.mode) { $script:Output = $msg.mode }
-										}
-										'togglePause' {
+									'output' {
+										if ($null -ne $msg.epoch) { $_workerSettingsEpoch = [int]$msg.epoch }
+										if ($null -ne $msg.mode) { $script:Output = $msg.mode }
+									}
+									'title' {
+										if ($null -ne $msg.windowTitle) { $script:WindowTitle = $msg.windowTitle }
+										if ($null -ne $msg.titleEmoji)  { $script:TitleEmoji  = [int]$msg.titleEmoji }
+									}
+									'togglePause' {
 											if ($null -ne $msg.paused) {
 												$manualPause = [bool]$msg.paused
 											} else {
@@ -232,7 +236,7 @@
 											if ($viewerConnected) {
 												try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
 											}
-											Show-Notification -Title 'mJig' -Body 'Worker quit'
+											Show-Notification -Title $script:WindowTitle -Body 'Worker quit' -Action quit
 											return
 										}
 									}
@@ -265,7 +269,7 @@
 						if ($_wGlobalAction -eq 'togglePause') {
 							try {
 								$manualPause = -not $manualPause
-								Show-Notification -Title 'mJig' -Body $(if ($manualPause) { 'Paused' } else { 'Resumed' })
+								Show-Notification -Title $script:WindowTitle -Body $(if ($manualPause) { 'Paused' } else { 'Resumed' }) -Action $(if ($manualPause) { 'paused' } else { 'resumed' })
 								$_pauseLogMsg = @{
 									type = 'log'
 									components = @(
@@ -281,7 +285,7 @@
 							} catch {}
 						}
 						if ($_wGlobalAction -eq 'quit') {
-							try { Show-Notification -Title 'mJig' -Body 'Worker quit' } catch {}
+							try { Show-Notification -Title $script:WindowTitle -Body 'Worker quit' -Action quit } catch {}
 							if ($viewerConnected) {
 								try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
 							}
@@ -530,7 +534,7 @@
 								if ($viewerConnected) {
 									try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'endtime' } } catch {}
 								}
-								Show-Notification -Title 'mJig' -Body 'End time reached -- worker quit'
+								Show-Notification -Title $script:WindowTitle -Body 'End time reached -- worker quit' -Action endtime
 								return
 							}
 						} catch {}

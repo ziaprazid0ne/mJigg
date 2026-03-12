@@ -6,6 +6,7 @@ function Show-DiagnosticFiles {
 		@{ Name = 'settle.txt';         Color = 'Yellow' }
 		@{ Name = 'input.txt';          Color = 'Green' }
 		@{ Name = 'ipc.txt';            Color = 'Magenta' }
+		@{ Name = 'notify.txt';         Color = 'Blue' }
 		@{ Name = 'worker-startup.txt'; Color = 'DarkYellow' }
 		@{ Name = 'worker-ipc.txt';     Color = 'DarkCyan' }
 	)

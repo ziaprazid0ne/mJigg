@@ -50,9 +50,9 @@
 		# Refresh current time. The hourly ClearCachedData() call earlier in the loop
 		# ensures timezone changes are picked up without invalidating the cache every frame.
 		$currentTime = $date.ToString("HHmm")
-			# Calculate widths for centering times between mJig title and view tag
-			# Left part: "mJig(`u{1F400})" = 5 + 2 + 1 = 8 (content only; $_bpH+2 left margin handled separately)
-			$headerLeftWidth = 5 + 2 + 1  # "mJig(" + emoji + ")"
+			# Calculate widths for centering times between title and view tag
+			# Left part: "Title(emoji)" = title.Length + 1 + 2 + 1 (content only; $_bpH+2 left margin handled separately)
+			$headerLeftWidth = $script:WindowTitle.Length + 1 + 2 + 1  # title + "(" + emoji + ")"
 				# Add DEBUGMODE text width if in debug mode
 				if ($DebugMode) {
 					$headerLeftWidth += 13  # " - DEBUGMODE" = 13 chars
@@ -83,11 +83,13 @@
 				$spacingBeforeTimes = [math]::Max(1, [math]::Floor($remainingSpace / 2))
 				$spacingAfterTimes = [math]::Max(1, $remainingSpace - $spacingBeforeTimes)
 				
-		$mouseEmoji = $script:MouseEmoji
+		$titleEmoji = [char]::ConvertFromUtf32($script:TitleEmoji)
 		$hourglassEmoji = $script:HourglassEmoji
-	Write-Buffer -X ($_bpH + 2) -Y $Outputline -Text "mJig(" -FG $script:HeaderAppName -BG $_hrBg
-	$curX = $_bpH + 2 + 5  # content starts at bpH+2; "mJig(" = 5 chars
-			Write-Buffer -Text $mouseEmoji -FG $script:HeaderIcon -BG $_hrBg
+		$titleText = "$($script:WindowTitle)("
+		$titleTextLen = $script:WindowTitle.Length + 1
+	Write-Buffer -X ($_bpH + 2) -Y $Outputline -Text $titleText -FG $script:HeaderAppName -BG $_hrBg
+	$curX = $_bpH + 2 + $titleTextLen
+			Write-Buffer -Text $titleEmoji -FG $script:HeaderIcon -BG $_hrBg -Wide
 		Write-Buffer -X ($curX + 2) -Y $Outputline -Text ")" -FG $script:HeaderAppName -BG $_hrBg
 		$curX = $curX + 2 + 1  # emoji (2) + ")" (1)
 		$script:HeaderLogoBounds = @{ y = $Outputline; startX = ($_bpH + 2); endX = ($curX - 1) }

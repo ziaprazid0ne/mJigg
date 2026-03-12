@@ -9,7 +9,6 @@
 		$lastDetected = Get-Date
 
 		if ($Output -eq "hidden") {
-			[Console]::Clear()
 			Restore-ConsoleInputMode
 		} else {
 			Draw-ResizeLogo -ClearFirst -WindowSize $pendingSize
@@ -31,11 +30,8 @@
 			}
 
 			# Stability + LMB gate: only exit once size is stable AND mouse is released
-			$elapsed = ((Get-Date) - $lastDetected).TotalMilliseconds
-			if ($elapsed -ge $ResizeThrottleMs) {
-				$lmbHeld = ($script:MouseAPI::GetAsyncKeyState(0x01) -band 0x8000) -ne 0
-				if (-not $lmbHeld) {
-					[Console]::Clear()
+			if (((Get-Date) - $lastDetected).TotalMilliseconds -ge $ResizeThrottleMs) {
+				if (($script:MouseAPI::GetAsyncKeyState(0x01) -band 0x8000) -eq 0) {
 					Restore-ConsoleInputMode
 					Send-ResizeExitWakeKey
 					return $pendingSize
