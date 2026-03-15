@@ -11,16 +11,16 @@
 		if ($Wide -and $null -ne $BG) { $Text = $Text + " " }
 		$fgCode = if ($null -ne $FG) { $script:AnsiFG[[ConsoleColor]$FG] } else { 39 }
 		$bgCode = if ($null -ne $BG) { $script:AnsiBG[[ConsoleColor]$BG] } else { 49 }
-		$nw = $NoWrap.IsPresent
-		$rq = $script:RenderQueue
-		if (-not $nw -and $X -eq -1 -and $Y -eq -1 -and $rq.Count -gt 0) {
-			$prev = $rq[$rq.Count - 1]
-			if ($prev[3] -eq $fgCode -and $prev[4] -eq $bgCode -and -not $prev[5]) {
-				$prev[2] = $prev[2] + $Text
+		$isNoWrap    = $NoWrap.IsPresent
+		$renderQueue = $script:RenderQueue
+		if (-not $isNoWrap -and $X -eq -1 -and $Y -eq -1 -and $renderQueue.Count -gt 0) {
+			$prevSegment = $renderQueue[$renderQueue.Count - 1]
+			if ($prevSegment[3] -eq $fgCode -and $prevSegment[4] -eq $bgCode -and -not $prevSegment[5]) {
+				$prevSegment[2] = $prevSegment[2] + $Text
 				return
 			}
 		}
-		$seg = [object[]]::new(6)
-	$seg[0] = $X; $seg[1] = $Y; $seg[2] = $Text; $seg[3] = $fgCode; $seg[4] = $bgCode; $seg[5] = $nw
-	$rq.Add($seg)
+		$segment = [object[]]::new(6)
+	$segment[0] = $X; $segment[1] = $Y; $segment[2] = $Text; $segment[3] = $fgCode; $segment[4] = $bgCode; $segment[5] = $isNoWrap
+	$renderQueue.Add($segment)
 		}

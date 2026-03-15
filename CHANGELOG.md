@@ -6,7 +6,29 @@ All notable changes to `start-mjig.ps1` are documented in this file.
 
 ## [Latest] - Unreleased
 
-Changes since last commit (bd3766d - "Optimization, global hotkeys, toast notifications, pause/resume, helper extraction"):
+Changes since last commit (8b03d07 - "Instant terminal close, Ctrl+C cleanup, interactive tray icon, disconnect fixes"):
+
+### Changed
+- **Terminology & naming standards overhaul** — Comprehensive rename of functions, variables, parameters, log messages, notification bodies, and code comments to align with PowerShell approved verbs, PascalCase, and application-facing terminology.
+  - Functions renamed: `Draw-MainFrame` → `Write-MainFrame`, `Draw-DialogShadow` → `Write-DialogShadow`, `Draw-ResizeLogo` → `Write-ResizeLogo`, `Write-ButtonImmediate` → `Write-MenuButton`, `Get-ValueWithVariance` → `Get-VariedValue`, `Send-ResizeExitWakeKey` → `Send-ConsoleWakeKey`, `Invoke-DialogExitCleanup` → `Invoke-DialogCleanup`, `Invoke-PostDialogCleanup` → `Reset-PostDialogState`
+  - All parameters across dialog, rendering, and helper files normalized to PascalCase
+  - Cryptic variable abbreviations replaced (`$math` → `$ticksToWait`, `$ras` → `$varianceSign`, `$sb` → `$frameBuilder`, `$nw` → `$isNoWrap`, etc.)
+  - Notification bodies now use `$script:WindowTitle` — architecture terms ("Worker", "Viewer") no longer appear in user-facing output
+  - Log messages normalized: `" - User input skip"` → `" - Skipped: user input detected"`, `" - Auto-Resume Delay"` → `" - Cooldown active"`, `(hotkey)` / `(click)` / `(tray)` attribution changed to `via hotkey` / `via click` / `via tray`, `" - Coordinates updated"` → `" - Mouse position set"`, `" x$x/y$y"` → `" ($x, $y)"`
+  - UI labels updated: `" - DEBUGMODE"` header indicator → `" - Debug Mode"`; `"(none)"` in stats box → `—`; `"none"` in header end time → `—`; window title debug suffix → `" - Debug Mode"`; `"off"` for auto-resume disabled → `"Disabled"`; `" Update available!"` → `" Update available"`; `"Could not check for updates"` → `"Version check failed"`; `"end_(t)ime"` / `"(m)ouse_movement"` Settings buttons → `"End (T)ime"` / `"(M)ouse Movement"`; `(today)` / `(tomorrow)` end time labels → `(same day)` / `(next day)`; variance labels `IntervalVar:` / `SpeedVar:` / `DistVar:` → `Interval ±:` / `Speed ±:` / `Distance ±:`; info dialog variance display uses `±` symbol
+  - Menu bar buttons title-cased: `(s)ettings` / `(i)ncognito` / `(q)uit` → `(S)ettings` / `(I)ncognito` / `(Q)uit`
+  - Double-hyphens (`--`) in prose comments replaced with em-dashes (`—`); contractions removed from comments; `"jiggling"` removed as a technical term from code comments
+  - Full comment simplification pass across all `Private/` files and `Start-mJig.psm1` — all multi-line explanatory comment blocks condensed to concise one-liners; detailed architectural context remains in `AGENTS.md`
+- **New naming-standards rule** — `.cursor/rules/naming-standards.mdc` codifies all naming and terminology standards for future agents
+- **Bug fixes**: `Add-LogEntry` → `Add-DebugLogEntry` call site corrected; `$tommorow` → `$tomorrow` typo fixed; unused `$currentTime` variable removed from `Start-WorkerLoop.ps1`
+- **Notification format simplified** — Toast notifications no longer include a redundant title line; the app identity (AUMID `DisplayName` = `$script:WindowTitle`) provides the app name. Body text is now the action only (`"Paused"`, `"Resumed"`, `"Stopped"`, `"Started (PID: ...)"`, `"Terminal disconnected"`, `"End time reached"`). The `-Title` parameter was removed from `Show-Notification`; the action icon (`appLogoOverride`) is retained.
+- **`Dispose-Notification` renamed to `Remove-Notification`** — aligns with PowerShell approved verbs
+- **Windows Terminal minimize/restore fix** — `focus` IPC handler now correctly restores minimized Windows Terminal windows. Three issues fixed: (1) `IsIconic` and `ShowWindow` were missing from the P/Invoke class — every restore attempt silently failed with a method-not-found exception. (2) In ConPTY mode, `GetConsoleWindow()` returns a hidden pseudo-window (not the visible WT window); `IsWindowVisible` now detects this case. When detected, the viewer walks its parent process chain (`Get-CimInstance Win32_Process`) to locate the actual `WindowsTerminal.exe` (or other terminal) process. (3) A new `FindMainWindowByProcessId` method (filters for visible top-level windows with non-empty titles) is used instead of `FindWindowByProcessId` (which blindly grabbed the first window, often a hidden WT popup). The resolved handle is cached in `$script:_ViewerTerminalHwnd`. Works correctly in both pwsh.exe (conhost) and Windows Terminal.
+- **Debug-mode exit pause** — In `-DebugMode`, the provisioner's `finally` block now shows a `Press any key to exit...` prompt (yellow) before `[Console]::Clear()`. This keeps all initialization output and error messages on screen regardless of how the script exited (normal quit, early return from init failure, or unhandled exception), giving the user time to read them.
+
+---
+
+## [8b03d07] - 2026-03-15
 
 ### Added
 - **Instant terminal close (`_mJigCloseHandlerX`)** — Module Runspace Provisioner now registers a native `SetConsoleCtrlHandler` C# callback (`_mJigCloseHandlerX`) before `BeginInvoke()`. When the terminal X button is clicked (CTRL_CLOSE_EVENT = 2) or the session logs off/shuts down (types 5/6), the callback calls `TerminateProcess(GetCurrentProcess(), 0)` — a kernel-level instant kill with no .NET shutdown sequence, no finalizers, no ProcessExit handlers. Eliminates the previous 1–5 second hang caused by `Environment.Exit(0)` running finalizers, or the synchronous `$_ps.Invoke()` blocking inside a .NET method until PowerShell's 5-second CTRL_CLOSE grace period expired.
@@ -21,6 +43,10 @@ Changes since last commit (bd3766d - "Optimization, global hotkeys, toast notifi
 ### Fixed
 - **Ctrl+C returns to shell prompt and disconnects worker** — Wrapped the `:process` main loop and its cleanup section in `try/finally`. On Ctrl+C, `PipelineStoppedException` previously bypassed the `break process` cleanup path entirely, leaving the pipe client handle open so the worker never detected a disconnect and the process exited with code 1 instead of returning to the prompt. The `finally` block now always disposes the viewer pipe and releases the mutex regardless of how the loop exits. `Show-DiagnosticFiles` remains in the normal-exit path only (not called on Ctrl+C).
 - **`PSInvalidOperationException` on every other Ctrl+C** — Added `$_ps.EndInvoke($_asyncResult)` in the provisioner `finally` block, called after `$_ps.Stop()`. `Stop()` signals the pipeline to stop and waits for `PipelineFinishedEvent`, but the `BatchInvocationWorkItem` thread pool thread may still be finalizing when `Stop()` returns. `EndInvoke()` waits on `IAsyncResult.AsyncWaitHandle`, which is only signaled once that thread has fully exited, preventing a race where `Dispose()` closes the `PSDataCollection` while the work item thread is still writing to it.
+
+---
+
+## [e15f8c0] - 2026-03-12
 
 ### Added
 - **`-Title` parameter** — custom window title override (e.g., `Start-mJig -Title "Windows Update"`).

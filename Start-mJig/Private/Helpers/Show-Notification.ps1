@@ -1,7 +1,6 @@
 		function Update-TrayIcon {
-			if ($script:_SkipTrayIcon) { return }
 			$_trayPath = Join-Path ([System.IO.Path]::GetTempPath()) 'mjig_tray_icon.png'
-			$script:_TrayIconPath = $_trayPath
+			$script:_TrayIconPath = $_trayPath  # always set so AUMID IconUri is always title emoji
 
 			if ($script:_NotifyIconEmoji -ne $script:TitleEmoji) {
 				$_trayEmojiStr = [char]::ConvertFromUtf32($script:TitleEmoji)
@@ -34,43 +33,45 @@
 					$_bmp.Dispose()
 				}
 
-				# Create NotifyIcon with context menu on first call
-				if ($null -eq $script:_NotifyIcon) {
-					$script:_NotifyIcon = New-Object System.Windows.Forms.NotifyIcon
+				# Create and update NotifyIcon (worker only — viewer skips tray entry)
+				if (-not $script:_SkipTrayIcon) {
+					if ($null -eq $script:_NotifyIcon) {
+						$script:_NotifyIcon = New-Object System.Windows.Forms.NotifyIcon
 
-					$script:_TrayOpenItem  = New-Object System.Windows.Forms.ToolStripMenuItem
-					$script:_TrayPauseItem = New-Object System.Windows.Forms.ToolStripMenuItem
-					$script:_TrayPauseItem.Text = 'Pause'
-					$_quitItem = New-Object System.Windows.Forms.ToolStripMenuItem
-					$_quitItem.Text = 'Quit'
+						$script:_TrayOpenItem  = New-Object System.Windows.Forms.ToolStripMenuItem
+						$script:_TrayPauseItem = New-Object System.Windows.Forms.ToolStripMenuItem
+						$script:_TrayPauseItem.Text = 'Pause'
+						$_quitItem = New-Object System.Windows.Forms.ToolStripMenuItem
+						$_quitItem.Text = 'Quit'
 
-					$null = $script:_TrayOpenItem.Add_Click({ $script:_TrayAction = 'open' })
-					$null = $script:_TrayPauseItem.Add_Click({ $script:_TrayAction = 'toggle' })
-					$null = $_quitItem.Add_Click({ $script:_TrayAction = 'quit' })
+						$null = $script:_TrayOpenItem.Add_Click({ $script:_TrayAction = 'open' })
+						$null = $script:_TrayPauseItem.Add_Click({ $script:_TrayAction = 'toggle' })
+						$null = $_quitItem.Add_Click({ $script:_TrayAction = 'quit' })
 
-					$script:_TrayContextMenu = New-Object System.Windows.Forms.ContextMenuStrip
-					$null = $script:_TrayContextMenu.Items.Add($script:_TrayOpenItem)
-					$null = $script:_TrayContextMenu.Items.Add($script:_TrayPauseItem)
-					$null = $script:_TrayContextMenu.Items.Add($_quitItem)
-					$script:_NotifyIcon.ContextMenuStrip = $script:_TrayContextMenu
+						$script:_TrayContextMenu = New-Object System.Windows.Forms.ContextMenuStrip
+						$null = $script:_TrayContextMenu.Items.Add($script:_TrayOpenItem)
+						$null = $script:_TrayContextMenu.Items.Add($script:_TrayPauseItem)
+						$null = $script:_TrayContextMenu.Items.Add($_quitItem)
+						$script:_NotifyIcon.ContextMenuStrip = $script:_TrayContextMenu
 
-					$null = $script:_NotifyIcon.Add_MouseClick({
-						if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-							$script:_TrayAction = 'open'
-						}
-					})
+						$null = $script:_NotifyIcon.Add_MouseClick({
+							if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+								$script:_TrayAction = 'open'
+							}
+						})
 
-					$script:_NotifyIcon.Visible = $true
+						$script:_NotifyIcon.Visible = $true
+					}
+
+					$_trayBmp = New-Object System.Drawing.Bitmap($_trayPath)
+					$script:_NotifyIcon.Icon = [System.Drawing.Icon]::FromHandle($_trayBmp.GetHicon())
+					$_trayBmp.Dispose()
 				}
-
-				$_trayBmp = New-Object System.Drawing.Bitmap($_trayPath)
-				$script:_NotifyIcon.Icon = [System.Drawing.Icon]::FromHandle($_trayBmp.GetHicon())
-				$_trayBmp.Dispose()
 
 				$script:_NotifyIconEmoji = $script:TitleEmoji
 			}
 
-			# Always sync tooltip and Open menu label
+			# Sync tooltip and Open menu label (no-op in viewer mode since _NotifyIcon is null)
 			if ($null -ne $script:_NotifyIcon) {
 				$script:_NotifyIcon.Text = $script:WindowTitle
 			}
@@ -88,7 +89,6 @@
 
 		function Show-Notification {
 			param(
-				[Parameter(Mandatory)][string]$Title,
 				[Parameter(Mandatory)][string]$Body,
 				[Parameter(Mandatory)]
 				[ValidateSet('started','paused','resumed','quit','disconnected','endtime')]
@@ -99,7 +99,7 @@
 			)
 			if (-not $script:NotificationsEnabled) { return }
 			if ($script:DiagEnabled -and $script:NotifyDiagFile) {
-				"$(Get-Date -Format 'HH:mm:ss.fff') [ENTRY] Action=$Action Title='$Title' Body='$Body' ToastAPI=$($null -ne $script:ToastAPI)" | Out-File $script:NotifyDiagFile -Append
+				"$(Get-Date -Format 'HH:mm:ss.fff') [ENTRY] Action=$Action Body='$Body' ToastAPI=$($null -ne $script:ToastAPI)" | Out-File $script:NotifyDiagFile -Append
 			}
 
 			$_actionEmojiMap = @{
@@ -169,16 +169,15 @@
 				$aumid  = "svc_$($script:PipeName)_${PID}_$($script:_NotifyAumidSeq)"
 				$regKey = "HKCU:\Software\Classes\AppUserModelId\$aumid"
 
-				# AUMID icon = title emoji; toast appLogoOverride = action emoji
-				$aumidIconPath = if ($null -ne $script:_TrayIconPath) { $script:_TrayIconPath } else { $toastImgPath }
+			# AUMID icon = title emoji (always set by Update-TrayIcon above); toast appLogoOverride = action emoji
+			$aumidIconPath = $script:_TrayIconPath
 
-				$escapedTitle = [System.Security.SecurityElement]::Escape($Title)
-				$escapedBody  = [System.Security.SecurityElement]::Escape($Body)
-				$imgSrc  = $toastImgPath.Replace('\', '/')
-				$toastXml = "<toast duration=`"short`"><visual><binding template=`"ToastGeneric`">" +
-				            "<text>$escapedTitle</text><text>$escapedBody</text>" +
-				            "<image placement=`"appLogoOverride`" src=`"file:///$imgSrc`"/>" +
-				            "</binding></visual></toast>"
+			$escapedBody  = [System.Security.SecurityElement]::Escape($Body)
+			$imgSrc  = $toastImgPath.Replace('\', '/')
+			$toastXml = "<toast duration=`"short`"><visual><binding template=`"ToastGeneric`">" +
+			            "<text>$escapedBody</text>" +
+			            "<image placement=`"appLogoOverride`" src=`"file:///$imgSrc`"/>" +
+			            "</binding></visual></toast>"
 
 				$toastShown = $false
 				if ($null -ne $script:ToastAPI) {
@@ -210,19 +209,18 @@
 						$null = New-Item -Path $regKey -Force
 						$null = New-ItemProperty -Path $regKey -Name 'DisplayName' -Value $script:WindowTitle -PropertyType ExpandString -Force
 						$null = New-ItemProperty -Path $regKey -Name 'IconUri' -Value $aumidIconPath -PropertyType ExpandString -Force
-						$safeTitle = $Title.Replace("'", "''")
-						$safeBody  = $Body.Replace("'", "''")
-						$safeImg   = $imgSrc.Replace("'", "''")
-						$safeAumid = $aumid.Replace("'", "''")
-						$toastCmd  = '[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];' +
-						             '[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime];' +
-						             '$x=New-Object Windows.Data.Xml.Dom.XmlDocument;' +
-						             '$x.LoadXml(''<toast duration="short"><visual><binding template="ToastGeneric">' +
-						             "<text>$safeTitle</text><text>$safeBody</text>" +
-						             "<image placement=""appLogoOverride"" src=""file:///$safeImg""/>" +
-						             '</binding></visual></toast>'');' +
-						             '$t=[Windows.UI.Notifications.ToastNotification]::new($x);' +
-						             "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('$safeAumid').Show(" + '$t)'
+					$safeBody  = $Body.Replace("'", "''")
+					$safeImg   = $imgSrc.Replace("'", "''")
+					$safeAumid = $aumid.Replace("'", "''")
+					$toastCmd  = '[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];' +
+					             '[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime];' +
+					             '$x=New-Object Windows.Data.Xml.Dom.XmlDocument;' +
+					             '$x.LoadXml(''<toast duration="short"><visual><binding template="ToastGeneric">' +
+					             "<text>$safeBody</text>" +
+					             "<image placement=""appLogoOverride"" src=""file:///$safeImg""/>" +
+					             '</binding></visual></toast>'');' +
+					             '$t=[Windows.UI.Notifications.ToastNotification]::new($x);' +
+					             "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('$safeAumid').Show(" + '$t)'
 						Start-Process powershell.exe -ArgumentList '-NoProfile','-WindowStyle','Hidden','-Command',$toastCmd -WindowStyle Hidden
 						Start-Sleep -Milliseconds 500
 						$toastShown = $true
@@ -238,9 +236,9 @@
 					}
 				}
 
-				if (-not $toastShown) {
-					$tipIcon = [System.Windows.Forms.ToolTipIcon]::$Icon
-					$script:_NotifyIcon.ShowBalloonTip($DurationMs, $Title, $Body, $tipIcon)
+			if (-not $toastShown) {
+				$tipIcon = [System.Windows.Forms.ToolTipIcon]::$Icon
+				$script:_NotifyIcon.ShowBalloonTip($DurationMs, $script:WindowTitle, $Body, $tipIcon)
 					if ($script:DiagEnabled -and $script:NotifyDiagFile) {
 						"$(Get-Date -Format 'HH:mm:ss.fff') [TIER3-BALLOON] action=$Action" | Out-File $script:NotifyDiagFile -Append
 					}
@@ -252,7 +250,7 @@
 			}
 		}
 
-		function Dispose-Notification {
+		function Remove-Notification {
 			if ($null -ne $script:_NotifyIcon) {
 				try {
 					$script:_NotifyIcon.Visible = $false

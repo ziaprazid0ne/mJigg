@@ -11,7 +11,7 @@
 		if ($Output -eq "hidden") {
 			Restore-ConsoleInputMode
 		} else {
-			Draw-ResizeLogo -ClearFirst -WindowSize $pendingSize
+			Write-ResizeLogo -ClearFirst -WindowSize $pendingSize
 		}
 
 		while ($true) {
@@ -25,7 +25,7 @@
 				if ($Output -ne "hidden") {
 					$drawCount++
 					if ($drawCount % 50 -eq 0) { [Console]::Clear(); Restore-ConsoleInputMode }
-					Draw-ResizeLogo -ClearFirst -WindowSize $newSize
+					Write-ResizeLogo -ClearFirst -WindowSize $newSize
 				}
 			}
 
@@ -33,7 +33,7 @@
 			if (((Get-Date) - $lastDetected).TotalMilliseconds -ge $ResizeThrottleMs) {
 				if (($script:MouseAPI::GetAsyncKeyState(0x01) -band 0x8000) -eq 0) {
 					Restore-ConsoleInputMode
-					Send-ResizeExitWakeKey
+					Send-ConsoleWakeKey
 					return $pendingSize
 				}
 			}

@@ -1,0 +1,42 @@
+---
+description: Dialog system patterns — structure, resize handling, click detection, DeferFlush
+globs: "**/Dialogs/*.ps1"
+alwaysApply: false
+---
+
+# Dialog System Patterns
+
+## Dialog Structure
+
+1. Save `$savedCursorVisible = $script:CursorVisible`
+2. Calculate centered position
+3. Queue shadow via `Write-DialogShadow` + dialog content via `Write-Buffer`
+4. `Flush-Buffer` to paint
+5. Enter input loop (handle keys, clicks, resize)
+6. On resize: `Invoke-ResizeHandler` -> `Write-MainFrame -Force -NoFlush` -> optional `& $ParentRedrawCallback` -> queue dialog redraw -> `Flush-Buffer -ClearFirst`
+7. Return `@{ Result = $data; NeedsRedraw = $bool }`
+8. `Clear-DialogShadow` + clear area via `Write-Buffer` + `Flush-Buffer`
+9. Restore `$script:CursorVisible = $savedCursorVisible`
+
+## Never `clear-host` Inside a Dialog
+
+The caller uses `Reset-PostDialogState` (sets `$forceRedraw`). The main loop's buffer-before-clear pattern handles screen clearing.
+
+## Dialog Button Bounds Cleanup (CRITICAL)
+
+All dialogs must clear `$script:DialogButtonBounds = $null` and `$script:DialogButtonClick = $null` in cleanup. Stale bounds block all menu item clicks.
+
+## Parent Chain Redraw (Sub-Dialogs)
+
+Sub-dialogs (Time, Movement from Settings) accept `[scriptblock]$ParentRedrawCallback`. On resize:
+```
+Write-MainFrame -Force -NoFlush -> & $ParentRedrawCallback -> queue sub-dialog -> Flush-Buffer -ClearFirst
+```
+
+## Scope-Chain Shadowing (CRITICAL)
+
+Scriptblock callbacks run in the caller's scope, not the definer's. Save values with unique prefixed names (`$_stg*`) and shadow conflicting names as locals in the callback.
+
+## Click Detection
+
+Uses `PeekConsoleInput` MOUSE_EVENT records with exact character cell coordinates. Hit-testing uses exact character cell matching — no tolerance, no pixel math.

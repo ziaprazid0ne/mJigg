@@ -1,4 +1,4 @@
-		function Draw-DialogShadow {
+		function Write-DialogShadow {
 			param(
 				[int]$dialogX,
 				[int]$dialogY,

@@ -1,0 +1,43 @@
+---
+description: Window resize detection and handling patterns
+globs: "**/Helpers/Invoke-ResizeHandler.ps1,**/Rendering/Write-ResizeLogo.ps1,**/Startup/Show-StartupComplete.ps1"
+alwaysApply: false
+---
+
+# Resize Handling
+
+## Size Detection
+
+Use `GetConsoleScreenBufferInfo` on stdout handle directly — never `$Host.UI.RawUI.WindowSize` or `[Console]::WindowWidth` (return stale values in polling loops).
+
+```powershell
+$csbi = New-Object $script:CSBIType
+$hOut = $script:MouseAPI::GetStdHandle(-11)
+if ($script:MouseAPI::GetConsoleScreenBufferInfo($hOut, [ref]$csbi)) {
+    $w = [int]($csbi.srWindow.Right  - $csbi.srWindow.Left + 1)
+    $h = [int]($csbi.srWindow.Bottom - $csbi.srWindow.Top + 1)
+}
+```
+
+## Invoke-ResizeHandler Flow
+
+1. Reset quote and locked height
+2. Draw resize logo (or clear in hidden mode)
+3. 1ms poll loop: detect size change, redraw, artifact cleanup every 50 draws
+4. Stability: elapsed >= 100ms AND LMB not held -> exit
+5. `Restore-ConsoleInputMode` + `Send-ConsoleWakeKey` + return `$pendingSize`
+6. Does NOT clear screen on exit — caller's `Flush-Buffer -ClearFirst` replaces the logo
+
+## Dialog Resize Pattern
+
+```
+Invoke-ResizeHandler -> update HostWidth/HostHeight
+-> Write-MainFrame -Force -NoFlush
+-> & $ParentRedrawCallback (if sub-dialog)
+-> queue dialog redraw
+-> Flush-Buffer -ClearFirst (single atomic paint)
+```
+
+## $oldWindowSize Sync
+
+Both `$oldWindowSize` and `$OldBufferSize` must be synced at every dialog exit path to prevent false resize detection on the next main loop iteration.

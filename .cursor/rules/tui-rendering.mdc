@@ -1,0 +1,48 @@
+---
+description: TUI rendering rules — buffered VT100, buffer-before-clear invariant, Write-Buffer/Flush-Buffer patterns
+globs: "**/Rendering/*.ps1,**/Start-mJig.psm1"
+alwaysApply: false
+---
+
+# TUI Rendering Rules
+
+## Buffer-Before-Clear (ARCHITECTURAL INVARIANT)
+
+Never clear the screen unless the render buffer already contains everything that needs to appear next. Every screen clear must be immediately followed by a flush of the complete next frame in a single `[Console]::Write()` call.
+
+```powershell
+# CORRECT — buffer first, then atomic clear+flush
+Write-MainFrame -Force:$true -Date $date -NoFlush
+Flush-Buffer -ClearFirst   # ESC[2J + full frame in one write
+```
+
+## Write-Buffer / Flush-Buffer / Clear-Buffer
+
+- `Write-Buffer` — queue positioned, colored text segments (X/Y of -1 = continue from last position)
+- `Flush-Buffer` — build VT100 string and output with single `[Console]::Write()`. `-ClearFirst` prepends `ESC[2J` + `ESC[3J`
+- `Clear-Buffer` — discard queued segments without writing
+
+## The `-DeferFlush` Pattern
+
+When a dialog reopens on top of a freshly redrawn main frame:
+1. `Write-MainFrame -Force -NoFlush` (buffer main frame)
+2. Dialog adds its content to the same buffer
+3. `Flush-Buffer -ClearFirst` paints everything atomically
+
+## Cursor Visibility
+
+Track via `$script:CursorVisible` (boolean), control with VT100 sequences. Never use `[Console]::CursorVisible`.
+
+## What NOT to Route Through the Buffer
+
+- Debug/diagnostic file logging (`Out-File`)
+- One-off `Write-Host` calls during init (before main loop)
+- `[Console]::SetCursorPosition` for dialog text input cursor (after Flush-Buffer)
+
+## `Reset-PostDialogState`
+
+Does NOT call `clear-host` or `[Console]::Clear()`. Only sets `$SkipUpdate`, `$forceRedraw`, and refreshes `$oldWindowSize`/`$OldBufferSize`.
+
+## After `[Console]::Clear()` or `clear-host`
+
+Always call `Restore-ConsoleInputMode` — these calls strip `ENABLE_MOUSE_INPUT`.

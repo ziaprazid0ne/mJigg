@@ -1,0 +1,44 @@
+---
+description: P/Invoke and Win32 API patterns — randomized namespace, type access, WinRT COM interop gotchas
+globs: "**/Config/Initialize-PInvoke.ps1,**/Helpers/*.ps1,**/IPC/*.ps1"
+alwaysApply: false
+---
+
+# P/Invoke Patterns
+
+## Randomized Namespace
+
+The `mJiggAPI` namespace is randomized at startup (e.g. `ns_a3f7c019b2e84d01`). Never use `[mJiggAPI.Mouse]::` directly. Use script-scoped variables:
+
+- `$script:MouseAPI` — Mouse class (GetCursorPos, SetCursorPos, GetAsyncKeyState, GetLastInputInfo, etc.)
+- `$script:KeyboardAPI` — Keyboard class (keybd_event)
+- `$script:ToastAPI` — Toast class (WinRT COM interop)
+- `$script:PointType`, `$script:LastInputType`, `$script:InputRecordType`, `$script:CSBIType` — string type names for `New-Object`
+
+## Marshal.SizeOf Gotcha (.NET Core)
+
+Never pass a type to `[Marshal]::SizeOf()`. Always pass an already-created struct instance:
+```powershell
+$lii = New-Object $script:LastInputType
+$lii.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($lii)  # instance, not type
+```
+
+## Resize Detection
+
+Use `GetConsoleScreenBufferInfo` on **stdout** handle (`GetStdHandle(-11)`), read `srWindow` directly. Never rely on `$Host.UI.RawUI.WindowSize` or `[Console]::WindowWidth` in polling loops — they return stale values.
+
+## GetAsyncKeyState
+
+- Bit 15 (0x8000) = key is currently down
+- Bit 0 (0x0001) = key was pressed since last call (consumed on read, check once)
+- Only used for mouse buttons (VK 0x01-0x06) and modifier keys
+
+## VK_RMENU (165) Console Input Gotcha
+
+`keybd_event` injects VK_RMENU (0xA5=165), but the console input layer reports it as VK_MENU (18). Always filter both 18 and 165 (plus all modifier VKs 16, 160-165).
+
+## WinRT Toast COM
+
+- Vtable order in `[ComImport]` interfaces must exactly match WinRT IDL — wrong order causes `AccessViolationException`
+- Use `WindowsCreateString`/`WindowsDeleteString` for HSTRINGs — `UnmanagedType.HString` is broken in .NET 6+ P/Invoke
+- Types cannot be unloaded once loaded via `Add-Type` — users must restart PowerShell session after C# type changes

@@ -141,6 +141,10 @@ namespace mJiggAPI {
 		[DllImport("user32.dll")]
 		[return: MarshalAs(UnmanagedType.Bool)]
 		public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+		[DllImport("user32.dll")]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool IsIconic(IntPtr hWnd);
 		
 		[DllImport("user32.dll")]
 		public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
@@ -202,9 +206,20 @@ namespace mJiggAPI {
 		public static extern bool BringWindowToTop(IntPtr hWnd);
 
 		[DllImport("user32.dll")]
-		public static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
-		
-		private static IntPtr foundWindowHandle = IntPtr.Zero;
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+	[DllImport("user32.dll")]
+	public static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+	[DllImport("user32.dll")]
+	public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+	[DllImport("user32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool AllowSetForegroundWindow(uint dwProcessId);
+
+	private static IntPtr foundWindowHandle = IntPtr.Zero;
 		private static int targetProcessId = 0;
 		
 		private static bool EnumWindowsCallback(IntPtr hWnd, IntPtr lParam) {
@@ -229,6 +244,36 @@ namespace mJiggAPI {
 			return foundWindowHandle;
 		}
 		
+		private static IntPtr foundMainWindowHandle = IntPtr.Zero;
+		private static int targetMainProcessId = 0;
+
+	private static bool EnumMainWindowCallback(IntPtr hWnd, IntPtr lParam) {
+		if (hWnd == IntPtr.Zero) return true;
+		try {
+			uint windowProcessId = 0;
+			GetWindowThreadProcessId(hWnd, out windowProcessId);
+			if (windowProcessId == (uint)targetMainProcessId && IsWindowVisible(hWnd)) {
+				// Only consider ownerless top-level windows; owned windows are popups/flyouts
+				if (GetWindow(hWnd, 4) != IntPtr.Zero) return true;
+				System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
+				if (GetWindowText(hWnd, sb, sb.Capacity) > 0) {
+					foundMainWindowHandle = hWnd;
+					return false;
+				}
+			}
+		} catch { }
+		return true;
+	}
+
+		public static IntPtr FindMainWindowByProcessId(int processId) {
+			foundMainWindowHandle = IntPtr.Zero;
+			targetMainProcessId = processId;
+			try {
+				EnumWindows(new EnumWindowsProc(EnumMainWindowCallback), IntPtr.Zero);
+			} catch { }
+			return foundMainWindowHandle;
+		}
+
 		private static IntPtr foundWindowHandleByTitle = IntPtr.Zero;
 		private static string targetTitlePattern = string.Empty;
 		private static int excludeProcessId = 0;

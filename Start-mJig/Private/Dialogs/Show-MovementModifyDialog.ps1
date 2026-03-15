@@ -1,12 +1,12 @@
 		function Show-MovementModifyDialog {
 			param(
-				[double]$currentIntervalSeconds,
-				[double]$currentIntervalVariance,
-				[double]$currentMoveSpeed,
-				[double]$currentMoveVariance,
-				[double]$currentTravelDistance,
-				[double]$currentTravelVariance,
-				[double]$currentAutoResumeDelaySeconds,
+				[double]$CurrentIntervalSeconds,
+				[double]$CurrentIntervalVariance,
+				[double]$CurrentMoveSpeed,
+				[double]$CurrentMoveVariance,
+				[double]$CurrentTravelDistance,
+				[double]$CurrentTravelVariance,
+				[double]$CurrentAutoResumeDelaySeconds,
 				[ref]$HostWidthRef,
 				[ref]$HostHeightRef,
 				[scriptblock]$ParentRedrawCallback = $null
@@ -29,13 +29,13 @@
 			[Console]::Write("$($script:ESC)[?25l")
 			
 			# Input field values
-			$intervalSecondsInput = $currentIntervalSeconds.ToString()
-			$intervalVarianceInput = $currentIntervalVariance.ToString()
-			$moveSpeedInput = $currentMoveSpeed.ToString()
-			$moveVarianceInput = $currentMoveVariance.ToString()
-			$travelDistanceInput = $currentTravelDistance.ToString()
-			$travelVarianceInput = $currentTravelVariance.ToString()
-			$autoResumeDelaySecondsInput = $currentAutoResumeDelaySeconds.ToString()
+			$intervalSecondsInput = $CurrentIntervalSeconds.ToString()
+			$intervalVarianceInput = $CurrentIntervalVariance.ToString()
+			$moveSpeedInput = $CurrentMoveSpeed.ToString()
+			$moveVarianceInput = $CurrentMoveVariance.ToString()
+			$travelDistanceInput = $CurrentTravelDistance.ToString()
+			$travelVarianceInput = $CurrentTravelVariance.ToString()
+			$autoResumeDelaySecondsInput = $CurrentAutoResumeDelaySeconds.ToString()
 			
 			# Current field index (0-6)
 			$currentField = 0
@@ -88,106 +88,106 @@
 			Write-Buffer -Text "$($script:BoxTopRight)" -FG $script:MoveDialogBorder -BG $script:MoveDialogBg
 				
 				# Title line
-				Write-SimpleDialogRow -x $x -y ($y + 1) -width $width -content "Modify Movement Settings" -contentColor $script:MoveDialogTitle -backgroundColor $script:MoveDialogBg
+				Write-SimpleDialogRow -X $x -y ($y + 1) -width $width -Content "Modify Movement Settings" -ContentColor $script:MoveDialogTitle -BackgroundColor $script:MoveDialogBg
 				
 				# Empty line (row 2)
-				Write-SimpleDialogRow -x $x -y ($y + 2) -width $width -backgroundColor $script:MoveDialogBg
+				Write-SimpleDialogRow -X $x -y ($y + 2) -width $width -BackgroundColor $script:MoveDialogBg
 				
 				# Interval section header (row 3)
-				Write-SimpleDialogRow -x $x -y ($y + 3) -width $width -content "Interval:" -contentColor $script:MoveDialogSectionTitle -backgroundColor $script:MoveDialogBg
+				Write-SimpleDialogRow -X $x -y ($y + 3) -width $width -Content "Interval:" -ContentColor $script:MoveDialogSectionTitle -BackgroundColor $script:MoveDialogBg
 				
 				# Interval fields (rows 4-5)
-				Write-SimpleFieldRow -x $x -y ($y + 4) -width $width `
-					-label $fields[0].Label -longestLabel $longestLabel -fieldValue $fields[0].Value `
-					-fieldWidth $fieldWidth -fieldIndex $fields[0].Index -currentFieldIndex $currentFieldIndex -backgroundColor $script:MoveDialogBg
+				Write-SimpleFieldRow -X $x -y ($y + 4) -width $width `
+					-Label $fields[0].Label -LongestLabel $longestLabel -FieldValue $fields[0].Value `
+					-FieldWidth $fieldWidth -FieldIndex $fields[0].Index -CurrentFieldIndex $currentFieldIndex -BackgroundColor $script:MoveDialogBg
 				
-				Write-SimpleFieldRow -x $x -y ($y + 5) -width $width `
-					-label $fields[1].Label -longestLabel $longestLabel -fieldValue $fields[1].Value `
-					-fieldWidth $fieldWidth -fieldIndex $fields[1].Index -currentFieldIndex $currentFieldIndex -backgroundColor $script:MoveDialogBg
+				Write-SimpleFieldRow -X $x -y ($y + 5) -width $width `
+					-Label $fields[1].Label -LongestLabel $longestLabel -FieldValue $fields[1].Value `
+					-FieldWidth $fieldWidth -FieldIndex $fields[1].Index -CurrentFieldIndex $currentFieldIndex -BackgroundColor $script:MoveDialogBg
 				
 				# Travel Distance section header (row 6)
-				Write-SimpleDialogRow -x $x -y ($y + 6) -width $width -content "Travel Distance:" -contentColor $script:MoveDialogSectionTitle -backgroundColor $script:MoveDialogBg
+				Write-SimpleDialogRow -X $x -y ($y + 6) -width $width -Content "Travel Distance:" -ContentColor $script:MoveDialogSectionTitle -BackgroundColor $script:MoveDialogBg
 				
 				# Travel Distance fields (rows 7-8)
-				Write-SimpleFieldRow -x $x -y ($y + 7) -width $width `
-					-label $fields[2].Label -longestLabel $longestLabel -fieldValue $fields[2].Value `
-					-fieldWidth $fieldWidth -fieldIndex $fields[2].Index -currentFieldIndex $currentFieldIndex -backgroundColor $script:MoveDialogBg
+				Write-SimpleFieldRow -X $x -y ($y + 7) -width $width `
+					-Label $fields[2].Label -LongestLabel $longestLabel -FieldValue $fields[2].Value `
+					-FieldWidth $fieldWidth -FieldIndex $fields[2].Index -CurrentFieldIndex $currentFieldIndex -BackgroundColor $script:MoveDialogBg
 				
-				Write-SimpleFieldRow -x $x -y ($y + 8) -width $width `
-					-label $fields[3].Label -longestLabel $longestLabel -fieldValue $fields[3].Value `
-					-fieldWidth $fieldWidth -fieldIndex $fields[3].Index -currentFieldIndex $currentFieldIndex -backgroundColor $script:MoveDialogBg
+				Write-SimpleFieldRow -X $x -y ($y + 8) -width $width `
+					-Label $fields[3].Label -LongestLabel $longestLabel -FieldValue $fields[3].Value `
+					-FieldWidth $fieldWidth -FieldIndex $fields[3].Index -CurrentFieldIndex $currentFieldIndex -BackgroundColor $script:MoveDialogBg
 				
 				# Movement Speed section header (row 9)
-				Write-SimpleDialogRow -x $x -y ($y + 9) -width $width -content "Movement Speed:" -contentColor $script:MoveDialogSectionTitle -backgroundColor $script:MoveDialogBg
+				Write-SimpleDialogRow -X $x -y ($y + 9) -width $width -Content "Movement Speed:" -ContentColor $script:MoveDialogSectionTitle -BackgroundColor $script:MoveDialogBg
 				
 				# Movement Speed fields (rows 10-11)
-				Write-SimpleFieldRow -x $x -y ($y + 10) -width $width `
-					-label $fields[4].Label -longestLabel $longestLabel -fieldValue $fields[4].Value `
-					-fieldWidth $fieldWidth -fieldIndex $fields[4].Index -currentFieldIndex $currentFieldIndex -backgroundColor $script:MoveDialogBg
+				Write-SimpleFieldRow -X $x -y ($y + 10) -width $width `
+					-Label $fields[4].Label -LongestLabel $longestLabel -FieldValue $fields[4].Value `
+					-FieldWidth $fieldWidth -FieldIndex $fields[4].Index -CurrentFieldIndex $currentFieldIndex -BackgroundColor $script:MoveDialogBg
 				
-				Write-SimpleFieldRow -x $x -y ($y + 11) -width $width `
-					-label $fields[5].Label -longestLabel $longestLabel -fieldValue $fields[5].Value `
-					-fieldWidth $fieldWidth -fieldIndex $fields[5].Index -currentFieldIndex $currentFieldIndex -backgroundColor $script:MoveDialogBg
+				Write-SimpleFieldRow -X $x -y ($y + 11) -width $width `
+					-Label $fields[5].Label -LongestLabel $longestLabel -FieldValue $fields[5].Value `
+					-FieldWidth $fieldWidth -FieldIndex $fields[5].Index -CurrentFieldIndex $currentFieldIndex -BackgroundColor $script:MoveDialogBg
 				
 				# Auto-Resume Delay section header (row 12)
-				Write-SimpleDialogRow -x $x -y ($y + 12) -width $width -content "Auto-Resume Delay:" -contentColor $script:MoveDialogSectionTitle -backgroundColor $script:MoveDialogBg
+				Write-SimpleDialogRow -X $x -y ($y + 12) -width $width -Content "Auto-Resume Delay:" -ContentColor $script:MoveDialogSectionTitle -BackgroundColor $script:MoveDialogBg
 				
 				# Auto-Resume Delay field (row 13)
-				Write-SimpleFieldRow -x $x -y ($y + 13) -width $width `
-					-label $fields[6].Label -longestLabel $longestLabel -fieldValue $fields[6].Value `
-					-fieldWidth $fieldWidth -fieldIndex $fields[6].Index -currentFieldIndex $currentFieldIndex -backgroundColor $script:MoveDialogBg
+				Write-SimpleFieldRow -X $x -y ($y + 13) -width $width `
+					-Label $fields[6].Label -LongestLabel $longestLabel -FieldValue $fields[6].Value `
+					-FieldWidth $fieldWidth -FieldIndex $fields[6].Index -CurrentFieldIndex $currentFieldIndex -BackgroundColor $script:MoveDialogBg
 				
 				# Empty line (row 14)
-				Write-SimpleDialogRow -x $x -y ($y + 14) -width $width -backgroundColor $script:MoveDialogBg
+				Write-SimpleDialogRow -X $x -y ($y + 14) -width $width -BackgroundColor $script:MoveDialogBg
 				
 				# Error line (row 15)
 				if ($errorMsg) {
-					Write-SimpleDialogRow -x $x -y ($y + 15) -width $width -content $errorMsg -contentColor $script:TextError -backgroundColor $script:MoveDialogBg
+					Write-SimpleDialogRow -X $x -y ($y + 15) -width $width -Content $errorMsg -ContentColor $script:TextError -BackgroundColor $script:MoveDialogBg
 				} else {
-					Write-SimpleDialogRow -x $x -y ($y + 15) -width $width -backgroundColor $script:MoveDialogBg
+					Write-SimpleDialogRow -X $x -y ($y + 15) -width $width -BackgroundColor $script:MoveDialogBg
 				}
 				
 	# Bottom line with buttons (row 16)
 	$checkmark = [char]::ConvertFromUtf32(0x2705)
 	$redX = [char]::ConvertFromUtf32(0x274C)
-$_dlgIW = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
-$_dlgBW = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
-$_dlgPA = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
-$btn1X = $x + 2
-$btn2X = $btn1X + $_dlgBW + $_dlgIW + 7 + $_dlgPA + 2  # bracket + icon + "(a)pply"(7) + gap(2)
+$buttonIconWidth = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
+$buttonBracketWidth = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
+$buttonParenOffset = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+$applyButtonX = $x + 2
+$cancelButtonX = $applyButtonX + $buttonBracketWidth + $buttonIconWidth + 7 + $buttonParenOffset + 2  # bracket + icon + "(a)pply"(7) + gap(2)
 # Button line: border+space(2) + btn1(bracketW+iconW+7) + gap(2) + btn2(bracketW+iconW+8) = 19 + 2*iconWidth + 2*bracketWidth
-$buttonPadding = $width - (19 + 2 * $_dlgPA + 2 * $_dlgIW + 2 * $_dlgBW) - 1
+$buttonPadding = $width - (19 + 2 * $buttonParenOffset + 2 * $buttonIconWidth + 2 * $buttonBracketWidth) - 1
 Write-Buffer -X $x -Y ($y + 16) -Text "$($script:BoxVertical)" -FG $script:MoveDialogBorder -BG $script:MoveDialogBg
 Write-Buffer -Text " " -BG $script:MoveDialogBg
 if ($script:DialogButtonShowBrackets) {
-	Write-Buffer -X $btn1X -Y ($y + 16) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+	Write-Buffer -X $applyButtonX -Y ($y + 16) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
 }
-$btn1ContentX = $btn1X + [int]$script:DialogButtonShowBrackets
+$applyButtonContentX = $applyButtonX + [int]$script:DialogButtonShowBrackets
 if ($script:DialogButtonShowIcon) {
-	Write-Buffer -X $btn1ContentX -Y ($y + 16) -Text $checkmark -FG $script:TextSuccess -BG $script:MoveDialogButtonBg -Wide
-	Write-Buffer -X ($btn1ContentX + 2) -Y ($y + 16) -Text $script:DialogButtonSeparator -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
+	Write-Buffer -X $applyButtonContentX -Y ($y + 16) -Text $checkmark -FG $script:TextSuccess -BG $script:MoveDialogButtonBg -Wide
+	Write-Buffer -X ($applyButtonContentX + 2) -Y ($y + 16) -Text $script:DialogButtonSeparator -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
 } else {
-	Write-Buffer -X $btn1ContentX -Y ($y + 16) -Text "" -BG $script:MoveDialogButtonBg
+	Write-Buffer -X $applyButtonContentX -Y ($y + 16) -Text "" -BG $script:MoveDialogButtonBg
 }
-$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+$closingParen = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
 if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg }
 Write-Buffer -Text "a" -FG $script:MoveDialogButtonHotkey -BG $script:MoveDialogButtonBg
-Write-Buffer -Text "${_rp}pply" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
+Write-Buffer -Text "$closingParenpply" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
 if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 Write-Buffer -Text "  " -BG $script:MoveDialogBg
 if ($script:DialogButtonShowBrackets) {
-	Write-Buffer -X $btn2X -Y ($y + 16) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+	Write-Buffer -X $cancelButtonX -Y ($y + 16) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
 }
-$btn2ContentX = $btn2X + [int]$script:DialogButtonShowBrackets
+$cancelButtonContentX = $cancelButtonX + [int]$script:DialogButtonShowBrackets
 if ($script:DialogButtonShowIcon) {
-	Write-Buffer -X $btn2ContentX -Y ($y + 16) -Text $redX -FG $script:TextError -BG $script:MoveDialogButtonBg -Wide
-	Write-Buffer -X ($btn2ContentX + 2) -Y ($y + 16) -Text $script:DialogButtonSeparator -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
+	Write-Buffer -X $cancelButtonContentX -Y ($y + 16) -Text $redX -FG $script:TextError -BG $script:MoveDialogButtonBg -Wide
+	Write-Buffer -X ($cancelButtonContentX + 2) -Y ($y + 16) -Text $script:DialogButtonSeparator -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
 } else {
-	Write-Buffer -X $btn2ContentX -Y ($y + 16) -Text "" -BG $script:MoveDialogButtonBg
+	Write-Buffer -X $cancelButtonContentX -Y ($y + 16) -Text "" -BG $script:MoveDialogButtonBg
 }
 if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg }
 Write-Buffer -Text "c" -FG $script:MoveDialogButtonHotkey -BG $script:MoveDialogButtonBg
-Write-Buffer -Text "${_rp}ancel" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
+Write-Buffer -Text "$closingParenancel" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
 	if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 	Write-Buffer -Text (" " * $buttonPadding) -BG $script:MoveDialogBg
 	Write-Buffer -Text "$($script:BoxVertical)" -FG $script:MoveDialogBorder -BG $script:MoveDialogBg
@@ -198,7 +198,7 @@ Write-Buffer -Text "${_rp}ancel" -FG $script:MoveDialogButtonText -BG $script:Mo
 			Write-Buffer -Text "$($script:BoxBottomRight)" -FG $script:MoveDialogBorder -BG $script:MoveDialogBg
 				
 				# Draw drop shadow
-				Draw-DialogShadow -dialogX $x -dialogY $y -dialogWidth $width -dialogHeight $height -shadowColor $script:MoveDialogShadow
+				Write-DialogShadow -dialogX $x -dialogY $y -dialogWidth $width -dialogHeight $height -shadowColor $script:MoveDialogShadow
 			}
 			
 		# Initial draw
@@ -208,13 +208,13 @@ Write-Buffer -Text "${_rp}ancel" -FG $script:MoveDialogButtonText -BG $script:Mo
 	# Calculate button bounds for click detection
 	# Button row is at dialogY + 16 (row 16)
 	$buttonRowY = $dialogY + 16
-$_moveDlgIW = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
-$_moveDlgBW = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
-$_moveDlgPA = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
+$buttonIconWidth = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
+$buttonBracketWidth = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
+$buttonParenOffset = if ($script:DialogButtonShowHotkeyParens) { 0 } else { -2 }
 $updateButtonStartX = $dialogX + 2
-$updateButtonEndX   = $dialogX + 2 + $_moveDlgBW + $_moveDlgIW + 7 + $_moveDlgPA - 1   # bracket + icon + "(a)pply"(7) - 1 inclusive
-$cancelButtonStartX = $dialogX + 2 + $_moveDlgBW + $_moveDlgIW + 7 + $_moveDlgPA + 2   # after btn1 + gap(2)
-$cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_moveDlgPA - 1  # bracket + icon + "(c)ancel"(8) - 1 inclusive
+$updateButtonEndX   = $dialogX + 2 + $buttonBracketWidth + $buttonIconWidth + 7 + $buttonParenOffset - 1   # bracket + icon + "(a)pply"(7) - 1 inclusive
+$cancelButtonStartX = $dialogX + 2 + $buttonBracketWidth + $buttonIconWidth + 7 + $buttonParenOffset + 2   # after btn1 + gap(2)
+$cancelButtonEndX   = $cancelButtonStartX + $buttonBracketWidth + $buttonIconWidth + 8 + $buttonParenOffset - 1  # bracket + icon + "(c)ancel"(8) - 1 inclusive
 			
 			# Store button bounds in script scope for main loop click detection
 			$script:DialogButtonBounds = @{
@@ -260,7 +260,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 					$HostHeightRef.Value = $stableSize.Height
 					$currentHostWidth  = $stableSize.Width
 					$currentHostHeight = $stableSize.Height
-					Draw-MainFrame -Force -NoFlush
+					Write-MainFrame -Force -NoFlush
 					if ($null -ne $ParentRedrawCallback) {
 						& $ParentRedrawCallback $currentHostWidth $currentHostHeight
 					}
@@ -270,12 +270,12 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 					
 			# Recalculate button bounds after repositioning
 			$buttonRowY = $dialogY + 16
-			$_moveDlgIW = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
-			$_moveDlgBW = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
+			$buttonIconWidth = if ($script:DialogButtonShowIcon)     { 2 + $script:DialogButtonSeparator.Length } else { 0 }
+			$buttonBracketWidth = if ($script:DialogButtonShowBrackets) { 2 } else { 0 }
 		$updateButtonStartX = $dialogX + 2
-		$updateButtonEndX   = $dialogX + 2 + $_moveDlgBW + $_moveDlgIW + 7 - 1
-		$cancelButtonStartX = $dialogX + 2 + $_moveDlgBW + $_moveDlgIW + 7 + 2
-		$cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 - 1
+		$updateButtonEndX   = $dialogX + 2 + $buttonBracketWidth + $buttonIconWidth + 7 - 1
+		$cancelButtonStartX = $dialogX + 2 + $buttonBracketWidth + $buttonIconWidth + 7 + 2
+		$cancelButtonEndX   = $cancelButtonStartX + $buttonBracketWidth + $buttonIconWidth + 8 - 1
 					
 					# Update button bounds in script scope
 					$script:DialogButtonBounds = @{
@@ -339,13 +339,13 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 						$fieldLabels = @("Interval (sec): ", "Variance (sec): ", "Distance (px): ", "Variance (px): ", "Speed (sec): ", "Variance (sec): ", "Delay (sec): ")
 						$fieldValues = @($intervalSecondsInput, $intervalVarianceInput, $travelDistanceInput, $travelVarianceInput, $moveSpeedInput, $moveVarianceInput, $autoResumeDelaySecondsInput)
 						
-						Write-SimpleFieldRow -x $dialogX -y ($dialogY + $clickFieldYOffsets[$previousField]) -width $dialogWidth `
-							-label $fieldLabels[$previousField] -longestLabel $longestLabel -fieldValue $fieldValues[$previousField] `
-							-fieldWidth $fieldWidth -fieldIndex $previousField -currentFieldIndex $currentField -backgroundColor DarkBlue
+						Write-SimpleFieldRow -X $dialogX -y ($dialogY + $clickFieldYOffsets[$previousField]) -width $dialogWidth `
+							-Label $fieldLabels[$previousField] -LongestLabel $longestLabel -FieldValue $fieldValues[$previousField] `
+							-FieldWidth $fieldWidth -FieldIndex $previousField -CurrentFieldIndex $currentField -BackgroundColor DarkBlue
 						
-						Write-SimpleFieldRow -x $dialogX -y ($dialogY + $clickFieldYOffsets[$currentField]) -width $dialogWidth `
-							-label $fieldLabels[$currentField] -longestLabel $longestLabel -fieldValue $fieldValues[$currentField] `
-							-fieldWidth $fieldWidth -fieldIndex $currentField -currentFieldIndex $currentField -backgroundColor DarkBlue
+						Write-SimpleFieldRow -X $dialogX -y ($dialogY + $clickFieldYOffsets[$currentField]) -width $dialogWidth `
+							-Label $fieldLabels[$currentField] -LongestLabel $longestLabel -FieldValue $fieldValues[$currentField] `
+							-FieldWidth $fieldWidth -FieldIndex $currentField -CurrentFieldIndex $currentField -BackgroundColor DarkBlue
 						Flush-Buffer
 						
 						$fieldY = $dialogY + $clickFieldYOffsets[$currentField]
@@ -521,9 +521,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 						# Optimized: only redraw current field instead of entire dialog
 						$fieldYOffsets = @(4, 5, 7, 8, 10, 11, 13)
 						$fieldLabels = @("Interval (sec): ", "Variance (sec): ", "Distance (px): ", "Variance (px): ", "Speed (sec): ", "Variance (sec): ", "Delay (sec): ")
-					Write-SimpleFieldRow -x $dialogX -y ($dialogY + $fieldYOffsets[$currentField]) -width $dialogWidth `
-						-label $fieldLabels[$currentField] -longestLabel $longestLabel -fieldValue $currentInputRef.Value `
-						-fieldWidth $fieldWidth -fieldIndex $currentField -currentFieldIndex $currentField -backgroundColor DarkBlue
+					Write-SimpleFieldRow -X $dialogX -y ($dialogY + $fieldYOffsets[$currentField]) -width $dialogWidth `
+						-Label $fieldLabels[$currentField] -LongestLabel $longestLabel -FieldValue $currentInputRef.Value `
+						-FieldWidth $fieldWidth -FieldIndex $currentField -CurrentFieldIndex $currentField -BackgroundColor DarkBlue
 					Flush-Buffer
 					# Position cursor at end of input
 					$fieldY = $dialogY + $fieldYOffsets[$currentField]
@@ -545,9 +545,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 					# Optimized: only redraw current field instead of entire dialog
 					$fieldYOffsets = @(4, 5, 7, 8, 10, 11, 13)
 					$fieldLabels = @("Interval (sec): ", "Variance (sec): ", "Distance (px): ", "Variance (px): ", "Speed (sec): ", "Variance (sec): ", "Delay (sec): ")
-				Write-SimpleFieldRow -x $dialogX -y ($dialogY + $fieldYOffsets[$currentField]) -width $dialogWidth `
-					-label $fieldLabels[$currentField] -longestLabel $longestLabel -fieldValue $currentInputRef.Value `
-					-fieldWidth $fieldWidth -fieldIndex $currentField -currentFieldIndex $currentField -backgroundColor DarkBlue
+				Write-SimpleFieldRow -X $dialogX -y ($dialogY + $fieldYOffsets[$currentField]) -width $dialogWidth `
+					-Label $fieldLabels[$currentField] -LongestLabel $longestLabel -FieldValue $currentInputRef.Value `
+					-FieldWidth $fieldWidth -FieldIndex $currentField -CurrentFieldIndex $currentField -BackgroundColor DarkBlue
 				Flush-Buffer
 				# Position cursor at end of input
 				$fieldY = $dialogY + $fieldYOffsets[$currentField]
@@ -568,9 +568,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 					# Optimized: only redraw current field instead of entire dialog
 					$fieldYOffsets = @(4, 5, 7, 8, 10, 11, 13)
 					$fieldLabels = @("Interval (sec): ", "Variance (sec): ", "Distance (px): ", "Variance (px): ", "Speed (sec): ", "Variance (sec): ", "Delay (sec): ")
-				Write-SimpleFieldRow -x $dialogX -y ($dialogY + $fieldYOffsets[$currentField]) -width $dialogWidth `
-					-label $fieldLabels[$currentField] -longestLabel $longestLabel -fieldValue $currentInputRef.Value `
-					-fieldWidth $fieldWidth -fieldIndex $currentField -currentFieldIndex $currentField -backgroundColor DarkBlue
+				Write-SimpleFieldRow -X $dialogX -y ($dialogY + $fieldYOffsets[$currentField]) -width $dialogWidth `
+					-Label $fieldLabels[$currentField] -LongestLabel $longestLabel -FieldValue $currentInputRef.Value `
+					-FieldWidth $fieldWidth -FieldIndex $currentField -CurrentFieldIndex $currentField -BackgroundColor DarkBlue
 				Flush-Buffer
 				# Position cursor at end of input
 				$fieldY = $dialogY + $fieldYOffsets[$currentField]
@@ -589,14 +589,14 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 					$fieldValues = @($intervalSecondsInput, $intervalVarianceInput, $travelDistanceInput, $travelVarianceInput, $moveSpeedInput, $moveVarianceInput, $autoResumeDelaySecondsInput)
 					
 					# Redraw previous field (unhighlight)
-					Write-SimpleFieldRow -x $dialogX -y ($dialogY + $fieldYOffsets[$previousField]) -width $dialogWidth `
-						-label $fieldLabels[$previousField] -longestLabel $longestLabel -fieldValue $fieldValues[$previousField] `
-						-fieldWidth $fieldWidth -fieldIndex $previousField -currentFieldIndex $currentField -backgroundColor DarkBlue
+					Write-SimpleFieldRow -X $dialogX -y ($dialogY + $fieldYOffsets[$previousField]) -width $dialogWidth `
+						-Label $fieldLabels[$previousField] -LongestLabel $longestLabel -FieldValue $fieldValues[$previousField] `
+						-FieldWidth $fieldWidth -FieldIndex $previousField -CurrentFieldIndex $currentField -BackgroundColor DarkBlue
 					
 				# Redraw new field (highlight)
-				Write-SimpleFieldRow -x $dialogX -y ($dialogY + $fieldYOffsets[$currentField]) -width $dialogWidth `
-					-label $fieldLabels[$currentField] -longestLabel $longestLabel -fieldValue $fieldValues[$currentField] `
-					-fieldWidth $fieldWidth -fieldIndex $currentField -currentFieldIndex $currentField -backgroundColor DarkBlue
+				Write-SimpleFieldRow -X $dialogX -y ($dialogY + $fieldYOffsets[$currentField]) -width $dialogWidth `
+					-Label $fieldLabels[$currentField] -LongestLabel $longestLabel -FieldValue $fieldValues[$currentField] `
+					-FieldWidth $fieldWidth -FieldIndex $currentField -CurrentFieldIndex $currentField -BackgroundColor DarkBlue
 				Flush-Buffer
 				
 				# Position cursor at the active field after arrow navigation
@@ -625,14 +625,14 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 					$fieldValues = @($intervalSecondsInput, $intervalVarianceInput, $travelDistanceInput, $travelVarianceInput, $moveSpeedInput, $moveVarianceInput, $autoResumeDelaySecondsInput)
 					
 					# Redraw previous field (unhighlight)
-					Write-SimpleFieldRow -x $dialogX -y ($dialogY + $fieldYOffsets[$previousField]) -width $dialogWidth `
-						-label $fieldLabels[$previousField] -longestLabel $longestLabel -fieldValue $fieldValues[$previousField] `
-						-fieldWidth $fieldWidth -fieldIndex $previousField -currentFieldIndex $currentField -backgroundColor DarkBlue
+					Write-SimpleFieldRow -X $dialogX -y ($dialogY + $fieldYOffsets[$previousField]) -width $dialogWidth `
+						-Label $fieldLabels[$previousField] -LongestLabel $longestLabel -FieldValue $fieldValues[$previousField] `
+						-FieldWidth $fieldWidth -FieldIndex $previousField -CurrentFieldIndex $currentField -BackgroundColor DarkBlue
 					
 				# Redraw new field (highlight)
-				Write-SimpleFieldRow -x $dialogX -y ($dialogY + $fieldYOffsets[$currentField]) -width $dialogWidth `
-					-label $fieldLabels[$currentField] -longestLabel $longestLabel -fieldValue $fieldValues[$currentField] `
-					-fieldWidth $fieldWidth -fieldIndex $currentField -currentFieldIndex $currentField -backgroundColor DarkBlue
+				Write-SimpleFieldRow -X $dialogX -y ($dialogY + $fieldYOffsets[$currentField]) -width $dialogWidth `
+					-Label $fieldLabels[$currentField] -LongestLabel $longestLabel -FieldValue $fieldValues[$currentField] `
+					-FieldWidth $fieldWidth -FieldIndex $currentField -CurrentFieldIndex $currentField -BackgroundColor DarkBlue
 				Flush-Buffer
 				
 				# Position cursor at the active field after arrow navigation
@@ -660,7 +660,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $_moveDlgBW + $_moveDlgIW + 8 + $_mo
 				}
 			} until ($false)
 			
-		Invoke-DialogExitCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -ClearShadow
+		Invoke-DialogCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -ClearShadow
 			# Return result object
 			return @{
 				Result = $result

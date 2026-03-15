@@ -1,11 +1,11 @@
-﻿		function Test-MouseMoved {
+		function Test-MouseMoved {
 			param(
-				[System.Drawing.Point]$currentPos,
-				[System.Drawing.Point]$lastPos,
-				[int]$threshold = 2
+				[System.Drawing.Point]$CurrentPos,
+				[System.Drawing.Point]$LastPos,
+				[int]$Threshold = 2
 			)
-			if ($null -eq $lastPos) { return $false }
-			$deltaX = [Math]::Abs($currentPos.X - $lastPos.X)
-			$deltaY = [Math]::Abs($currentPos.Y - $lastPos.Y)
-			return ($deltaX -gt $threshold -or $deltaY -gt $threshold)
+			if ($null -eq $LastPos) { return $false }
+			$deltaX = [Math]::Abs($CurrentPos.X - $LastPos.X)
+			$deltaY = [Math]::Abs($CurrentPos.Y - $LastPos.Y)
+			return ($deltaX -gt $Threshold -or $deltaY -gt $Threshold)
 		}

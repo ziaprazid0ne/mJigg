@@ -1,4 +1,4 @@
-		function Invoke-DialogExitCleanup {
+		function Invoke-DialogCleanup {
 			param(
 				[int]$DialogX,
 				[int]$DialogY,

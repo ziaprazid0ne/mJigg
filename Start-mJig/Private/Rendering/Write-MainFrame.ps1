@@ -1,4 +1,4 @@
-	function Draw-MainFrame {
+	function Write-MainFrame {
 	param(
 		[switch]$ClearFirst,
 		[switch]$Force,
@@ -25,12 +25,9 @@
 		# Track screen state
 		$script:CurrentScreenState = if ($Output -eq "hidden") { "hidden" } else { "main" }
 
-			# Output Handling
-			# Skip console updates if mouse movement was recently detected (every 50ms check) to prevent stutter
-			# This prevents blocking console operations from interfering with Windows mouse message processing
-			$skipConsoleUpdate = if ($_isViewerMode) { $false } else { (Get-TimeSinceMs -startTime $script:LastMouseMovementTime) -lt 200 }
-			# Force parameter overrides skipConsoleUpdate
-			if ($Force) {
+		# Skip render when mouse recently moved to prevent stutter; -Force overrides
+		$skipConsoleUpdate = if ($_isViewerMode) { $false } else { (Get-TimeSinceMs -StartTime $script:LastMouseMovementTime) -lt 200 }
+		if ($Force) {
 				$skipConsoleUpdate = $false
 			}
 			
@@ -46,32 +43,28 @@
 		if ($_bpH -gt 1) { Write-Buffer -X ($HostWidth-$_bpH+1) -Y $Outputline -Text (" " * ($_bpH - 1)) }                        # transparent right
 		$Outputline++
 
-			# Output header
-		# Refresh current time. The hourly ClearCachedData() call earlier in the loop
-		# ensures timezone changes are picked up without invalidating the cache every frame.
-		$currentTime = $date.ToString("HHmm")
+		# Render header row
+	$currentTime = $date.ToString("HHmm")
 			# Calculate widths for centering times between title and view tag
 			# Left part: "Title(emoji)" = title.Length + 1 + 2 + 1 (content only; $_bpH+2 left margin handled separately)
 			$headerLeftWidth = $script:WindowTitle.Length + 1 + 2 + 1  # title + "(" + emoji + ")"
-				# Add DEBUGMODE text width if in debug mode
-				if ($DebugMode) {
-					$headerLeftWidth += 13  # " - DEBUGMODE" = 13 chars
-				}
+				# Add Debug Mode text width if in debug mode
+			if ($DebugMode) {
+				$headerLeftWidth += 13  # " - Debug Mode" = 13 chars
+			}
 				
-				# Time section: "Current`u{23F3}/" + time + " arrow " + "End`u{23F3}/" + time (or "none")
-				# Components: "Current" (7) + emoji (2) + "/" (1) + time + " arrow " (4) + "End" (3) + emoji (2) + "/" (1) + time
-				$timeSectionBaseWidth = 7 + 2 + 1 + 4 + 3 + 2 + 1  # Fixed text parts
-				# Determine end time display text
-				if ($endTimeInt -eq -1 -or [string]::IsNullOrEmpty($endTimeStr)) {
-					$endTimeDisplay = "none"
-				} else {
+			# Header time section layout: "Current" (7) + emoji (2) + "/" (1) + time + " → " (4) + "End" (3) + emoji (2) + "/" (1) + time
+			$timeSectionBaseWidth = 7 + 2 + 1 + 4 + 3 + 2 + 1  # Fixed text parts
+			if ($endTimeInt -eq -1 -or [string]::IsNullOrEmpty($endTimeStr)) {
+				$endTimeDisplay = [char]0x2014  # em-dash when no end time set
+			} else {
 					$endTimeDisplay = $endTimeStr
 				}
 				$timeSectionTimeWidth = $currentTime.Length + $endTimeDisplay.Length
 				$timeSectionWidth = $timeSectionBaseWidth + $timeSectionTimeWidth
 				
 		# Right part: pause/resume symbol (clickable) + separator + clickable mode label
-		# Format: pause | Full -- pause symbol is clickable (toggles pause), mode label is clickable (toggles output)
+		# Format: pause | Full — pause symbol is clickable (toggles pause), mode label is clickable (toggles output)
 	$modeName = if ($Output -eq "full") { "Full" } else { " Min" }
 	$pauseSymbolWidth = 2  # wide emoji: pause or play
 		$modeButtonWidth = $pauseSymbolWidth + 1 + $script:MenuButtonSeparator.Length + 1 + $modeName.Length
@@ -93,17 +86,17 @@
 		Write-Buffer -X ($curX + 2) -Y $Outputline -Text ")" -FG $script:HeaderAppName -BG $_hrBg
 		$curX = $curX + 2 + 1  # emoji (2) + ")" (1)
 		$script:HeaderLogoBounds = @{ y = $Outputline; startX = ($_bpH + 2); endX = ($curX - 1) }
-		# Add DEBUGMODE indicator if in debug mode
-		if ($DebugMode) {
-			Write-Buffer -Text " - DEBUGMODE" -FG $script:TextError -BG $_hrBg
-			$curX += 12
-		}
+	# Add Debug Mode indicator if in debug mode
+	if ($DebugMode) {
+		Write-Buffer -Text " - Debug Mode" -FG $script:TextError -BG $_hrBg
+		$curX += 12
+	}
 			
 			# Add spacing before times
 			Write-Buffer -Text (" " * $spacingBeforeTimes) -BG $_hrBg
 			$curX += $spacingBeforeTimes
 			
-		# Write times (Current first, then End) -- hidden click regions track each section
+		# Write times (Current first, then End) — hidden click regions track each section
 		$currentTimeSectionStartX = $curX
 		Write-Buffer -Text "Current" -FG $script:HeaderTimeLabel -BG $_hrBg
 		$hourglassX1 = $curX + 7  # "Current" = 7 chars
@@ -265,7 +258,7 @@
 									$formattedLine += $componentText
 									$remainingWidth -= $componentText.Length
 								} else {
-									# Truncate this component if it's the last one and we have some room
+									# Truncate this component if it is the last one and we have some room
 									if ($remainingWidth -gt 3) {
 										$formattedLine += $componentText.Substring(0, $remainingWidth - 3) + "..."
 									}
@@ -273,10 +266,8 @@
 								}
 							}
 							
-							# Clear the line first, then write the new content
-							# Pad with spaces to clear any leftover characters and ensure exact width
-							# Truncate if longer, pad if shorter to ensure exactly $availableWidth characters
-							$truncatedLine = if ($formattedLine.Length -gt $availableWidth) {
+						# Truncate or pad to exactly $availableWidth characters
+						$truncatedLine = if ($formattedLine.Length -gt $availableWidth) {
 								$formattedLine.Substring(0, $availableWidth)
 							} else {
 								$formattedLine
@@ -288,7 +279,7 @@
 							Write-Buffer -X ($_bpH + $logWidth) -Y $rowY -Text " $($script:BoxVertical) " -FG $script:StatsBoxBorder
 						}
 							
-							# Draw stats box in full view (with padding so it doesn't touch white lines)
+							# Draw stats box in full view (with padding so it does not touch white lines)
 							if ($showStatsBox) {
 								Write-Buffer -Text " "
 								
@@ -324,7 +315,7 @@
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									} else {
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text "(none)".PadRight($boxWidth - 2) -FG $script:TextMuted
+										Write-Buffer -Text "$([char]0x2014)".PadRight($boxWidth - 2) -FG $script:TextMuted
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									}
 								} elseif ($i -eq $Rows - 2) {
@@ -386,7 +377,7 @@
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									} else {
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text "(none)".PadRight($boxWidth - 2) -FG $script:TextMuted
+										Write-Buffer -Text "$([char]0x2014)".PadRight($boxWidth - 2) -FG $script:TextMuted
 										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									}
 								} elseif ($i -eq $Rows - 2) {
@@ -432,25 +423,25 @@
 		$emojiGear = $script:GearEmoji
 			$emojiRedX = $script:RedXEmoji
 				
-			$menuItemsList = @(
-				@{
-					full            = "$emojiGear|(s)ettings"
-					noIcons         = "(s)ettings"
-					short           = "(s)et"
-					isSettingsButton = $true
-				},
+		$menuItemsList = @(
 			@{
-				full    = "$emojiLock|(i)ncognito"
-				noIcons = "(i)ncognito"
-				short   = "(i)nc"
-			}
-			)
+				full            = "$emojiGear|(S)ettings"
+				noIcons         = "(S)ettings"
+				short           = "(S)et"
+				isSettingsButton = $true
+			},
+		@{
+			full    = "$emojiLock|(I)ncognito"
+			noIcons = "(I)ncognito"
+			short   = "(I)nc"
+		}
+		)
 
-			$menuItemsList += @{
-				full    = "$emojiRedX|(q)uit"
-				noIcons = "(q)uit"
-				short   = "(q)uit"
-			}
+		$menuItemsList += @{
+			full    = "$emojiRedX|(Q)uit"
+			noIcons = "(Q)uit"
+			short   = "(Q)uit"
+		}
 
 			$menuItems = $menuItemsList
 				
@@ -500,17 +491,13 @@
 				$quitWidth = $quitItem.short.Length + $hotkeyParenAdj
 			}
 				
-			# Restore pressed-button highlight when appropriate:
-			# - Immediate actions (toggle, hide): clear on the very first render after the click (no dialog opened)
-			# - Popup actions (dialogs): the dialog is blocking so this render only runs after it closes -- clear then too
-			# - While a dialog IS open: skip this block so the button stays highlighted throughout the dialog
-			if ($script:PendingDialogCheck -and $null -ne $script:PressedMenuButton) {
-				if ($null -eq $script:DialogButtonBounds) {
-					# No dialog is open: either the action was immediate or the dialog just closed -- clear now
-					$script:PressedMenuButton  = $null
-					$script:ButtonClickedAt    = $null
-					$script:PendingDialogCheck = $false
-				}
+		# Clear pressed-button state after action (immediate or after dialog close; skip while dialog is open)
+		if ($script:PendingDialogCheck -and $null -ne $script:PressedMenuButton) {
+			if ($null -eq $script:DialogButtonBounds) {
+				$script:PressedMenuButton  = $null
+				$script:ButtonClickedAt    = $null
+				$script:PendingDialogCheck = $false
+			}
 				# If DialogButtonBounds is non-null a dialog is open; leave everything in place until it closes
 			}
 
@@ -583,14 +570,14 @@
 				} else {
 					Write-Buffer -X $contentX -Y $menuY -Text "" -BG $btnBg
 				}
-	Write-HotkeyLabel -Text $text -FG $btnFg -HotkeyFG $btnHkFg -BG $btnBg
+	Write-HotkeyLabel -Text $text -FG $btnFg -HotkeyFg $btnHkFg -BG $btnBg
 		if ($script:MenuButtonShowBrackets) {
 			Write-Buffer -Text "]" -FG $btnBracketFg -BG $btnBracketBg
 		}
 	}
 } else {
 			Write-Buffer -X $itemStartX -Y $menuY -Text "" -BG $btnBg
-			Write-HotkeyLabel -Text $itemText -FG $btnFg -HotkeyFG $btnHkFg -BG $btnBg
+			Write-HotkeyLabel -Text $itemText -FG $btnFg -HotkeyFg $btnHkFg -BG $btnBg
 		}
 				
 	# Store menu item bounds (computed statically)
@@ -749,14 +736,14 @@
 			} else {
 				Write-Buffer -X $contentX -Y $menuY -Text "" -BG $qBtnBg
 			}
-	Write-HotkeyLabel -Text $text -FG $qBtnFg -HotkeyFG $qBtnHkFg -BG $qBtnBg
+	Write-HotkeyLabel -Text $text -FG $qBtnFg -HotkeyFg $qBtnHkFg -BG $qBtnBg
 	if ($script:MenuButtonShowBrackets) {
 		Write-Buffer -Text "]" -FG $qBtnBracketFg -BG $qBtnBracketBg
 	}
 }
 } else {
 		Write-Buffer -X $quitStartX -Y $menuY -Text "" -BG $qBtnBg
-		Write-HotkeyLabel -Text $itemText -FG $qBtnFg -HotkeyFG $qBtnHkFg -BG $qBtnBg
+		Write-HotkeyLabel -Text $itemText -FG $qBtnFg -HotkeyFg $qBtnHkFg -BG $qBtnBg
 	}
 			
 	# Store quit item bounds (computed statically)
@@ -797,18 +784,16 @@
 		if ($_bpH -gt 1) { Write-Buffer -X ($HostWidth-$_bpH+1) -Y $menuY -Text (" " * ($_bpH - 1)) }  # transparent right outer
 		$Outputline++
 				
-	if ($_bpV -eq 1) {
-		# For bpV=1 the reserved row (Y=$HostHeight-1) is the 1-minimum footer blank.
-		# NoWrap disables auto-wrap so writing the last cell doesn't trigger a console scroll.
-		# bpV=1: handle transparency based on $_bpH; apply NoWrap to the last segment.
-		if ($_bpH -gt 1) {
+if ($_bpV -eq 1) {
+	# Last row: -NoWrap prevents console scroll when writing the final cell
+	if ($_bpH -gt 1) {
 			Write-Buffer -X 0                    -Y $Outputline -Text (" " * ($_bpH - 1))                             # transparent left
 			Write-Buffer -X ($_bpH - 1)          -Y $Outputline -Text (" " * ($HostWidth - 2*$_bpH + 2)) -BG $_fBg   # group-bg centre
 			Write-Buffer -X ($HostWidth-$_bpH+1) -Y $Outputline -Text (" " * ($_bpH - 1)) -NoWrap                    # transparent right (NoWrap on last)
 		} else {
 			Write-Buffer -X 0 -Y $Outputline -Text (" " * $HostWidth) -BG $_fBg -NoWrap
 		}
-		# Do NOT increment $Outputline -- reserved row is the scroll guard.
+		# Do NOT increment $Outputline — reserved row is the scroll guard.
 	} else {
 		# For bpV>=2 write the 1-minimum FooterBg blank (transparent outer, group-bg inner)
 		if ($_bpH -gt 1) { Write-Buffer -X 0                    -Y $Outputline -Text (" " * ($_bpH - 1)) }                           # transparent left
@@ -822,10 +807,8 @@
 			$Outputline++
 		}
 	}
-		# Flush entire UI to console in one operation
-		# Use ClearFirst on forced redraws (startup transition, resize, re-open after dialog)
-		# to atomically clear stale content and paint the new frame in one write.
-		if (-not $NoFlush) { if ($ClearFirst) { Flush-Buffer -ClearFirst } else { Flush-Buffer } }
+	# Atomic flush — ClearFirst on forced redraws to eliminate stale content
+	if (-not $NoFlush) { if ($ClearFirst) { Flush-Buffer -ClearFirst } else { Flush-Buffer } }
 		if ($script:DiagEnabled -and $_isViewerMode -and $script:LoopIteration -le 5) {
 			"$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER RENDER FLUSHED iter=$($script:LoopIteration) ClearFirst=$ClearFirst Rows=$Rows HostWidth=$HostWidth RenderQueue=$($script:RenderQueue.Count)" | Out-File $script:IpcDiagFile -Append
 		}
@@ -836,11 +819,8 @@
 		$script:HeaderCurrentTimeBounds = $null
 		$script:HeaderLogoBounds        = $null
 		if (-not $skipConsoleUpdate) {
-			# Use live window dimensions for layout so the (h) button is always correctly
-				# positioned even while a resize is in progress. The outer resize path (above)
-				# handles updating $HostWidth/$HostHeight and firing Send-ResizeExitWakeKey
-				# once the window has been stable for $ResizeThrottleMs.
-				$pswindow = (Get-Host).UI.RawUI
+			# Use live window dimensions so the incognito button stays correctly placed during resize
+			$pswindow = (Get-Host).UI.RawUI
 				$newW = $pswindow.WindowSize.Width
 				$newH = $pswindow.WindowSize.Height
 				
@@ -885,4 +865,4 @@
 		})
 			}
 		}
-	} # end Draw-MainFrame
+	} # end Write-MainFrame

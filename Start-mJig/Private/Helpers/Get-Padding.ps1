@@ -1,7 +1,7 @@
-﻿		function Get-Padding {
+		function Get-Padding {
 			param(
-				[int]$usedWidth,
-				[int]$totalWidth
+				[int]$UsedWidth,
+				[int]$TotalWidth
 			)
-			return [Math]::Max(0, $totalWidth - $usedWidth)
+			return [Math]::Max(0, $TotalWidth - $UsedWidth)
 		}

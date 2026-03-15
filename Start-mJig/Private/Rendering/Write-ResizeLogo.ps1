@@ -1,4 +1,4 @@
-	function Draw-ResizeLogo {
+	function Write-ResizeLogo {
 			param(
 				[switch]$ClearFirst,
 				[object]$WindowSize = $null
@@ -9,26 +9,22 @@
 				$winWidth = $winSize.Width
 				$winHeight = $winSize.Height
 
-			# Lock height during resize: WindowSize.Height can transiently fluctuate by +/-1 row
-			# when only the width is being changed (Windows Terminal reflow). Lock the height
-			# at resize-start and only update it if it changes by more than 1 row, so small
-			# transient fluctuations never affect the vertical center calculation.
-			if ($null -ne $WindowSize) {
-				if ($null -eq $script:ResizeLogoLockedHeight) {
-					$script:ResizeLogoLockedHeight = $winHeight
-				} elseif ([math]::Abs($winHeight - $script:ResizeLogoLockedHeight) -gt 1) {
-					$script:ResizeLogoLockedHeight = $winHeight
-				}
-				# else: change is <=1 row - treat as transient, hold the locked value
-				$winHeight = $script:ResizeLogoLockedHeight
+		# Lock height to suppress ±1 transient row fluctuations during width-only resize
+		if ($null -ne $WindowSize) {
+			if ($null -eq $script:ResizeLogoLockedHeight) {
+				$script:ResizeLogoLockedHeight = $winHeight
+			} elseif ([math]::Abs($winHeight - $script:ResizeLogoLockedHeight) -gt 1) {
+				$script:ResizeLogoLockedHeight = $winHeight
 			}
+			$winHeight = $script:ResizeLogoLockedHeight
+		}
 				
 				# Only draw if window is large enough
 				if ($winWidth -lt 16 -or $winHeight -lt 14) {
 					return
 				}
 				
-				# Select a random quote if we don't have one yet
+				# Select a random quote if we do not have one yet
 				if ($null -eq $script:CurrentResizeQuote) {
 					$script:CurrentResizeQuote = $script:ResizeQuotes | Get-Random
 				}
@@ -47,13 +43,11 @@
 				$centerX = [math]::Floor(($winWidth - $logoDisplayWidth) / 2)
 				$centerY = [math]::Floor($winHeight / 2)
 				
-				# Box dimensions: scale with screen size while maintaining minimum padding
-				$minPadding = 3
-				# Calculate available space around logo
-				$availableH = [math]::Min($centerX - 1, $winWidth - $centerX - $logoDisplayWidth - 1)
-				$availableV = [math]::Min($centerY - 1, $winHeight - $centerY - 2)
-				# Use 42% of available space as padding, with minimum
-				$boxPaddingH = [math]::Max($minPadding * 2, [math]::Floor($availableH * 0.42))
+			# Box dimensions: 42% of available space as padding, minimum 3 rows/cols
+			$minPadding = 3
+			$availableH = [math]::Min($centerX - 1, $winWidth - $centerX - $logoDisplayWidth - 1)
+			$availableV = [math]::Min($centerY - 1, $winHeight - $centerY - 2)
+			$boxPaddingH = [math]::Max($minPadding * 2, [math]::Floor($availableH * 0.42))
 				$boxPaddingV = [math]::Max($minPadding, [math]::Floor($availableV * 0.42))
 				$boxLeft = $centerX - $boxPaddingH - 1
 				$boxRight = $centerX + $logoDisplayWidth + $boxPaddingH

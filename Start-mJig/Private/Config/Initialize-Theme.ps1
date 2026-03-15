@@ -1,25 +1,5 @@
 	# ============================================================================
-	# Theme Colors
-	# ============================================================================
-	#
-	# All visual theme variables live here. When YAML theme import is implemented,
-	# each section maps to a top-level YAML key as documented below.
-	#
-	# YAML key              PS variable prefix
-	# ------------------     --------------------------
-	# general.*             Text*
-	# mainDisplay.header.*  Header*
-	# mainDisplay.statsBox.*StatsBox*
-	# menuBar.*             MenuButton*
-	#   .onClick.*          MenuButtonOnClick*
-	#   .icon.*             MenuButtonShowIcon / MenuButtonSeparator
-	#   .brackets.*         MenuButtonShowBrackets / MenuButtonBracket* / MenuButtonOnClickBracket*
-	# dialogs.button.*      DialogButton*
-	# dialogs.quit.*        QuitDialog*
-	# dialogs.time.*        TimeDialog*
-	# dialogs.move.*        MoveDialog*
-	# resize.*              Resize*
-	#
+	# Theme Colors — all $script:* visual color variables
 	# ============================================================================
 
 	# --- General ----------------------------------------------------------------
@@ -41,23 +21,16 @@
 	$script:HeaderTimeValue  = "Green"
 	$script:HeaderViewTag    = "Magenta"
 	$script:HeaderSeparator  = "White"
-	# Background applied to the 3-row header group (blank + header + separator).
-	# $null = terminal default (transparent). YAML: mainDisplay.header.bg
+	# Header group background ($null = transparent); only innermost padding col/row gets this
 	$script:HeaderBg         = "DarkBlue"
-	# Background applied only to the header content row (not the blank or separator).
-	# YAML: mainDisplay.header.rowBg
+	# Header content row background (inset, does not bleed into padding)
 	$script:HeaderRowBg      = "DarkCyan"
-	# Background applied to the 3-row footer group (separator + menu + blank).
-	# $null = terminal default (transparent). YAML: mainDisplay.footer.bg
+	# Footer group background ($null = transparent)
 	$script:FooterBg         = "DarkBlue"
-	# Background applied only to the menu bar row (not the separator or blank).
-	# YAML: mainDisplay.footer.rowBg
+	# Menu bar content row background (inset)
 	$script:MenuRowBg        = "DarkCyan"
-	# Blank-line/column border around the chrome. Clamped to 1-5 below.
-	# Only the innermost row/column on each side receives the Header/FooterBg; extras stay transparent.
-	# YAML: mainDisplay.borderPadV (top/bottom rows)
+	# Blank rows above/below chrome; blank columns left/right of each chrome row (clamped 1-5)
 	$script:BorderPadV       = 1
-	# YAML: mainDisplay.borderPadH (left/right columns)
 	$script:BorderPadH       = 1
 	$script:BorderPadV = [math]::Max(1, [math]::Min(5, $script:BorderPadV))
 	$script:BorderPadH = [math]::Max(1, [math]::Min(5, $script:BorderPadH))
@@ -86,31 +59,21 @@
 	$script:MenuButtonOnClickSeparatorFg = "Black"
 
 	# --- Menu Bar: Icon Prefix -------------------------------------------------
-	# The emoji + separator rendered before the button label (e.g. "eye |").
-	# YAML: menuBar.icon.*
 	$script:MenuButtonShowIcon  = $true   # Show/hide the icon prefix
 	$script:MenuButtonSeparator = "|"     # Character between icon and label
 
 	# --- Menu Bar: Bracket Wrapping --------------------------------------------
-	# Optional [ ] wrapping around the full button (e.g. "[eye |toggle_(v)iew]").
-	# YAML: menuBar.brackets.*
 	$script:MenuButtonShowBrackets     = $true
 	$script:MenuButtonBracketFg        = "DarkCyan"
 	$script:MenuButtonBracketBg        = "DarkBlue"
 	$script:MenuButtonOnClickBracketFg = "Black"
 	$script:MenuButtonOnClickBracketBg = "DarkCyan"
 
-	# --- Global: Hotkey Parentheses --------------------------------------------
-	# Controls whether () appear around hotkey letters. Each group is independent
-	# so a theme can hide parens on menu buttons but keep them on dialogs (or vice versa).
-	# The letter is still highlighted in its hotkey color when parens are hidden.
-	# YAML: menuBar.hotkeyParens / dialogs.hotkeyParens
+	# --- Global: Hotkey Parentheses — independent for menu bar and dialogs ----
 	$script:MenuButtonShowHotkeyParens   = $false   # Menu bar buttons + header mode button
 	$script:DialogButtonShowHotkeyParens = $false    # All dialog box buttons
 
 	# --- Dialogs: Shared Button Settings ---------------------------------------
-	# Icon prefix and bracket wrapping applied to action buttons in all dialogs.
-	# YAML: dialogs.button.*
 	$script:DialogButtonShowIcon     = $true
 	$script:DialogButtonSeparator    = "|"
 	$script:DialogButtonShowBrackets = $false
@@ -118,7 +81,6 @@
 	$script:DialogButtonBracketBg    = $null   # null = transparent (inherits dialog BG)
 
 	# --- Dialogs: Quit ---------------------------------------------------------
-	# YAML: dialogs.quit.*
 	$script:QuitDialogBg           = "DarkMagenta"
 	$script:QuitDialogShadow       = "DarkMagenta"
 	$script:QuitDialogBorder       = "White"
@@ -128,10 +90,7 @@
 	$script:QuitDialogButtonText   = "White"
 	$script:QuitDialogButtonHotkey = "Yellow"
 
-	# --- Menu Bar: Quit Button -------------------------------------------------
-	# Overrides the shared menu button colors specifically for the quit button.
-	# Defaults inherit from the standard MenuButton* variables.
-	# YAML: menuBar.quitButton.*
+	# --- Menu Bar: Quit Button — inherits MenuButton* defaults ----------------
 	$script:QuitButtonBg               = $script:MenuButtonBg
 	$script:QuitButtonText             = $script:MenuButtonText
 	$script:QuitButtonHotkey           = $script:MenuButtonHotkey
@@ -145,10 +104,7 @@
 	$script:QuitButtonOnClickBracketFg    = $script:QuitDialogBorder
 	$script:QuitButtonOnClickBracketBg    = $script:QuitDialogBg
 
-	# --- Dialogs: Settings --------------------------------------------------------
-	# Colors for the settings mini-popup that appears above the Settings menu button.
-	# OnFocus = normal/active state.  OffFocus = dimmed state while a sub-dialog is open.
-	# YAML: dialogs.settings.*
+	# --- Dialogs: Settings — onfocus + offfocus (sub-dialog open) states ------
 	$script:SettingsDialogBg           = "DarkBlue"
 	$script:SettingsDialogBorder       = "White"
 	$script:SettingsDialogTitle        = "Yellow"
@@ -156,8 +112,7 @@
 	$script:SettingsDialogButtonBg     = "Blue"
 	$script:SettingsDialogButtonText   = "White"
 	$script:SettingsDialogButtonHotkey = "Yellow"
-	# Off-focus: used while a sub-dialog launched from settings is open
-	# YAML: dialogs.settings.offFocus.*
+	# Off-focus colors (sub-dialog open)
 	$script:SettingsDialogShadow               = "DarkBlue"
 
 	$script:SettingsDialogOffFocusBg           = "DarkGray"
@@ -168,10 +123,7 @@
 	$script:SettingsDialogOffFocusButtonText   = "Gray"
 	$script:SettingsDialogOffFocusButtonHotkey = "DarkYellow"
 
-	# --- Menu Bar: Settings Button ------------------------------------------------
-	# Overrides shared menu button colors for the settings button.
-	# OnClick defaults match the settings dialog so the button highlights when open.
-	# YAML: menuBar.settingsButton.*
+	# --- Menu Bar: Settings Button — OnClick defaults match settings dialog ----
 	$script:SettingsButtonBg                 = $script:MenuButtonBg
 	$script:SettingsButtonText               = $script:MenuButtonText
 	$script:SettingsButtonHotkey             = $script:MenuButtonHotkey
@@ -186,7 +138,6 @@
 	$script:SettingsButtonOnClickBracketBg   = $script:SettingsDialogBg
 
 	# --- Dialogs: Set End Time -------------------------------------------------
-	# YAML: dialogs.time.*
 	$script:TimeDialogBg           = "DarkBlue"
 	$script:TimeDialogShadow       = "DarkBlue"
 	$script:TimeDialogBorder       = "White"
@@ -199,7 +150,6 @@
 	$script:TimeDialogFieldText    = "White"
 
 	# --- Dialogs: Modify Movement ----------------------------------------------
-	# YAML: dialogs.move.*
 	$script:MoveDialogBg            = "DarkBlue"
 	$script:MoveDialogShadow        = "DarkBlue"
 	$script:MoveDialogBorder        = "White"
@@ -213,7 +163,6 @@
 	$script:MoveDialogFieldText     = "White"
 
 	# --- Dialogs: Info / About -------------------------------------------------
-	# YAML: dialogs.info.*
 	$script:InfoDialogBg           = "DarkBlue"
 	$script:InfoDialogShadow       = "DarkBlue"
 	$script:InfoDialogBorder       = "White"
@@ -229,7 +178,6 @@
 	$script:InfoDialogButtonHotkey = "Yellow"
 
 	# --- Resize Screen ---------------------------------------------------------
-	# YAML: resize.*
 	$script:ResizeBoxBorder  = "White"
 	$script:ResizeLogoName   = "Magenta"
 	$script:ResizeLogoIcon   = "White"

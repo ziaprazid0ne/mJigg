@@ -66,7 +66,7 @@ By default, `Start-mJig` spawns a hidden background worker process that performs
 
 **Worker process spawning:** Uses `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` (WMI) to spawn the worker outside the terminal's job object, ensuring the worker survives when the viewer terminal tab is closed. Falls back to `Start-Process` if WMI is unavailable. The executable path is determined dynamically via `[System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName` to match the running PowerShell version (pwsh.exe on PS 7, powershell.exe on 5.1). The worker command is passed via `-EncodedCommand` (Base64-encoded script block) instead of `-Command` to avoid shell escaping issues.
 
-**Worker input detection bootstrap:** `GetLastInputInfo` and mouse position tracking in the worker are guarded with `if ($null -ne $workerLastAutomatedMouseMovement)`. This skips input detection until the first automated movement completes, preventing a permanent "User input skip" deadlock where the null filter timestamps cause every system tick to be classified as user input.
+**Worker input detection bootstrap:** `GetLastInputInfo` and mouse position tracking in the worker are guarded with `if ($null -ne $workerLastAutomatedMouseMovement)`. This skips input detection until the first automated movement completes, preventing a permanent "Skipped: user input detected" deadlock where the null filter timestamps cause every system tick to be classified as user input.
 
 **Settings epoch guard (stale state message prevention):**
 After a viewer dialog closes, the viewer sends new settings to the worker and returns to the main loop. The pipe buffer may contain stale `state` messages (sent before the worker processed the new settings) that would overwrite the viewer's local variables with pre-change values. The epoch guard prevents this:
@@ -79,8 +79,8 @@ After a viewer dialog closes, the viewer sends new settings to the worker and re
 When the viewer connects (via `Connect-WorkerPipe`), it sets `$_isViewerMode = $true` and falls through into the existing main loop. The main loop checks `$_isViewerMode` at key points:
 - **IPC reading**: At the top of each iteration and inside each 50ms wait tick, reads `state`, `log`, and `stopped` messages from the worker pipe. Updates `$script:*` variables, `$LogArray`, `$mouseInputDetected`, `$keyboardInputDetected`, `$script:PreviousIntervalKeys`, `$cooldownActive`, `$secondsRemaining`, and `$SkipUpdate` directly from the worker's state messages.
 - **Skips**: Interval calculation (uses fixed 500ms/10 ticks), movement-specific per-tick checks (keyboard state, mouse position, GetLastInputInfo), post-wait mouse settle, movement execution, log building, and end-time check.
-- **Keeps**: Full rendering via `Draw-MainFrame`, resize detection, console input handling (PeekConsoleInput for clicks, ReadKey for hotkeys), all dialog invocations, and stats box display (populated from IPC state).
-- **IPC forwarding**: After dialog results (quit, time, movement, output, settings, title), the viewer increments `$_settingsEpoch` and sends the changes (with `epoch`) back to the worker via the pipe. The `title` message carries `windowTitle` (string) and `titleEmoji` (int codepoint) so the worker's notifications and tray icon match the viewer's current title preset. The worker sends `{ type: 'focus' }` to the viewer when the tray icon Open action fires, causing the viewer to call `ShowWindow(SW_RESTORE)` + `SetForegroundWindow` on its own console window. During dialogs, the viewer's main loop is suspended (dialog has its own input loop), so IPC messages from the worker accumulate in the 64KB pipe buffer. The worker uses `Send-PipeMessageNonBlocking` to avoid blocking when the buffer fills. After the dialog closes, the viewer returns to the main loop and drains the backed-up messages. The **settings epoch guard** causes the viewer to skip any `state` message whose `epoch` is less than its own `$_settingsEpoch`, preventing stale pre-change values from overwriting the viewer's local variables.
+- **Keeps**: Full rendering via `Write-MainFrame`, resize detection, console input handling (PeekConsoleInput for clicks, ReadKey for hotkeys), all dialog invocations, and stats box display (populated from IPC state).
+- **IPC forwarding**: After dialog results (quit, time, movement, output, settings, title), the viewer increments `$_settingsEpoch` and sends the changes (with `epoch`) back to the worker via the pipe. The `title` message carries `windowTitle` (string) and `titleEmoji` (int codepoint) so the worker's notifications and tray icon match the viewer's current title preset. The worker calls `AllowSetForegroundWindow(viewerPid)` then sends `{ type: 'focus' }` to the viewer when the tray icon Open action fires, causing the viewer to call `IsIconic` → `ShowWindow(SW_RESTORE)` → poll until de-minimized → (fallback: `PostMessage(WM_SYSCOMMAND, SC_RESTORE)` if still iconic) → `AttachThreadInput` + `SetForegroundWindow` on its own console window. During dialogs, the viewer's main loop is suspended (dialog has its own input loop), so IPC messages from the worker accumulate in the 64KB pipe buffer. The worker uses `Send-PipeMessageNonBlocking` to avoid blocking when the buffer fills. After the dialog closes, the viewer returns to the main loop and drains the backed-up messages. The **settings epoch guard** causes the viewer to skip any `state` message whose `epoch` is less than its own `$_settingsEpoch`, preventing stale pre-change values from overwriting the viewer's local variables.
 
 ### High-Level Flow
 
@@ -117,7 +117,7 @@ When the viewer connects (via `Connect-WorkerPipe`), it sets `$_isViewerMode = $
     ├── Wait for interval (inline: calculated; viewer: fixed 500ms)
     ├── Per-tick: read IPC messages (viewer) / check keyboard/mouse state (inline)
     ├── Check for user input / hotkeys + forward to worker (viewer)
-    ├── Detect window resize → Invoke-ResizeHandler → Draw-MainFrame (both modes)
+    ├── Detect window resize → Invoke-ResizeHandler → Write-MainFrame (both modes)
     ├── Wait for mouse to settle (inline only)
     ├── Perform automated mouse movement (inline only)
     ├── Send simulated keypress (inline only)
@@ -149,10 +149,10 @@ Start-mJig/
 │       ├── . Private\Rendering\*.ps1           (11 files)
 │       ├── . Private\Dialogs\Show-TimeChangeDialog.ps1
 │       ├── . Private\Helpers\Restore-ConsoleInputMode.ps1
-│       ├── . Private\Helpers\Send-ResizeExitWakeKey.ps1
+│       ├── . Private\Helpers\Send-ConsoleWakeKey.ps1
 │       ├── . Private\Helpers\Show-DiagnosticFiles.ps1
-│       ├── . Private\Rendering\Draw-ResizeLogo.ps1
-│       ├── . Private\Rendering\Draw-MainFrame.ps1
+│       ├── . Private\Rendering\Write-ResizeLogo.ps1
+│       ├── . Private\Rendering\Write-MainFrame.ps1
 │       ├── . Private\Helpers\*.ps1             (remaining helpers)
 │       ├── . Private\IPC\*.ps1                 (5 files)
 │       ├── . Private\Helpers\Get-Padding.ps1
@@ -165,7 +165,7 @@ Start-mJig/
 │       │   ├── Wait Loop (50ms ticks)
 │       │   ├── Mouse Settle Detection (inline only)
 │       │   ├── Movement Execution (inline only)
-│       │   ├── UI Rendering → Draw-MainFrame
+│       │   ├── UI Rendering → Write-MainFrame
 │       │   └── End Time Check (inline only)
 │       └── Cleanup (pipe, Show-DiagnosticFiles if -Diag, mutex, runspace)
 │
@@ -181,12 +181,12 @@ Start-mJig/
 │   │   ├── Write-Buffer.ps1                    Queue positioned, colored text segments
 │   │   ├── Flush-Buffer.ps1                    Build VT100 string + atomic [Console]::Write()
 │   │   ├── Clear-Buffer.ps1                    Discard queued segments
-│   │   ├── Write-ButtonImmediate.ps1           Instant button redraw (click feedback)
+│   │   ├── Write-MenuButton.ps1           Instant button redraw (click feedback)
 │   │   ├── Write-HotkeyLabel.ps1              Hotkey-parsed label renderer (split + highlight)
-│   │   ├── Draw-DialogShadow.ps1               Offset shadow effect
+│   │   ├── Write-DialogShadow.ps1               Offset shadow effect
 │   │   ├── Clear-DialogShadow.ps1              Remove shadow
-│   │   ├── Draw-ResizeLogo.ps1                 Resize splash logo
-│   │   ├── Draw-MainFrame.ps1                  Full main UI renderer (~940 lines)
+│   │   ├── Write-ResizeLogo.ps1                 Resize splash logo
+│   │   ├── Write-MainFrame.ps1                  Full main UI renderer (~940 lines)
 │   │   ├── Write-SectionLine.ps1               Section divider row
 │   │   ├── Write-SimpleDialogRow.ps1           Dialog content row
 │   │   └── Write-SimpleFieldRow.ps1            Dialog input field row
@@ -213,21 +213,21 @@ Start-mJig/
 │       ├── Get-MousePosition.ps1               Cursor position via GetCursorPos
 │       ├── Test-MouseMoved.ps1                 Position change detection
 │       ├── Get-TimeSinceMs.ps1                 Millisecond elapsed time
-│       ├── Get-ValueWithVariance.ps1           Random variance helper
+│       ├── Get-VariedValue.ps1           Random variance helper
 │       ├── Set-CoordinateBounds.ps1            Click region bounds helper
 │       ├── Get-Padding.ps1                     Padding string generator
 │       ├── Invoke-ResizeHandler.ps1            Blocking resize handler
 │       ├── Restore-ConsoleInputMode.ps1        Re-enable ENABLE_MOUSE_INPUT
-│       ├── Send-ResizeExitWakeKey.ps1          Inject VK_RMENU wake event
+│       ├── Send-ConsoleWakeKey.ps1          Inject VK_RMENU wake event
 │       ├── Show-DiagnosticFiles.ps1            Post-exit diag file dump (countdown prompt)
 │       ├── Add-DebugLogEntry.ps1               Standardized debug log entry creation
 │       ├── Get-DialogButtonLayout.ps1          Dialog button width calculations
 │       ├── Get-DialogMouseClick.ps1            Dialog mouse click detection via PeekConsoleInput
 │       ├── Read-DialogKeyInput.ps1             Dialog key-up event reader
-│       ├── Invoke-DialogExitCleanup.ps1        Dialog close cleanup (shadow, area, cursor, state)
-│       ├── Invoke-PostDialogCleanup.ps1        Post-dialog redraw flag setup (no clear-host; see §3a)
+│       ├── Invoke-DialogCleanup.ps1        Dialog close cleanup (shadow, area, cursor, state)
+│       ├── Reset-PostDialogState.ps1        Post-dialog redraw flag setup (no clear-host; see §3a)
 │       ├── Invoke-CursorMovement.ps1           Shared cursor animation loop with drift detection
-│       ├── Show-Notification.ps1               Windows toast notification via NotifyIcon + Dispose-Notification
+│       ├── Show-Notification.ps1               Windows toast notification via NotifyIcon + Remove-Notification
 │       └── Test-GlobalHotkey.ps1               Global hotkey polling (Shift+M+P / Shift+M+Q) via GetAsyncKeyState
 │
 └── Build/
@@ -356,6 +356,13 @@ $consoleHandle = $script:MouseAPI::GetConsoleWindow()
 - `FindWindow` / `EnumWindows` - Window handle lookup
 - `GetForegroundWindow` - Currently active window
 - `GetConsoleWindow` - This script's console window
+- `IsIconic` - Returns true if the window is minimized; used to gate `ShowWindow(SW_RESTORE)` before `SetForegroundWindow` in the `focus` IPC handler
+- `IsWindowVisible` - Returns true if the window has `WS_VISIBLE` set; used to detect ConPTY pseudo-windows (which are hidden) vs. real terminal windows (always visible even when minimized) in the `focus` handler
+- `GetAncestor(hwnd, GA_ROOTOWNER=3)` — walks the owner **and** parent chain to find the root-owner window; use `3` (GA_ROOTOWNER), not `2` (GA_ROOT/parent-only) when resolving the WT main window from a ConPTY child process. WT sets its main window as the **owner** (via `SetWindowLongPtr`, not `SetParent`) of the ConPTY pseudo-window, so GA_ROOT misses it entirely.
+- `ShowWindow` - Sets a window's show state (SW_RESTORE=9 to restore from minimize; followed by `PostMessage(WM_SYSCOMMAND, SC_RESTORE)` fallback for Windows Terminal cross-process restore)
+- `BringWindowToTop` / `AttachThreadInput` - Force a window to the foreground from a non-foreground thread
+- `AllowSetForegroundWindow(pid)` - Grant a specific process permission to call `SetForegroundWindow`; called by the worker immediately before sending the `focus` message while it holds the tray-click foreground lock
+- `GetWindow(hWnd, GW_OWNER=4)` - Returns the owner of a window; used in `FindMainWindowByProcessId` to filter out owned popup/flyout windows and ensure only the true top-level frame is returned
 
 ### 2b. WinRT Toast API (COM Interop)
 
@@ -382,7 +389,7 @@ $script:ToastAPI::ShowToast($toastXml, $aumid)
 The Toast class also provides `RenderEmojiToPng(string emoji, string outputPath, int size)` which renders emoji to a tightly-cropped PNG with transparent background using WPF's `FormattedText` + `DrawingVisual` + `RenderTargetBitmap` (backed by DirectWrite). The `Add-Type` call references `PresentationCore.dll` and `WindowsBase.dll` (resolved dynamically from the PowerShell runtime directory). Output is monochrome (WPF software renderer doesn't support COLR/CPAL color font tables) but auto-cropped to the glyph bounds with no wasted space.
 
 **Ephemeral AUMID registration:**
-Each toast uses a unique AUMID (`svc_<PipeName>_<PID>_<seq>`) registered ephemerally in `HKCU:\Software\Classes\AppUserModelId\`. The PID ensures uniqueness across sessions (Windows caches AUMID metadata persistently; reusing the same string would show stale DisplayNames). The `<seq>` is an incrementing `$script:_NotifyAumidSeq` counter ensuring uniqueness within a session. The registry key is created in `try`, the toast is fired, a 50ms sleep gives the toast system time to read the registry, then the key is removed in `finally`. On the very first notification call each session, all stale `svc_<PipeName>_*` keys are enumerated and deleted to clean up leftovers from crashed sessions. `Dispose-Notification` includes a safety-net sweep of all keys for the current PID.
+Each toast uses a unique AUMID (`svc_<PipeName>_<PID>_<seq>`) registered ephemerally in `HKCU:\Software\Classes\AppUserModelId\`. The PID ensures uniqueness across sessions (Windows caches AUMID metadata persistently; reusing the same string would show stale DisplayNames). The `<seq>` is an incrementing `$script:_NotifyAumidSeq` counter ensuring uniqueness within a session. The registry key is created in `try`, the toast is fired, a 50ms sleep gives the toast system time to read the registry, then the key is removed in `finally`. On the very first notification call each session, all stale `svc_<PipeName>_*` keys are enumerated and deleted to clean up leftovers from crashed sessions. `Remove-Notification` includes a safety-net sweep of all keys for the current PID.
 
 **Fallback chain in `Show-Notification`:**
 1. `$script:ToastAPI::ShowToast()` — native COM (instant, no process spawn), with ephemeral AUMID
@@ -427,10 +434,10 @@ Flush-Buffer -ClearFirst
 1. After initial dialog draw (shadow + borders + fields + buttons)
 2. After dialog field redraw (2 affected rows on navigation/click)
 3. After dialog input value change (character typed, backspace, validation error)
-4. After dialog resize handler atomic redraw (`Draw-MainFrame -Force -NoFlush` + optional parent callback + dialog redraw + single `Flush-Buffer -ClearFirst`)
+4. After dialog resize handler atomic redraw (`Write-MainFrame -Force -NoFlush` + optional parent callback + dialog redraw + single `Flush-Buffer -ClearFirst`)
 5. After dialog cleanup (clear shadow + clear area)
-6. After full main UI render (`Draw-MainFrame`: header + separator + logs + stats + separator + menu)
-7. After resize logo draw (`Draw-ResizeLogo -ClearFirst` on first draw)
+6. After full main UI render (`Write-MainFrame`: header + separator + logs + stats + separator + menu)
+7. After resize logo draw (`Write-ResizeLogo -ClearFirst` on first draw)
 
 ### 3a. Buffer-Before-Clear Rendering Rule (ARCHITECTURAL INVARIANT)
 
@@ -440,28 +447,28 @@ Every screen clear must be immediately followed by a flush of the complete next 
 
 ```powershell
 # Buffer everything that needs to be on screen FIRST, then flush atomically
-Draw-MainFrame -Force:$true -Date $date -NoFlush
+Write-MainFrame -Force:$true -Date $date -NoFlush
 Flush-Buffer -ClearFirst   # ESC[2J + full frame in one [Console]::Write()
 ```
 
 **The rule:** before calling `Flush-Buffer -ClearFirst`, you must have already buffered the **entire** next screen state -- the main frame plus any dialogs/menus that should be visible on top. If a dialog should be open after the flush, its content must be in the buffer before the flush happens.
 
 **When flushes occur:**
-- **Forced main frame redraw** (`$forceRedraw`): `Draw-MainFrame -Force -NoFlush` + `Flush-Buffer -ClearFirst`. Used after dialog close, mode change, or buffer resize.
+- **Forced main frame redraw** (`$forceRedraw`): `Write-MainFrame -Force -NoFlush` + `Flush-Buffer -ClearFirst`. Used after dialog close, mode change, or buffer resize.
 - **Settings reopen after sub-dialog** (`PendingReopenSettings`): Main frame is buffered with `-NoFlush`, then `Show-SettingsDialog -DeferFlush` adds the settings dialog to the same buffer, then `Flush-Buffer -ClearFirst` inside Settings paints everything atomically.
-- **Dialog-internal resize**: `Draw-MainFrame -Force -NoFlush` + optional parent callback + dialog redraw + single `Flush-Buffer -ClearFirst`.
-- **Resize logo animation**: `Draw-ResizeLogo -ClearFirst` flushes rapidly during the resize loop. Each flush is a complete frame. This is the one place where repeated rapid flushes are intentional.
+- **Dialog-internal resize**: `Write-MainFrame -Force -NoFlush` + optional parent callback + dialog redraw + single `Flush-Buffer -ClearFirst`.
+- **Resize logo animation**: `Write-ResizeLogo -ClearFirst` flushes rapidly during the resize loop. Each flush is a complete frame. This is the one place where repeated rapid flushes are intentional.
 - **Dialog-internal redraws** (toggling a value, typing in a field): Plain `Flush-Buffer` (no clear) since only a small region changed.
-- **Normal main loop renders**: `Draw-MainFrame -Date $date` (flushes internally, no clear needed).
+- **Normal main loop renders**: `Write-MainFrame -Date $date` (flushes internally, no clear needed).
 
-**The `-DeferFlush` pattern** (layered draws): When a dialog must reopen on top of a freshly redrawn main frame, the caller buffers the main frame with `Draw-MainFrame -Force -NoFlush` and passes `-DeferFlush` to the dialog. The dialog adds its content (padding, borders, buttons) to the existing buffer, then calls `Flush-Buffer -ClearFirst` before entering its input loop. Result: clear + main frame + dialog all appear in one atomic write.
+**The `-DeferFlush` pattern** (layered draws): When a dialog must reopen on top of a freshly redrawn main frame, the caller buffers the main frame with `Write-MainFrame -Force -NoFlush` and passes `-DeferFlush` to the dialog. The dialog adds its content (padding, borders, buttons) to the existing buffer, then calls `Flush-Buffer -ClearFirst` before entering its input loop. Result: clear + main frame + dialog all appear in one atomic write.
 
 **What does NOT use `Flush-Buffer -ClearFirst`:**
 - `Clear-Host` in quit/exit paths — these clear for a goodbye message before the process exits, not for frame transitions.
 - `Clear-Host` at startup — one-time clear before the render buffer is initialized.
 - `[Console]::Clear()` inside `Invoke-ResizeHandler` mid-loop (artifact cleanup during active resize animation, line 28) — this is inside the resize logo loop, not on exit; the exit path returns without clearing and the caller handles the atomic flush.
 
-**Key rule:** `Invoke-PostDialogCleanup` does **not** call `clear-host` or `[Console]::Clear()`. It only sets `$SkipUpdate`, `$forceRedraw`, and refreshes `$oldWindowSize`/`$OldBufferSize`. The actual screen clearing is handled centrally via `Flush-Buffer -ClearFirst`. This ensures a single, consistent code path for all screen transitions.
+**Key rule:** `Reset-PostDialogState` does **not** call `clear-host` or `[Console]::Clear()`. It only sets `$SkipUpdate`, `$forceRedraw`, and refreshes `$oldWindowSize`/`$OldBufferSize`. The actual screen clearing is handled centrally via `Flush-Buffer -ClearFirst`. This ensures a single, consistent code path for all screen transitions.
 
 **`Invoke-ResizeHandler` exit behavior:** The handler does NOT clear the screen on exit. The resize logo stays visible until the caller's `Flush-Buffer -ClearFirst` atomically replaces it with the full next frame. The only `[Console]::Clear()` inside the handler is the periodic artifact cleanup (every 50 draws) during the active resize animation loop.
 
@@ -571,7 +578,7 @@ $script:QuitDialogTitle = "Yellow"
 | `StatsBox*` | Right-side stats panel |
 | `QuitDialog*` / `QuitButton*` | Quit confirmation dialog and dedicated quit menu button colors |
 | `SettingsDialog*` | Settings mini-dialog (slide-up; time, movement, output toggle, debug toggle) |
-| `SettingsButton*` | Dedicated colors for the `(s)ettings` menu bar button; `OnClick*` defaults match `SettingsDialog*` |
+| `SettingsButton*` | Dedicated colors for the `(S)ettings` menu bar button; `OnClick*` defaults match `SettingsDialog*` |
 | `TimeDialog*` | Set end time dialog |
 | `MoveDialog*` | Modify movement dialog |
 | `Resize*` | Window resize splash screen |
@@ -619,7 +626,7 @@ Menu buttons use a multi-phase click model:
 **Phase 1 — Mouse DOWN** (`PeekConsoleInput` handler):
 - Detect which `$script:MenuItemsBounds` entry is under the cursor
 - Set `$script:PressedMenuButton = $btn.hotkey`
-- Immediately call `Write-ButtonImmediate` with `onClickFg`/`onClickBg`/`onClickHotkeyFg` + `Flush-Buffer` — gives instant visual feedback without waiting for the next frame
+- Immediately call `Write-MenuButton` with `onClickFg`/`onClickBg`/`onClickHotkeyFg` + `Flush-Buffer` — gives instant visual feedback without waiting for the next frame
 
 **Phase 2 — Mouse UP over same button** (confirmed click):
 - Set `$script:ConsoleClickCoords` to trigger the action
@@ -627,7 +634,7 @@ Menu buttons use a multi-phase click model:
 - Leave `$script:PressedMenuButton` set — render loop handles restoration
 
 **Phase 2 — Mouse UP outside button** (cancelled click):
-- `Start-Sleep 100ms` brief delay, then `Write-ButtonImmediate` with normal colors
+- `Start-Sleep 100ms` brief delay, then `Write-MenuButton` with normal colors
 - Clear `$script:PressedMenuButton` immediately
 
 **Phase 3 — Render loop restoration** (top of menu bar render, checks `$script:PendingDialogCheck`):
@@ -636,7 +643,7 @@ Menu buttons use a multi-phase click model:
 
 **Popup persistence**: Dialog-opening actions (q, t, m) call `Show-*Dialog` synchronously, blocking the main loop. The button stays visually highlighted (from Phase 1) throughout because no main render runs during the dialog. When the dialog closes, `DialogButtonBounds` is cleared and the next render's `PendingDialogCheck` fires the restore.
 
-**`Write-ButtonImmediate` function** (near `Flush-Buffer` definition):
+**`Write-MenuButton` function** (near `Flush-Buffer` definition):
 - Params: `$btn` (bounds entry), `$fg`, `$bg`, `$hotkeyFg`
 - Reads `$btn.displayText` and `$btn.format` to render full button text with emoji/pipe splitting
 - Calls `Flush-Buffer` at the end for immediate console output
@@ -646,7 +653,7 @@ Menu buttons use a multi-phase click model:
 startX, endX, y        — click hit area
 hotkey                 — single character hotkey
 index                  — position in menuItems array
-displayText            — current format text string (for Write-ButtonImmediate)
+displayText            — current format text string (for Write-MenuButton)
 format                 — menuFormat int (0=emoji|pipe, 1=noIcons, 2=short)
 fg, bg, hotkeyFg       — normal render colors
 onClickFg, onClickBg, onClickHotkeyFg  — pressed-state colors
@@ -697,9 +704,9 @@ if ([mJiggAPI.Mouse]::GetConsoleScreenBufferInfo($hOut, [ref]$csbi)) {
 
 #### Welcome screen: `handleResize` (nested inside `Show-StartupComplete`)
 
-Self-contained; does **not** call `Invoke-ResizeHandler` or `Send-ResizeExitWakeKey`.
+Self-contained; does **not** call `Invoke-ResizeHandler` or `Send-ConsoleWakeKey`.
 
-Before the outer polling loop starts, `Restore-ConsoleInputMode` and `Send-ResizeExitWakeKey` are called once to prime Windows Terminal's input routing (same mechanism used after main-loop resizes). `drainWakeKeys` is then called to consume the injected events before real keypress detection begins.
+Before the outer polling loop starts, `Restore-ConsoleInputMode` and `Send-ConsoleWakeKey` are called once to prime Windows Terminal's input routing (same mechanism used after main-loop resizes). `drainWakeKeys` is then called to consume the injected events before real keypress detection begins.
 
 1. Read initial size via `getSize` (direct CSBI call)
 2. Draw logo (or clear on error)
@@ -714,7 +721,7 @@ Drains the **entire** console input buffer and returns `$true` if any genuine ke
 Critical rules (each learned from a diagnosed bug):
 - **`IncludeKeyDown,IncludeKeyUp`** — `IncludeKeyDown` alone causes `ReadKey` to block indefinitely on KeyUp events, freezing the polling loop.
 - **Drain the whole buffer, never return early** — if a stale KeyUp (e.g. the Enter used to run the script) causes an early return, the synthetic wake key events are left behind in the buffer and counted as real keypresses on the next tick.
-- **Filter `VK_MENU` (18) as well as `VK_RMENU` (165)** — `Send-ResizeExitWakeKey` injects `VK_RMENU` (0xA5), but the Windows console input layer reports it as `VK_MENU` (18) in `INPUT_RECORD` keyboard events. See gotcha below.
+- **Filter `VK_MENU` (18) as well as `VK_RMENU` (165)** — `Send-ConsoleWakeKey` injects `VK_RMENU` (0xA5), but the Windows console input layer reports it as `VK_MENU` (18) in `INPUT_RECORD` keyboard events. See gotcha below.
 - **Filter all modifier VKs** — Shift (16), Ctrl (17), Alt (18), and their L/R variants (160–165) are never "press any key".
 - **Only count `KeyDown=true` as a real keypress** — stale KeyUp events from any previous key are discarded.
 
@@ -739,19 +746,19 @@ Called from: the main wait loop resize check, the per-iteration outside-wait-loo
 **Parameters:** `-PreviousScreenState` (string, defaults to `$script:CurrentScreenState`). Stored in `$script:LastResizePreviousState`.
 
 1. **Enter**: Reset `$script:CurrentResizeQuote` and `$script:ResizeLogoLockedHeight`
-2. **Initial draw**: `Draw-ResizeLogo -ClearFirst` (normal mode) or `[Console]::Clear()` (hidden mode)
+2. **Initial draw**: `Write-ResizeLogo -ClearFirst` (normal mode) or `[Console]::Clear()` (hidden mode)
 3. **1ms poll loop**:
    - Read `$psw.WindowSize` on every iteration (main loop already calls PeekConsoleInput externally)
    - If size changed: update pending size, reset stability timer, redraw logo (or nothing in hidden mode)
    - Every 50 redraws: `[Console]::Clear()` + `Restore-ConsoleInputMode` to prevent artifact buildup
    - Check stability: if elapsed time >= `$script:ResizeThrottleMs` (100ms) AND LMB not held → exit
-4. **Exit**: `Restore-ConsoleInputMode`, `Send-ResizeExitWakeKey`, `return $pendingSize` (no screen clear — the resize logo stays visible until the caller's `Flush-Buffer -ClearFirst` atomically replaces it)
+4. **Exit**: `Restore-ConsoleInputMode`, `Send-ConsoleWakeKey`, `return $pendingSize` (no screen clear — the resize logo stays visible until the caller's `Flush-Buffer -ClearFirst` atomically replaces it)
 
-**Centralized resize flow** (after extraction of `Draw-MainFrame`):
+**Centralized resize flow** (after extraction of `Write-MainFrame`):
 ```
 Resize detected → Invoke-ResizeHandler (logo shown, blocks until stable)
   → Caller updates HostWidth/HostHeight from returned stableSize
-  → Draw-MainFrame -Force -NoFlush (queues main UI, does not flush)
+  → Write-MainFrame -Force -NoFlush (queues main UI, does not flush)
   → If sub-dialog with parent: invoke ParentRedrawCallback (queues parent dialog offfocus)
   → Dialog re-centers and redraws on top (queues dialog)
   → Single Flush-Buffer -ClearFirst (atomic paint of all layers)
@@ -768,7 +775,7 @@ $HostHeight    = $stableSize.Height
 $stableSize = Invoke-ResizeHandler -PreviousScreenState "dialog-settings"
 $HostWidthRef.Value  = $stableSize.Width
 $HostHeightRef.Value = $stableSize.Height
-Draw-MainFrame -Force -NoFlush
+Write-MainFrame -Force -NoFlush
 # ... re-center and queue dialog redraw ...
 Flush-Buffer -ClearFirst
 
@@ -776,7 +783,7 @@ Flush-Buffer -ClearFirst
 $stableSize = Invoke-ResizeHandler -PreviousScreenState "dialog-time"
 $HostWidthRef.Value  = $stableSize.Width
 $HostHeightRef.Value = $stableSize.Height
-Draw-MainFrame -Force -NoFlush
+Write-MainFrame -Force -NoFlush
 if ($null -ne $ParentRedrawCallback) {
     & $ParentRedrawCallback $currentHostWidth $currentHostHeight
 }
@@ -784,7 +791,7 @@ if ($null -ne $ParentRedrawCallback) {
 Flush-Buffer -ClearFirst
 ```
 
-#### `Draw-MainFrame` function
+#### `Write-MainFrame` function
 
 Extracted rendering function (~2953) that draws the complete main UI: header, separator, log rows, stats box, bottom separator, menu bar, and footer. Callable from any context.
 
@@ -797,15 +804,15 @@ Extracted rendering function (~2953) that draws the complete main UI: header, se
 
 **Screen state tracking:** Sets `$script:CurrentScreenState` to `"main"` or `"hidden"` based on `$Output`. Dialogs set it to `"dialog-*"` on entry and restore it on exit.
 
-**Parent chain redraw pattern:** Sub-dialogs (`Show-TimeChangeDialog`, `Show-MovementModifyDialog`) accept an optional `[scriptblock]$ParentRedrawCallback` parameter. When a resize occurs inside a sub-dialog opened from Settings, the resize handler calls `Draw-MainFrame -Force -NoFlush` → `& $ParentRedrawCallback $w $h` (queues Settings in offfocus mode) → queues sub-dialog redraw → `Flush-Buffer -ClearFirst`. This ensures the full visual stack (main frame → Settings offfocus → sub-dialog) is painted atomically in a single flush, eliminating the flash caused by the previous double-flush pattern. `Show-SettingsDialog` creates the callback scriptblock before invoking each sub-dialog; the callback reads `$script:SettingsButtonStartX` and `$script:MenuBarY` (updated by `Draw-MainFrame`) to position the offfocus Settings dialog correctly at the new screen size. The callback also shadows `$dialogWidth`, `$dialogHeight`, and `$dialogLines` from saved `$_stgDialog*` variables to prevent PowerShell scope-chain shadowing (the sub-dialog's own `$dialogWidth`/`$dialogHeight` would otherwise be found first).
+**Parent chain redraw pattern:** Sub-dialogs (`Show-TimeChangeDialog`, `Show-MovementModifyDialog`) accept an optional `[scriptblock]$ParentRedrawCallback` parameter. When a resize occurs inside a sub-dialog opened from Settings, the resize handler calls `Write-MainFrame -Force -NoFlush` → `& $ParentRedrawCallback $w $h` (queues Settings in offfocus mode) → queues sub-dialog redraw → `Flush-Buffer -ClearFirst`. This ensures the full visual stack (main frame → Settings offfocus → sub-dialog) is painted atomically in a single flush, eliminating the flash caused by the previous double-flush pattern. `Show-SettingsDialog` creates the callback scriptblock before invoking each sub-dialog; the callback reads `$script:SettingsButtonStartX` and `$script:MenuBarY` (updated by `Write-MainFrame`) to position the offfocus Settings dialog correctly at the new screen size. The callback also shadows `$dialogWidth`, `$dialogHeight`, and `$dialogLines` from saved `$_stgDialog*` variables to prevent PowerShell scope-chain shadowing (the sub-dialog's own `$dialogWidth`/`$dialogHeight` would otherwise be found first).
 
-**Sub-dialog host refs:** `Show-SettingsDialog` passes `$HostWidthRef`/`$HostHeightRef` directly to sub-dialogs (not `[ref]$currentHostWidth` local intermediaries). This ensures that when a sub-dialog's resize handler updates the refs and calls `Draw-MainFrame`, the function reads the correct updated dimensions from the main loop's scope chain.
+**Sub-dialog host refs:** `Show-SettingsDialog` passes `$HostWidthRef`/`$HostHeightRef` directly to sub-dialogs (not `[ref]$currentHostWidth` local intermediaries). This ensures that when a sub-dialog's resize handler updates the refs and calls `Write-MainFrame`, the function reads the correct updated dimensions from the main loop's scope chain.
 
 **LMB gate**: After the stability timer expires, the exit is deferred if `GetAsyncKeyState(0x01) -band 0x8000` is set (mouse button still held). The timer is **not** reset by mouse state — only new size changes reset it.
 
 **`$oldWindowSize` initialization and sync**: Both `$oldWindowSize` and `$OldBufferSize` are set to the current live values immediately before the `:process while ($true)` main loop starts (prevents the first-iteration `$null` comparison from triggering a spurious resize screen on every startup). They are also synced to the current window state at every dialog exit path in the wait loop (Settings, Movement, Time, Quit, Info — both NeedsRedraw and normal close paths). This prevents the main loop from detecting a false resize mismatch after a dialog that internally handled a resize via `Invoke-ResizeHandler`.
 
-**`Draw-ResizeLogo` function:**
+**`Write-ResizeLogo` function:**
 - Accepts `-ClearFirst` switch (passed through to `Flush-Buffer`)
 - Calculates center position for logo
 - Draws box with dynamic padding (42% of available space)
@@ -824,7 +831,7 @@ Dialogs are modal functions that take control of input and rendering:
 4. Draw dialog box with borders
 5. Enter input loop
 6. Handle keypresses (Enter, Escape, Tab, arrows, etc.)
-7. Handle window resize (`Invoke-ResizeHandler` → `Draw-MainFrame` → redraw dialog)
+7. Handle window resize (`Invoke-ResizeHandler` → `Write-MainFrame` → redraw dialog)
 8. Return result hashtable
 9. Clear shadow and dialog area
 10. Restore cursor visibility
@@ -839,7 +846,7 @@ Write-SimpleDialogRow -x $x -y $y -width $w -content "Hello" -contentColor White
 Write-SimpleFieldRow -x $x -y $y -width $w -label "Value:" -longestLabel $ll -fieldValue $val -fieldWidth 4 -fieldIndex 0 -currentFieldIndex $cur -backgroundColor $bg
 
 # Draw offset shadow effect
-Draw-DialogShadow -dialogX $x -dialogY $y -dialogWidth $w -dialogHeight $h -shadowColor DarkGray
+Write-DialogShadow -DialogX $x -DialogY $y -DialogWidth $w -DialogHeight $h -ShadowColor DarkGray
 ```
 
 **Result format:**
@@ -852,13 +859,13 @@ return @{
 
 ### 8. Incognito Mode
 
-Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minimal status line and a small `(i)` toggle button positioned at the bottom-right. It is toggled by the `(i)ncognito` menu button or the `i` hotkey.
+Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minimal status line and a small `(I)` toggle button positioned at the bottom-right. It is toggled by the `(I)ncognito` menu button or the `i` hotkey.
 
 **Restricted hotkeys in incognito mode**: Only `q` (quit) and `i` (exit incognito) are processed. All other hotkeys (`o`, `s`, `m`, `?`, `/`, etc.) are silently ignored. The `o` (output cycle) handler is explicitly guarded with `$Output -ne "hidden"` so it cannot be used to exit incognito mode.
 
 **Hidden-view render** (inside `elseif ($Output -eq "hidden")`):
 - Draws a one-line status: `HH:mm:ss | running...` at row 0
-- Draws `(i)` button using `$script:MenuButtonText`/`Bg`/`Hotkey` colors, positioned at `($newW - 4, $newH - 2)`
+- Draws `(I)` button using `$script:MenuButtonText`/`Bg`/`Hotkey` colors, positioned at `($newW - 4, $newH - 2)`
 - Registers a single entry in `$script:MenuItemsBounds` with `hotkey = "i"`
 - Clears `$script:ModeButtonBounds`, `$script:ModeLabelBounds`, `$script:HeaderEndTimeBounds`, `$script:HeaderCurrentTimeBounds`, `$script:HeaderLogoBounds` since those regions aren't rendered
 
@@ -867,7 +874,7 @@ Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minim
 
 ### 8a. Settings Dialog
 
-`Show-SettingsDialog` is a slide-up mini-dialog that appears above the `(s)ettings` menu button. It is the consolidated entry point for time, movement, output mode, and debug mode configuration. Accepts `[switch]$DeferFlush` — when set, the initial draw uses `Flush-Buffer -ClearFirst` instead of `Flush-Buffer`, allowing the caller to pre-buffer the main frame so everything flushes atomically in one write.
+`Show-SettingsDialog` is a slide-up mini-dialog that appears above the `(S)ettings` menu button. It is the consolidated entry point for time, movement, output mode, and debug mode configuration. Accepts `[switch]$DeferFlush` — when set, the initial draw uses `Flush-Buffer -ClearFirst` instead of `Flush-Buffer`, allowing the caller to pre-buffer the main frame so everything flushes atomically in one write.
 
 **Layout (15 rows, height = 14):**
 ```
@@ -881,10 +888,10 @@ Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minim
 **Key behaviors:**
 - **Slide-up animation**: Animates from behind the separator/menu bar. Can be skipped via `[bool]$SkipAnimation = $false` parameter.
 - **Onfocus / offfocus**: While a sub-dialog (time or movement) is open, the dialog dims; returns to onfocus on sub-dialog close.
-- **Sub-dialog background cleanup**: When time or movement sub-dialog closes, `Show-SettingsDialog` breaks out with `ReopenSettings = $true`. The caller sets `$script:PendingReopenSettings = $true`. On the next `$forceRedraw`, the main loop buffers the main frame with `Draw-MainFrame -Force -NoFlush`, then calls `Show-SettingsDialog -SkipAnimation -DeferFlush`. Settings adds its content to the existing buffer and calls `Flush-Buffer -ClearFirst` — one atomic write paints main frame + settings with no visible blank gap.
+- **Sub-dialog background cleanup**: When time or movement sub-dialog closes, `Show-SettingsDialog` breaks out with `ReopenSettings = $true`. The caller sets `$script:PendingReopenSettings = $true`. On the next `$forceRedraw`, the main loop buffers the main frame with `Write-MainFrame -Force -NoFlush`, then calls `Show-SettingsDialog -SkipAnimation -DeferFlush`. Settings adds its content to the existing buffer and calls `Flush-Buffer -ClearFirst` — one atomic write paints main frame + settings with no visible blank gap.
 - **Inline output toggle** (`o`): Cycles `$script:Output` between `"full"` and `"min"` immediately, redraws the row, stays in the settings loop. No sub-dialog or screen repaint needed.
 - **Inline debug toggle** (`d`): Toggles `$script:DebugMode`, redraws the row, stays in the settings loop.
-- **Re-click to close**: Clicking the `(s)ettings` menu button while settings is visible closes the dialog.
+- **Re-click to close**: Clicking the `(S)ettings` menu button while settings is visible closes the dialog.
 - **Returns**: `@{ NeedsRedraw = $bool; ReopenSettings = $bool }`
 
 **Output / debug rows use full inner-row click detection** — `$outputButtonStartX/EndX` and `$debugButtonStartX/EndX` span the entire inner width (`$dialogX + 1` to `$dialogX + $dialogWidth - 2`). Pads are computed dynamically at render time based on current `$script:Output` / `$script:DebugMode`.
@@ -1108,8 +1115,9 @@ for ($i = 1; $i -lt $movementPoints.Count; $i++) {
 - **Worker** (always, regardless of viewer connection): once per 50ms tick inside the wait loop, before `GetLastInputInfo`. When a viewer is connected, the worker sends `{ type = 'togglePause'; paused = $bool; logMsg = $hashtable }` or `{ type = 'stopped'; reason = 'quit' }` via pipe so the viewer can update its UI state.
 - **Viewer mode**: does NOT poll hotkeys — the worker's 50ms tick loop provides much faster detection than the viewer's multi-second main loop. The viewer receives hotkey state changes from the worker via pipe messages (`'togglePause'` and `'stopped'`).
 
-**Windows toast notifications** (`Show-Notification` / `Dispose-Notification` in `Private/Helpers/Show-Notification.ps1`):
+**Windows toast notifications** (`Show-Notification` / `Remove-Notification` in `Private/Helpers/Show-Notification.ps1`):
 - Primary path uses the native `$script:ToastAPI::ShowToast()` COM interop with an ephemeral custom AUMID (see section 2b). A 50ms sleep after `ShowToast` keeps the registry key alive long enough for the toast system to read it.
+- **Parameters:** `-Body` (mandatory string — short action description, e.g. `"Paused"`) and `-Action` (mandatory ValidateSet — selects the action icon image). The `-Title` parameter was removed; app identity is carried entirely by the AUMID `DisplayName` so there is no redundant title line in the notification.
 - **Per-action icons:** The `-Action` parameter (mandatory, ValidateSet) selects an action-specific emoji for the toast `appLogoOverride` image. Action icons are rendered once and cached in `$script:_ActionIconCache` as `mjig_notify_<action>.png` in temp.
 - Action-to-emoji mapping: `started` = U+1F680 (rocket), `paused` = U+23F8 (pause), `resumed` = U+25B6 (play), `quit` = U+1F6D1 (stop sign), `disconnected` = U+1F50C (plug), `endtime` = U+23F0 (alarm clock).
 - **AUMID icon vs. toast image:** The AUMID `IconUri` (app identity icon shown next to the notification) uses the title emoji PNG (`$script:_TrayIconPath`). The toast's inline `appLogoOverride` image uses the action emoji PNG. This way the app identity tracks the title while the notification image indicates the action.
@@ -1118,9 +1126,9 @@ for ($i = 1; $i -lt $movementPoints.Count; $i++) {
 - **Interactive tray icon:** The worker's `NotifyIcon` has a right-click `ContextMenuStrip` with three items: `Open '<title>'` (focuses or spawns viewer), `Pause`/`Resume` (toggles pause), and `Quit`. Left-clicking the tray icon also triggers Open. Event handlers set `$script:_TrayAction` to `'open'`/`'toggle'`/`'quit'`; the worker loop checks this flag each tick after calling `[System.Windows.Forms.Application]::DoEvents()` to pump Windows Forms message events.
 - **`Update-TrayIcon`:** Standalone function that re-renders the tray icon PNG (WPF or GDI+ fallback), updates `NotifyIcon.Icon`, tooltip (`NotifyIcon.Text`), Open menu label (`Open '<title>'`), and stores the PNG path in `$script:_TrayIconPath` for AUMID use. Called on first `Show-Notification` and on every `title` IPC message received by the worker.
 - **`Update-TrayPauseLabel`:** Updates the Pause/Resume menu item text to match the current pause state. Called whenever pause state changes (hotkey, viewer togglePause IPC, or tray menu toggle).
-- **`focus` IPC message:** Sent by the worker to the viewer when the tray Open action fires and a viewer is connected. The viewer handles it in both message switch blocks by calling `GetConsoleWindow` + `ShowWindow(SW_RESTORE=9)` + `SetForegroundWindow` to bring its console to the foreground. If no viewer is connected, the worker spawns a new terminal with `Start-Process` running `Start-mJig` (which auto-connects as viewer via the existing mutex/pipe detection).
+- **`focus` IPC message:** Sent by the worker to the viewer when the tray Open action fires and a viewer is connected. Before sending, the worker calls `AllowSetForegroundWindow($_clientPid)` to grant the viewer foreground rights while the worker still holds the foreground lock from the tray click event. The viewer handles it in both message switch blocks with this sequence: **Window handle resolution (cached in `$script:_ViewerTerminalHwnd`):** call `GetConsoleWindow()` + `GetAncestor(GA_ROOTOWNER=3)` and check `IsWindowVisible`. In Windows Terminal v1.14+, `GetConsoleWindow()` returns a hidden ConPTY pseudo-window that is OWNED (not parented) by the WT main window — `GA_ROOTOWNER=3` walks the owner chain to find the real WT window, while `GA_ROOT=2` (parent chain only) returns the hidden pseudo-window and fails. If the result is still hidden (pre-v1.14 WT or a third-party terminal), the viewer walks its own parent process chain using `Get-CimInstance Win32_Process` (same `$_fSkip` / `$_fAllow` lists as the worker's terminal allowlist) and calls `FindMainWindowByProcessId` (finds the first visible ownerless top-level window with a non-empty title for the process — `GetWindow(GW_OWNER=4) == Zero` filters out owned popup/flyout windows that may appear before the main frame in `EnumWindows` order) once the `windowsterminal` (or other allowed terminal) process is found. The resolved handle is cached in `$script:_ViewerTerminalHwnd` so subsequent `focus` messages are instant. **Restore + focus sequence:** if `IsIconic(hwnd)` is true, call `ShowWindow(SW_RESTORE=9)` then poll `IsIconic` every 20ms (up to 500ms) until confirmed de-minimized — `SetForegroundWindow` silently fails on a minimized window; then `AttachThreadInput` to the current foreground thread, `BringWindowToTop` + `SetForegroundWindow`, then detach. If no viewer is connected, the worker spawns a new terminal with `Start-Process` running `Start-mJig` (which auto-connects as viewer via the existing mutex/pipe detection).
 - **DoEvents pump:** `[System.Windows.Forms.Application]::DoEvents()` is called once per worker loop tick (every 50ms) so that tray icon click and context menu events fire on the worker's thread.
-- `Dispose-Notification` removes the tray icon and context menu, cleans up cached action icon PNGs and tray icon PNG, and performs safety-net registry cleanup for all `svc_<PipeName>_<PID>_1..N` keys. Called in both viewer cleanup and worker finally block.
+- `Remove-Notification` removes the tray icon and context menu, cleans up cached action icon PNGs and tray icon PNG, and performs safety-net registry cleanup for all `svc_<PipeName>_<PID>_1..N` keys. Called in both viewer cleanup and worker finally block.
 - State variables: `$script:_NotifyAumidSeq` (incrementing AUMID counter), `$script:_ActionIconCache` (hashtable of action -> PNG path), `$script:_NotifyIconEmoji` (last rendered tray icon codepoint), `$script:_TrayIconPath` (path to the last-rendered title emoji PNG), `$script:_TrayContextMenu` / `$script:_TrayOpenItem` / `$script:_TrayPauseItem` (context menu references), `$script:_TrayAction` (pending tray action flag), `$script:_SkipTrayIcon` (set true in viewer mode to suppress tray icon creation).
 - Diagnostic logging: when `-Diag` is enabled, all notification entries, successes, and failures are logged to `$script:NotifyDiagFile` (`_diag/notify.txt`). Tags: `[ENTRY]`, `[RENDER-TRAY]`, `[RENDER-ACTION]`, `[TIER1-OK]`, `[TIER1-COM]`, `[TIER1-SKIP]`, `[TIER2-OK]`, `[TIER2-PS51]`, `[TIER3-BALLOON]`, `[ERROR]`.
 
@@ -1133,12 +1141,12 @@ for ($i = 1; $i -lt $movementPoints.Count; $i++) {
 **Notification events:**
 | Event | Source | `-Action` | Body text |
 |---|---|---|---|
-| Pause (Shift+M+P or header click) | Standalone or Worker | `paused` | "Paused" |
-| Resume (Shift+M+P or header click) | Standalone or Worker | `resumed` | "Resumed" |
-| Quit (Shift+M+Q) | Standalone: viewer / Worker: worker | `quit` | "mJig stopped" / "Worker quit" |
-| Worker initialized | Worker | `started` | "Worker started (PID: ...)" |
-| Viewer disconnected | Worker | `disconnected` | "Viewer disconnected" |
-| End time reached | Worker | `endtime` | "End time reached -- worker quit" |
+| Pause (Shift+M+P or header click) | Standalone or Worker | `paused` | `"Paused"` |
+| Resume (Shift+M+P or header click) | Standalone or Worker | `resumed` | `"Resumed"` |
+| Quit (Shift+M+Q) | Standalone: viewer / Worker: worker | `quit` | `"Stopped"` |
+| Application initialized | Worker | `started` | `"Started (PID: ...)"` |
+| Terminal disconnected | Worker | `disconnected` | `"Terminal disconnected"` |
+| End time reached | Worker | `endtime` | `"End time reached"` |
 
 **Script-scoped variables:**
 - `$script:ManualPause` — `[bool]` manual pause flag (standalone/viewer)
@@ -1149,6 +1157,7 @@ for ($i = 1; $i -lt $movementPoints.Count; $i++) {
 - `$script:_TrayPauseItem` — `[System.Windows.Forms.ToolStripMenuItem]` "Pause"/"Resume" menu item
 - `$script:_TrayAction` — `[string]` pending tray action (`'open'`/`'toggle'`/`'quit'`), checked each tick
 - `$script:_SkipTrayIcon` — `[bool]` set `$true` in viewer mode; suppresses `NotifyIcon` creation in `Update-TrayIcon`
+- `$script:_ViewerTerminalHwnd` — `[IntPtr]` cached handle for the viewer's actual terminal window (resolved on first `focus` IPC message). `$null` until first use. In conhost mode: `GetConsoleWindow()` → `GetAncestor(GA_ROOTOWNER=3)` returns the console window (or desktop, same thing), `IsWindowVisible` = true → use directly. In Windows Terminal v1.14+ (ConPTY) mode: `GetConsoleWindow()` returns a hidden pseudo-window; `GetAncestor(GA_ROOTOWNER=3)` traverses the owner chain and returns the real WT main window (`IsWindowVisible` = true) → use directly. For pre-v1.14 WT or third-party terminals where `GetAncestor` returns a hidden window: fall back to walking the parent process chain and calling `FindMainWindowByProcessId` on the terminal process (`GetWindow(GW_OWNER) == Zero` filter ensures only the true top-level frame is matched, not owned popup/flyout windows).
 - `$script:_TrayIconPath` — `[string]` path to the last-rendered title emoji PNG (also used as AUMID `IconUri`)
 - `$script:_ActionIconCache` — hashtable mapping action name to cached PNG path (per-action toast icons)
 - `$script:_NotifyAumidSeq` — incrementing counter for unique per-toast AUMID strings
@@ -1179,6 +1188,46 @@ The following objects are pre-allocated before the main `:process` loop and must
 
 ---
 
+## Naming & Terminology Standards
+
+These rules apply to all new and modified code. The full reference with examples is in `.cursor/rules/naming-standards.mdc`.
+
+### Function Names
+
+- All verbs must be from the PowerShell approved verb list (`Get-Verb`). `Draw` is not approved — use `Write`.
+- Nouns are simple descriptive nouns, not prepositional phrases (`Get-VariedValue` not `Get-VariedValue`) or adjective-qualified modes (`Write-MenuButton` not `Write-MenuButton`).
+- Nested helper functions inside `Private/` files use PascalCase (`DrawCompleteScreen`, not `drawCompleteScreen`).
+
+### Parameters
+
+All parameters use PascalCase — no exceptions (`$BackgroundColor` not `$bgColor`, `$ErrorMessage` not `$errorMsg`).
+
+### Variables
+
+- Names describe **what** the value is, not **how** it was obtained (`$pressedSinceLastPoll` not `$wasJustPressed`).
+- No single-letter names except geometric coordinate pairs (`$X`, `$Y`).
+- No cryptic abbreviations: `$ras`, `$math`, `$GPS`, `$xPath`, `$sw`, `$sb`, `$c`, `$nw`, `$ex` are all forbidden patterns.
+
+### `$_` Prefix (CRITICAL)
+
+The `$_` prefix is **reserved for provisioner-local variables only** (`$_modPath`, `$_iss`, `$_rs`, `$_ps`, `$_kvp`). Never use `$_` for temporaries in the main function body. The documented architectural locals listed under `$_isViewerMode` etc. in this file are the only other exceptions.
+
+### User-Visible Strings
+
+- No internal architecture terms in user-facing output: "Worker", "Viewer", "pipe", "IPC", "inline mode" are implementation details.
+- Notification bodies use `$script:WindowTitle` so they speak as the application the user sees.
+- **"Quit"** is correct for application controls. "Exit" is the older MDI File-menu convention and is not used here.
+- Log entries use sentence case, passive voice, and `"via X"` for source attribution — not parenthetical tags (`" - Paused via hotkey"` not `" - Paused (hotkey)"`).
+- Em-dash (`—`) not double-hyphen (`--`) in prose strings.
+
+### Comments
+
+- Comments state **what** a block is for in one line. Detailed architectural context belongs in this file, not inline.
+- No contractions (`do not`, not `don't`). No self-deprecating or editorial notes.
+- `"jiggle"` / `"jiggling"` are not used as technical terms in code or comments — use "cursor movement" or "activity simulation". Flavor text (resize quotes, module header) is exempt.
+
+---
+
 ## Common Modification Patterns
 
 ### File Placement Rule (mandatory for all plans)
@@ -1203,13 +1252,13 @@ $script:NewComponentBg = "DarkBlue"
 Write-Buffer -Text "text" -FG $script:NewComponentColor -BG $script:NewComponentBg
 ```
 
-3. Update `resources/AGENTS.md` color categories table.
+3. Update `AGENTS.md` color categories table.
 
 ### Icon/Separator Theme Variables
 
 Menu buttons and dialog buttons support toggling the emoji icon prefix and its separator character via two independent variable pairs:
 
-- `$script:MenuButtonShowIcon` / `$script:MenuButtonSeparator` — controls the `"👁 |"` prefix on all main menu bar buttons (including quit; the incognito-mode `(i)` button is text-only and unaffected)
+- `$script:MenuButtonShowIcon` / `$script:MenuButtonSeparator` — controls the `"👁 |"` prefix on all main menu bar buttons (including quit; the incognito-mode `(I)` button is text-only and unaffected)
 - `$script:DialogButtonShowIcon` / `$script:DialogButtonSeparator` — controls the `"✅ |"` / `"❌ |"` prefix on action buttons inside the Quit, Time, and Move dialogs
 
 **How they are consumed:**
@@ -1235,7 +1284,7 @@ Menu buttons and dialog buttons optionally wrap their full content in `[ ]` brac
 - `$menuBracketWidth = if ($script:MenuButtonShowBrackets) { 2 } else { 0 }` is computed alongside `$menuIconWidth` and added to `$format0Width`, `$quitWidth`, and `$itemDisplayWidth`.
 - Each dialog computes `$dlgBracketWidth` (or `$_dlgBW` / `$_moveDlgBW`) and applies it to `$bottomLinePadding`/`$buttonPadding`, `$btn2X`, and all four click-bound variables.
 - In render code, a local `$contentX` offset (`$btnXX + 1` when brackets are on) is used so icon/text always render at the correct column regardless of bracket state.
-- `$script:MenuItemsBounds` entries now include `pipeFg`, `bracketFg`, `bracketBg`, `onClickPipeFg`, `onClickBracketFg`, `onClickBracketBg` fields so `Write-ButtonImmediate` can restore exact colors on drag-off.
+- `$script:MenuItemsBounds` entries now include `pipeFg`, `bracketFg`, `bracketBg`, `onClickPipeFg`, `onClickBracketFg`, `onClickBracketBg` fields so `Write-MenuButton` can restore exact colors on drag-off.
 
 ### Adding a New Parameter
 
@@ -1259,15 +1308,15 @@ $script:NewParam = $NewParam
    - Save `$savedCursorVisible = $script:CursorVisible`
    - Calculate centered position
    - Queue all rendering via `Write-Buffer` (borders, content, fields, buttons)
-   - Call `Draw-DialogShadow` (also uses `Write-Buffer`)
+   - Call `Write-DialogShadow` (also uses `Write-Buffer`)
    - Call `Flush-Buffer` after the complete dialog is queued
-   - Input loop with resize detection (`Invoke-ResizeHandler` → `Draw-MainFrame -Force -NoFlush` → optional `& $ParentRedrawCallback` → queue dialog redraw → `Flush-Buffer -ClearFirst`)
+   - Input loop with resize detection (`Invoke-ResizeHandler` → `Write-MainFrame -Force -NoFlush` → optional `& $ParentRedrawCallback` → queue dialog redraw → `Flush-Buffer -ClearFirst`)
    - On field/input redraws: queue affected rows via `Write-Buffer`, then `Flush-Buffer`
    - Cursor visibility: `$script:CursorVisible = $true; [Console]::Write("$($script:ESC)[?25h")` to show, `$script:CursorVisible = $false; [Console]::Write("$($script:ESC)[?25l")` to hide
    - Call `Clear-DialogShadow` + queue clear area via `Write-Buffer`, then `Flush-Buffer`
    - Restore `$script:CursorVisible = $savedCursorVisible` and write appropriate VT100 sequence
    - Return `@{ Result = $data; NeedsRedraw = $bool }`
-   - **Do NOT call `clear-host` inside the dialog.** The caller uses `Invoke-PostDialogCleanup` (which sets `$forceRedraw = $true`), and the main render loop's centralized render→clear→flush pattern (§3a) handles screen clearing
+   - **Do NOT call `clear-host` inside the dialog.** The caller uses `Reset-PostDialogState` (which sets `$forceRedraw = $true`), and the main render loop's centralized render→clear→flush pattern (§3a) handles screen clearing
 
 3. Add hotkey handler in wait loop (~line 5400)
 4. Update README.md interactive controls
@@ -1365,7 +1414,7 @@ Note: use `GetStdHandle(-11)` (stdout) for `GetConsoleScreenBufferInfo`, not `-1
 
 ### `VK_RMENU` (165) Appears as `VK_MENU` (18) in Console Input Records (CRITICAL)
 
-`Send-ResizeExitWakeKey` injects `VK_RMENU` (0xA5 = 165) via `keybd_event`. However, the Windows console input layer reports this in `INPUT_RECORD` keyboard events with `wVirtualKeyCode = 18` (`VK_MENU`), **not** 165. Any code that filters wake keys by checking `VirtualKeyCode -eq 165` will miss them entirely. Always filter both 18 and 165 (and all other modifier VKs 16, 160–165) when reading from the console input buffer.
+`Send-ConsoleWakeKey` injects `VK_RMENU` (0xA5 = 165) via `keybd_event`. However, the Windows console input layer reports this in `INPUT_RECORD` keyboard events with `wVirtualKeyCode = 18` (`VK_MENU`), **not** 165. Any code that filters wake keys by checking `VirtualKeyCode -eq 165` will miss them entirely. Always filter both 18 and 165 (and all other modifier VKs 16, 160–165) when reading from the console input buffer.
 
 ### `ReadKey("IncludeKeyDown")` Blocks Indefinitely on KeyUp Events
 
@@ -1530,14 +1579,14 @@ Windows Terminal has a setting "Automatically adjust lightness of indistinguisha
 | `Start-mJig/Start-mJig.psd1` | Module manifest — version, GUID, exports, `RequiredAssemblies` |
 | `Start-mJig/Private/Config/` | Theme colors (`Initialize-Theme.ps1`) and P/Invoke types (`Initialize-PInvoke.ps1`) |
 | `Start-mJig/Private/Startup/` | `Show-StartupScreen.ps1`, `Show-StartupComplete.ps1`, `Get-LatestVersionInfo.ps1` |
-| `Start-mJig/Private/Rendering/` | Buffered rendering functions (11 files: `Write-Buffer`, `Flush-Buffer`, `Draw-MainFrame`, etc.) |
+| `Start-mJig/Private/Rendering/` | Buffered rendering functions (11 files: `Write-Buffer`, `Flush-Buffer`, `Write-MainFrame`, etc.) |
 | `Start-mJig/Private/Dialogs/` | All 5 dialog functions (`Show-TimeChangeDialog`, `Show-MovementModifyDialog`, etc.) |
 | `Start-mJig/Private/IPC/` | IPC helpers + worker loop (5 files: `Send-PipeMessage`, `Start-WorkerLoop`, etc.) |
-| `Start-mJig/Private/Helpers/` | Utility functions (19 files: `Get-MousePosition`, `Invoke-ResizeHandler`, `Show-DiagnosticFiles`, `Add-DebugLogEntry`, `Get-DialogButtonLayout`, `Get-DialogMouseClick`, `Read-DialogKeyInput`, `Invoke-DialogExitCleanup`, `Invoke-PostDialogCleanup`, etc.) |
+| `Start-mJig/Private/Helpers/` | Utility functions (19 files: `Get-MousePosition`, `Invoke-ResizeHandler`, `Show-DiagnosticFiles`, `Add-DebugLogEntry`, `Get-DialogButtonLayout`, `Get-DialogMouseClick`, `Read-DialogKeyInput`, `Invoke-DialogCleanup`, `Reset-PostDialogState`, etc.) |
 | `Start-mJig/Build/Build-Module.ps1` | Build script — combines skeleton + Private/ files into single `.psm1` in `dist/` |
 | `.github/workflows/build.yml` | GitHub Actions — runs build on `v*` tag push, creates release |
 | `README.md` | User documentation |
-| `resources/AGENTS.md` | AI agent context (this file) |
+| `AGENTS.md` | AI agent context (this file) |
 | `resources/test-logs.ps1` | Temporary test script for log rendering (git-ignored) |
 | `CHANGELOG.md` | Change tracking across commits |
 | `.gitignore` | Excludes `_diag/`, backup files, `resources/*.ps1`, and `dist/` from git |
@@ -1602,7 +1651,10 @@ A C# type defined via `Add-Type` (compiled once per AppDomain, cached under the 
 **Error stream handling:**
 Non-terminating errors from the child runspace are accumulated in `$_ps.Streams.Error` during the entire session. In normal mode these are silently suppressed. In `-DebugMode` they are deduplicated by message+line number and shown as a compact summary after exit. This prevents the wall of hundreds of identical errors (e.g., null-reference errors from rendering edge cases) that would otherwise dump on quit.
 
-**Exit flow:** The `:process` main loop is wrapped in a `try/finally` block. Normal exit paths (quit confirmation via mouse click or keyboard `q`, and end time reached) use `break process` which falls through to the cleanup section inside the `try` body: `Dispose-Notification` → viewer pipe disposal → `Show-DiagnosticFiles` prompt (if `-Diag`) → mutex release. The `finally` block runs on ALL exits (including Ctrl+C) and re-disposes the pipe and mutex (safe no-op if already disposed). `Show-DiagnosticFiles` is NOT called from `finally` — it only runs on normal exits. If the viewer fails to connect to the worker (pipe timeout), the early-return paths also call `Show-DiagnosticFiles` before exiting when `-Diag` is enabled. The provisioner's outer `finally` block then disposes the runspace and restores console state.
+**Debug-mode exit pause:**
+In `-DebugMode`, the provisioner's `finally` block shows a `Press any key to exit...` prompt (yellow) before calling `[Console]::Clear()`. This keeps all initialization output and error messages visible on screen regardless of how the script exited — normal quit, early return due to init failure, or unhandled exception. The prompt uses `$Host.UI.RawUI.KeyAvailable` polling with 50ms ticks, matching the same pattern as the init-complete debug pause (line ~1191). Note: this pause fires on every debug-mode exit, including normal user-initiated quits.
+
+**Exit flow:** The `:process` main loop is wrapped in a `try/finally` block. Normal exit paths (quit confirmation via mouse click or keyboard `q`, and end time reached) use `break process` which falls through to the cleanup section inside the `try` body: `Remove-Notification` → viewer pipe disposal → `Show-DiagnosticFiles` prompt (if `-Diag`) → mutex release. The `finally` block runs on ALL exits (including Ctrl+C) and re-disposes the pipe and mutex (safe no-op if already disposed). `Show-DiagnosticFiles` is NOT called from `finally` — it only runs on normal exits. If the viewer fails to connect to the worker (pipe timeout), the early-return paths also call `Show-DiagnosticFiles` before exiting when `-Diag` is enabled. The provisioner's outer `finally` block then disposes the runspace and restores console state.
 
 **Ctrl+C handling:** Pressing Ctrl+C fires `PipelineStoppedException` on the outer pipeline (the provisioner's poll loop). The `finally` clause of the `try { :process while ... } finally { ... }` block runs, closing the pipe client and releasing the mutex. `PipelineStoppedException` then propagates out of `Start-mJig`, and the interactive shell swallows it and returns to the prompt. The provisioner's `finally` then calls `$_ps.Stop()` (stops the inner pipeline), `$_ps.EndInvoke()` (waits for the `BatchInvocationWorkItem` thread to fully exit — prevents a race where `Dispose()` closes the `PSDataCollection` while the work item is still writing to it), then `$_ps.Dispose()` / `$_rs.Close()` / `$_rs.Dispose()`.
 
@@ -1637,24 +1689,24 @@ Functions are in individual `.ps1` files under `Start-mJig/Private/`. The skelet
 | Get-SmoothMovementPath | `Private/Helpers/Get-SmoothMovementPath.ps1` |
 | Get-DirectionArrow | `Private/Helpers/Get-DirectionArrow.ps1` |
 | Write-Buffer / Flush-Buffer / Clear-Buffer | `Private/Rendering/` |
-| Write-ButtonImmediate | `Private/Rendering/Write-ButtonImmediate.ps1` |
+| Write-MenuButton | `Private/Rendering/Write-MenuButton.ps1` |
 | Write-HotkeyLabel | `Private/Rendering/Write-HotkeyLabel.ps1` |
-| Draw-DialogShadow / Clear-DialogShadow | `Private/Rendering/` |
-| Draw-ResizeLogo | `Private/Rendering/Draw-ResizeLogo.ps1` |
-| Draw-MainFrame | `Private/Rendering/Draw-MainFrame.ps1` |
+| Write-DialogShadow / Clear-DialogShadow | `Private/Rendering/` |
+| Write-ResizeLogo | `Private/Rendering/Write-ResizeLogo.ps1` |
+| Write-MainFrame | `Private/Rendering/Write-MainFrame.ps1` |
 | Write-SectionLine / Write-SimpleDialogRow / Write-SimpleFieldRow | `Private/Rendering/` |
 | Get-MousePosition / Test-MouseMoved | `Private/Helpers/` |
-| Get-TimeSinceMs / Get-ValueWithVariance | `Private/Helpers/` |
+| Get-TimeSinceMs / Get-VariedValue | `Private/Helpers/` |
 | Get-CachedMethod / Set-CoordinateBounds / Get-Padding | `Private/Helpers/` |
-| Restore-ConsoleInputMode / Send-ResizeExitWakeKey | `Private/Helpers/` |
+| Restore-ConsoleInputMode / Send-ConsoleWakeKey | `Private/Helpers/` |
 | Add-DebugLogEntry | `Private/Helpers/Add-DebugLogEntry.ps1` |
 | Get-DialogButtonLayout | `Private/Helpers/Get-DialogButtonLayout.ps1` |
 | Get-DialogMouseClick | `Private/Helpers/Get-DialogMouseClick.ps1` |
 | Read-DialogKeyInput | `Private/Helpers/Read-DialogKeyInput.ps1` |
-| Invoke-DialogExitCleanup | `Private/Helpers/Invoke-DialogExitCleanup.ps1` |
-| Invoke-PostDialogCleanup (no clear-host; see §3a) | `Private/Helpers/Invoke-PostDialogCleanup.ps1` |
+| Invoke-DialogCleanup | `Private/Helpers/Invoke-DialogCleanup.ps1` |
+| Reset-PostDialogState (no clear-host; see §3a) | `Private/Helpers/Reset-PostDialogState.ps1` |
 | Invoke-CursorMovement | `Private/Helpers/Invoke-CursorMovement.ps1` |
-| Show-Notification / Dispose-Notification | `Private/Helpers/Show-Notification.ps1` |
+| Show-Notification / Remove-Notification | `Private/Helpers/Show-Notification.ps1` — `-Body` action string, `-Action` icon selector |
 | Test-GlobalHotkey | `Private/Helpers/Test-GlobalHotkey.ps1` |
 | Show-DiagnosticFiles | `Private/Helpers/Show-DiagnosticFiles.ps1` |
 | Send-PipeMessage / Read-PipeMessage / Send-PipeMessageNonBlocking | `Private/IPC/` |
@@ -1675,4 +1727,4 @@ Functions are in individual `.ps1` files under `Start-mJig/Private/`. The skelet
 | Main Loop (:process while) | `Start-mJig.psm1` |
 | Build Script | `Build/Build-Module.ps1` |
 
-*Note: All paths are relative to `Start-mJig/`. Last verified: 2026-03-08.*
+*Note: All paths are relative to `Start-mJig/`. Last verified: 2026-03-15.*

@@ -5,8 +5,7 @@
 				[string]$style = "simple"  # "arrows", "text", or "simple"
 			)
 			
-			# Define emoji arrows using ConvertFromUtf32 for cross-version compatibility
-			$arrowRight = [char]::ConvertFromUtf32(0x27A1)  # U+27A1
+		$arrowRight = [char]::ConvertFromUtf32(0x27A1)  # U+27A1
 			$arrowLeft = [char]::ConvertFromUtf32(0x2B05)   # U+2B05
 			$arrowDown = [char]::ConvertFromUtf32(0x2B07)   # U+2B07
 			$arrowUp = [char]::ConvertFromUtf32(0x2B06)     # U+2B06
@@ -15,8 +14,7 @@
 			$arrowSW = [char]::ConvertFromUtf32(0x2199)     # U+2199
 			$arrowNW = [char]::ConvertFromUtf32(0x2196)     # U+2196
 			
-			# Simple arrows (BMP characters, work with [char])
-			$simpleRight = [char]0x2192  # U+2192
+		$simpleRight = [char]0x2192  # U+2192
 			$simpleLeft = [char]0x2190   # U+2190
 			$simpleDown = [char]0x2193   # U+2193
 			$simpleUp = [char]0x2191     # U+2191
@@ -25,20 +23,14 @@
 			$simpleSW = [char]0x2199     # U+2199
 			$simpleNW = [char]0x2196     # U+2196
 			
-			# Calculate angle and determine primary direction
-			# Use a threshold to determine if movement is primarily horizontal, vertical, or diagonal
-			$absX = [Math]::Abs($deltaX)
-			$absY = [Math]::Abs($deltaY)
-			
-			# If movement is very small, return no arrow
-			if ($absX -lt 5 -and $absY -lt 5) {
+		$absX = [Math]::Abs($deltaX)
+		$absY = [Math]::Abs($deltaY)
+
+		if ($absX -lt 5 -and $absY -lt 5) {
 				return ""
 			}
 			
-			# Determine if movement is primarily horizontal or vertical
-			# If one axis is significantly larger, use cardinal direction
-			# Otherwise use diagonal direction
-			if ($absX -gt $absY * 2) {
+		if ($absX -gt $absY * 2) {
 				# Primarily horizontal
 				if ($style -eq "text") {
 					if ($deltaX -gt 0) { return "E" } else { return "W" }

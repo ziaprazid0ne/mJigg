@@ -1,0 +1,163 @@
+---
+description: Naming and terminology standards for mJig — functions, variables, parameters, comments, and user-visible strings
+globs: "**/*.ps1,**/*.psm1"
+alwaysApply: false
+---
+
+# Naming & Terminology Standards
+
+## Function Names
+
+All function verbs must be from the PowerShell approved verb list (`Get-Verb`). Common violations to avoid:
+
+```powershell
+# WRONG — Draw is not an approved verb
+function Draw-MainFrame { ... }
+function Draw-ResizeLogo { ... }
+function Draw-DialogShadow { ... }
+
+# CORRECT
+function Write-MainFrame { ... }
+function Write-ResizeLogo { ... }
+function Write-DialogShadow { ... }
+```
+
+Nouns must be simple descriptive nouns, not prepositional phrases or adjective-qualified modes:
+
+```powershell
+# WRONG
+function Get-ValueWithVariance { ... }   # prepositional phrase
+function Write-ButtonImmediate { ... }   # adjective as noun qualifier
+
+# CORRECT
+function Get-VariedValue { ... }
+function Write-MenuButton { ... }
+```
+
+Nested helper functions inside Private/ files use PascalCase matching the outer convention (`DrawCompleteScreen`, not `drawCompleteScreen`).
+
+## Parameters
+
+All parameters use PascalCase — no exceptions:
+
+```powershell
+# WRONG
+param($x, $y, $width, $bgColor, $currentField, $errorMsg)
+
+# CORRECT
+param($X, $Y, $Width, $BackgroundColor, $CurrentField, $ErrorMessage)
+```
+
+## Variables
+
+Names describe **what** the value is, not **how** it was obtained:
+
+```powershell
+# WRONG — describes the polling mechanism, not the state
+$wasJustPressed
+
+# CORRECT — describes what the value represents
+$pressedSinceLastPoll
+```
+
+No single-letter names except for established geometric coordinates (`$X`, `$Y`) passed as a coordinate pair. No cryptic abbreviations:
+
+```powershell
+# WRONG
+$ras       # binary direction selector
+$math      # tick count
+$GPS       # Group Policy settings hashtable
+$xPath     # transcript file path (collides with XPath)
+$sw        # window width
+$sb        # StringBuilder
+$c         # CSI escape prefix
+$nw        # NoWrap flag
+$ex        # exception variable
+
+# CORRECT
+$varianceSign
+$ticksToWait
+$groupPolicySettings
+$transcriptPath
+$windowWidth
+$frameBuilder
+$csi
+$isNoWrap
+$flushException
+```
+
+## `$_` Prefix Convention (CRITICAL)
+
+The `$_` prefix is **reserved exclusively for provisioner-local variables** (`$_modPath`, `$_iss`, `$_rs`, `$_ps`, `$_kvp`). Never use `$_` for temporaries in the main function body — it creates a false impression that a variable is provisioner-scoped.
+
+Documented architectural locals (`$_isViewerMode`, `$_viewerPipeClient`, `$_settingsEpoch`, etc.) are the only exceptions and are listed in AGENTS.md.
+
+## User-Visible Strings
+
+**No internal architecture terms in user-facing output.** Terms like "Worker", "Viewer", "pipe", "IPC", and "inline mode" are implementation details invisible to the user.
+
+```powershell
+# WRONG — exposes internal architecture
+Show-Notification -Body "Worker started (PID: $PID)"
+Show-Notification -Body "Viewer disconnected"
+
+# CORRECT — speaks as the application
+Show-Notification -Body "$($script:WindowTitle) started (PID: $PID)"
+Show-Notification -Body "$($script:WindowTitle) — terminal disconnected"
+```
+
+**"Quit" is correct** for application controls (system tray, dialogs, menu labels). "Exit" is the older MDI File-menu convention and is not used in this codebase.
+
+**Log entries** use sentence case, passive voice, and "via X" for source attribution — not parenthetical tags:
+
+```powershell
+# WRONG
+" - Paused (hotkey)"
+" - User input skip"
+" - Coordinates updated"
+" x$x/y$y"
+
+# CORRECT
+" - Paused via hotkey"
+" - Skipped: user input detected"
+" - Mouse position set"
+" ($x, $y)"
+```
+
+**UI labels** use plain English with em-dash for empty/none states, and consistent sentence/title case:
+
+```powershell
+# WRONG
+"(none)"   # in stats fields
+"off"      # for disabled options
+"DEBUGMODE"
+" Update available!"  # exclamation mark
+
+# CORRECT
+[char]0x2014  # em-dash
+"Disabled"
+"Debug Mode"
+" Update available"
+```
+
+**Menu buttons** use title case on the hotkey letter: `(S)ettings`, `(Q)uit`, `(I)ncognito`.
+
+Em-dash (`—`) not double-hyphen (`--`) in prose strings.
+
+## Comments
+
+Comments state **what** a block is for in one line. Detailed architectural context belongs in `AGENTS.md`, not inline.
+
+```powershell
+# WRONG — narrates the code; detailed mechanics belong in AGENTS.md
+# We use GetLastInputInfo here because it passively detects all system-wide
+# input without requiring a message pump or global hook. The cbSize field
+# must be set before calling...
+
+# CORRECT — names the block
+# System-wide input detection
+```
+
+No contractions (`do not`, not `don't`). No self-deprecating or editorial notes. Em-dash in comments, not double-hyphen.
+
+`"jiggle"` / `"jiggling"` are not used as technical terms in code or comments — use "cursor movement" or "activity simulation". Flavor text (resize quotes, module header) is exempt.

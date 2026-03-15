@@ -1,0 +1,56 @@
+---
+description: Theme system, notification system, and emoji handling patterns
+globs: "**/Config/Initialize-Theme.ps1,**/Helpers/Show-Notification.ps1,**/Rendering/*.ps1"
+alwaysApply: false
+---
+
+# Theme & Notification Patterns
+
+## Theme Colors
+
+All colors are centralized as `$script:` variables in `Initialize-Theme.ps1`. Categories:
+- `MenuButton*` / `MenuButtonOnClick*` — menu bar normal + pressed states
+- `MenuButtonShowIcon` / `MenuButtonSeparator` — icon prefix toggle and char
+- `MenuButtonShowBrackets` / `MenuButtonBracket*` — bracket wrapping
+- `DialogButton*` — dialog action button icon/bracket settings
+- `Header*` / `Footer*` — chrome group backgrounds
+- `HeaderRowBg` / `MenuRowBg` — per-row inset backgrounds
+- `BorderPadV` / `BorderPadH` — blank-row/column border thickness
+- `*Dialog*` — per-dialog color sets (Quit, Settings, Time, Move, Info, Options)
+
+When adding new theme colors:
+1. Add `$script:NewColor = "..."` in `Initialize-Theme.ps1`
+2. Use via `Write-Buffer -FG $script:NewColor`
+3. Update `AGENTS.md` color categories table
+
+## Emoji Handling
+
+Emojis display as 2 columns but have string length 1. Compute positions statically:
+```powershell
+$emojiX = $startX
+$pipeX = $emojiX + 2  # Emoji takes 2 display columns
+Write-Buffer -X $emojiX -Y $row -Text $emoji -FG $color -BG $bg -Wide
+Write-Buffer -X $pipeX -Y $row -Text "|" -FG $pipeColor -BG $bg
+```
+
+## Notification Fallback Chain
+
+1. `$script:ToastAPI::ShowToast()` — native COM (instant)
+2. `powershell.exe` subprocess — delegates to WinPS 5.1 WinRT support
+3. `NotifyIcon.ShowBalloonTip()` — basic balloon (last resort)
+
+Each toast uses a unique ephemeral AUMID (`svc_<PipeName>_<PID>_<seq>`). Registry key is created in `try`, toast fired, 50ms sleep, key removed in `finally`.
+
+## Tray Icon
+
+Background process only (`$script:_SkipTrayIcon = $true` in viewer). Uses `NotifyIcon` with `ContextMenuStrip` (Open, Pause/Resume, Quit). `DoEvents()` pumped every 50ms tick. `Update-TrayIcon` re-renders on title changes.
+
+## Notification Bodies
+
+Notification bodies must use `$script:WindowTitle` — never hardcoded internal terms ("Worker", "Viewer"):
+```powershell
+# CORRECT
+Show-Notification -Body "$($script:WindowTitle) started (PID: $PID)" -Action started
+Show-Notification -Body "$($script:WindowTitle) paused" -Action paused
+Show-Notification -Body "$($script:WindowTitle) — terminal disconnected" -Action disconnected
+```

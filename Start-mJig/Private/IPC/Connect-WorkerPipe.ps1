@@ -30,8 +30,8 @@
 			
 			if (-not $connected) {
 				Write-Host ""
-				Write-Host "ERROR: Could not connect to mJig worker process." -ForegroundColor $script:TextError
-				Write-Host "  Pipe: $PipeName  (timed out after $($ConnectTimeoutMs)ms)" -ForegroundColor $script:TextWarning
+				Write-Host "ERROR: Could not connect to the $($script:WindowTitle) background process." -ForegroundColor $script:TextError
+				Write-Host "  (Connection timed out after $($ConnectTimeoutMs)ms)" -ForegroundColor $script:TextWarning
 				Write-Host ""
 				return $null
 			}
@@ -41,7 +41,7 @@
 				$pipeWriter = New-Object System.IO.StreamWriter($pipeClient, [System.Text.Encoding]::UTF8)
 			} catch {
 				Write-Host ""
-				Write-Host "ERROR: Connected to pipe but failed to create streams." -ForegroundColor $script:TextError
+				Write-Host "ERROR: Connected but failed to initialize communication streams." -ForegroundColor $script:TextError
 				Write-Host "  $($_.Exception.Message)" -ForegroundColor Gray
 				Write-Host ""
 				if ($null -ne $pipeClient) { try { $pipeClient.Dispose() } catch {} }
@@ -52,7 +52,7 @@
 			try {
 				Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'auth'; token = $script:PipeAuthToken }
 			} catch {
-				Write-Host "ERROR: Failed to send auth handshake." -ForegroundColor $script:TextError
+				Write-Host "ERROR: Connection rejected: authentication failed." -ForegroundColor $script:TextError
 				try { $pipeClient.Dispose() } catch {}
 				return $null
 			}
@@ -66,15 +66,15 @@
 				}
 			} catch {}
 			if ($null -eq $welcome -or $welcome.type -ne 'welcome') {
-				Write-Host "ERROR: Invalid response from worker." -ForegroundColor $script:TextError
+				Write-Host "ERROR: Invalid response from the background process." -ForegroundColor $script:TextError
 				try { $pipeClient.Dispose() } catch {}
 				return $null
 			}
 			
 			return @{
-				Client    = $pipeClient
-				Reader    = $pipeReader
-				Writer    = $pipeWriter
-				WorkerPid = $welcome.pid
+				Client        = $pipeClient
+				Reader        = $pipeReader
+				Writer        = $pipeWriter
+				BackgroundPid = $welcome.pid
 			}
 		}

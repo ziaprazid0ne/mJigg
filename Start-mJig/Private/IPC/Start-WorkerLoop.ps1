@@ -37,7 +37,7 @@
 			$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 			if ($script:_wsDiagFile) { "$(Get-Date -Format 'HH:mm:ss.fff') [8] Listening for viewer connections" | Out-File $script:_wsDiagFile -Append }
 			if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - WORKER STARTED pipe=$($script:PipeName) bufSize=65536" | Out-File $_wDiagFile -Append }
-			Show-Notification -Title $script:WindowTitle -Body "Worker started (PID: $PID)" -Action started
+			Show-Notification -Body "Started (PID: $PID)" -Action started
 
 			$pipeReader = $null
 			$pipeWriter = $null
@@ -74,15 +74,14 @@
 					$_anyInputThisIteration = $false
 					$cooldownActive = $false
 					$secondsRemaining = 0
-					$date = Get-Date
-					$currentTime = $date.ToString("HHmm")
-					
-					# Interval calculation (same as main loop)
+				$date = Get-Date
+				
+				# Interval calculation (same as main loop)
 					$intervalMs = 1000
 					if ($null -ne $workerLastMovementTime) {
 						$intervalSecondsMs = $script:IntervalSeconds * 1000
 						$intervalVarianceMs = $script:IntervalVariance * 1000
-						$intervalMs = Get-ValueWithVariance -baseValue $intervalSecondsMs -variance $intervalVarianceMs
+						$intervalMs = Get-VariedValue -baseValue $intervalSecondsMs -variance $intervalVarianceMs
 						$intervalMs = $intervalMs - $workerLastMovementDurationMs
 						if ($intervalMs -lt 1000) { $intervalMs = 1000 }
 					}
@@ -127,7 +126,7 @@
 								if ($_clientPid -gt 0) {
 									$_walkPid  = [int]$_clientPid
 									$_visited  = @{}
-									# Only accept these as valid terminals -- anything else falls back to plain pwsh
+									# Only accept these as valid terminals — anything else falls back to plain pwsh
 									$_terminalAllowList = @(
 										'windowsterminal',   # Windows Terminal
 										'alacritty',         # Alacritty
@@ -167,7 +166,7 @@
 											}
 											break
 										} else {
-											# Unknown parent (explorer.exe, admin launcher, IDE, etc.) -- do not use as terminal
+											# Unknown parent (explorer.exe, admin launcher, IDE, etc.) — do not use as terminal
 											break
 										}
 									}
@@ -221,7 +220,7 @@
 						# Check viewer disconnection
 					if ($viewerConnected -and -not $pipeServer.IsConnected) {
 						if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DISCONNECTED (pipe not connected)" | Out-File $_wDiagFile -Append }
-						Show-Notification -Title $script:WindowTitle -Body 'Viewer disconnected' -Action disconnected
+						Show-Notification -Body "Terminal disconnected" -Action disconnected
 						$_workerReadTask = $null
 						$_pendingWriteFlush = $null
 						$viewerConnected = $false
@@ -296,7 +295,7 @@
 											if ($viewerConnected) {
 												try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
 											}
-											Show-Notification -Title $script:WindowTitle -Body 'Worker quit' -Action quit
+											Show-Notification -Body "Stopped" -Action quit
 											return
 										}
 									}
@@ -321,21 +320,19 @@
 						}
 					}
 						
-						# Global hotkey polling (Shift+M+P / Shift+M+Q)
-						# The worker always handles detection (fast 50ms tick loop).
-						# When a viewer is connected, it forwards the state via pipe.
-						$_wGlobalAction = $null
+					# Global hotkey polling — worker always polls, forwards state via pipe when viewer is connected
+					$_wGlobalAction = $null
 						try { $_wGlobalAction = Test-GlobalHotkey } catch {}
 						if ($_wGlobalAction -eq 'togglePause') {
 							try {
 								$manualPause = -not $manualPause
 								Update-TrayPauseLabel -Paused $manualPause
-								Show-Notification -Title $script:WindowTitle -Body $(if ($manualPause) { 'Paused' } else { 'Resumed' }) -Action $(if ($manualPause) { 'paused' } else { 'resumed' })
-								$_pauseLogMsg = @{
-									type = 'log'
-									components = @(
-										@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
-										@{ priority = 2; text = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' }) (hotkey)"; shortText = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' })" }
+							Show-Notification -Body (if ($manualPause) { "Paused" } else { "Resumed" }) -Action (if ($manualPause) { "paused" } else { "resumed" })
+							$_pauseLogMsg = @{
+								type = 'log'
+								components = @(
+									@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
+										@{ priority = 2; text = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' })  via hotkey"; shortText = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' })" }
 									)
 								}
 								if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
@@ -346,24 +343,21 @@
 							} catch {}
 						}
 						if ($_wGlobalAction -eq 'quit') {
-							try { Show-Notification -Title $script:WindowTitle -Body 'Worker quit' -Action quit } catch {}
+							try { Show-Notification -Body "Stopped" -Action quit } catch {}
 							if ($viewerConnected) {
 								try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
 							}
 							return
 						}
 
-						# GetLastInputInfo idle check (system-wide)
-						# Only check after the first movement completes -- before that,
-						# we have no baseline to distinguish real user input from system noise,
-						# and the null simulated/autoMove filters cause a permanent skip deadlock.
-						if ($null -ne $workerLastAutomatedMouseMovement) {
+					# GetLastInputInfo idle check — skipped until first movement completes to avoid skip deadlock
+					if ($null -ne $workerLastAutomatedMouseMovement) {
 						try {
 							if ($script:MouseAPI::GetLastInputInfo([ref]$lii)) {
 								$tickNow = [uint64]$script:MouseAPI::GetTickCount64()
 								$systemIdleMs = $tickNow - [uint64]$lii.dwTime
-								$recentSimulated = ($null -ne $workerLastSimulatedKeyPress) -and ((Get-TimeSinceMs -startTime $workerLastSimulatedKeyPress) -lt 500)
-								$recentAutoMove = (Get-TimeSinceMs -startTime $workerLastAutomatedMouseMovement) -lt 500
+								$recentSimulated = ($null -ne $workerLastSimulatedKeyPress) -and ((Get-TimeSinceMs -StartTime $workerLastSimulatedKeyPress) -lt 500)
+								$recentAutoMove = (Get-TimeSinceMs -StartTime $workerLastAutomatedMouseMovement) -lt 500
 								if ($systemIdleMs -lt 300 -and -not $recentSimulated -and -not $recentAutoMove) {
 									$userInputDetected = $true
 									$_anyInputThisIteration = $true
@@ -375,15 +369,13 @@
 						} catch {}
 						}
 						
-						# Mouse position tracking for auto-resume
-						# Only flag as user input after the first movement completes
-						# (same deadlock avoidance as GetLastInputInfo above).
-						try {
+					# Mouse position tracking — skipped until first movement completes (same deadlock avoidance as above)
+					try {
 							$currentCheckPos = Get-MousePosition
 							if ($null -ne $currentCheckPos -and $null -ne $workerLastPos) {
-								if (Test-MouseMoved -currentPos $currentCheckPos -lastPos $workerLastPos -threshold 2) {
+								if (Test-MouseMoved -CurrentPos $currentCheckPos -LastPos $workerLastPos -Threshold 2) {
 									if ($null -ne $workerLastAutomatedMouseMovement) {
-										$recentAutoMove2 = (Get-TimeSinceMs -startTime $workerLastAutomatedMouseMovement) -lt 500
+										$recentAutoMove2 = (Get-TimeSinceMs -StartTime $workerLastAutomatedMouseMovement) -lt 500
 										if (-not $recentAutoMove2) {
 											$mouseInputDetected = $true
 											$userInputDetected = $true
@@ -468,9 +460,12 @@
 						$_pendingTrayAction = $script:_TrayAction
 						$script:_TrayAction = $null
 						switch ($_pendingTrayAction) {
-							'open' {
-								if ($viewerConnected) {
-									try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message @{ type = 'focus' } -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
+						'open' {
+							if ($viewerConnected) {
+								# Grant the viewer foreground rights before sending focus.
+								# The worker temporarily holds foreground lock from the tray click event.
+								try { $null = $script:MouseAPI::AllowSetForegroundWindow([uint32]$_clientPid) } catch {}
+								try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message @{ type = 'focus' } -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
 								} else {
 							try {
 								$_trayPsExe  = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
@@ -498,12 +493,12 @@
 							'toggle' {
 								$manualPause = -not $manualPause
 								Update-TrayPauseLabel -Paused $manualPause
-								Show-Notification -Title $script:WindowTitle -Body $(if ($manualPause) { 'Paused' } else { 'Resumed' }) -Action $(if ($manualPause) { 'paused' } else { 'resumed' })
-								$_pauseLogMsg = @{
-									type = 'log'
-									components = @(
-										@{ priority = 1; text = $date.ToString(); shortText = $date.ToString('HH:mm:ss') }
-										@{ priority = 2; text = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' }) (tray)"; shortText = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' })" }
+							Show-Notification -Body (if ($manualPause) { "Paused" } else { "Resumed" }) -Action (if ($manualPause) { "paused" } else { "resumed" })
+							$_pauseLogMsg = @{
+								type = 'log'
+								components = @(
+									@{ priority = 1; text = $date.ToString(); shortText = $date.ToString('HH:mm:ss') }
+										@{ priority = 2; text = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' }) via tray"; shortText = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' })" }
 									)
 								}
 								if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
@@ -513,7 +508,7 @@
 								}
 							}
 							'quit' {
-								try { Show-Notification -Title $script:WindowTitle -Body 'Worker quit' -Action quit } catch {}
+								try { Show-Notification -Body "Stopped" -Action quit } catch {}
 								if ($viewerConnected) {
 									try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
 								}
@@ -599,8 +594,8 @@
 								type = 'log'
 								components = @(
 									@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
-									@{ priority = 2; text = " - Coordinates updated $directionArrow"; shortText = " - Updated $directionArrow" }
-									@{ priority = 3; text = " x${x}/y${y}"; shortText = " x${x}/y${y}" }
+								@{ priority = 2; text = " - Mouse position set $directionArrow"; shortText = " - Position set $directionArrow" }
+								@{ priority = 3; text = " (${x}, ${y})"; shortText = " (${x}, ${y})" }
 								)
 							}
 							if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
@@ -617,7 +612,7 @@
 							type = 'log'
 							components = @(
 								@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
-								@{ priority = 2; text = " - Initialization complete, mJig started"; shortText = " - Started" }
+								@{ priority = 2; text = " - Initialized; activity simulation active"; shortText = " - Started" }
 							)
 						}
 					} else {
@@ -625,13 +620,13 @@
 							type = 'log'
 							components = @(
 								@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
-								@{ priority = 2; text = " - User input skip"; shortText = " - Skipped" }
+								@{ priority = 2; text = " - Skipped: user input detected"; shortText = " - Skipped" }
 							)
 						}
 						if ($cooldownActive) {
 							$logMsg.components = @(
 								@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
-								@{ priority = 2; text = " - Auto-Resume Delay"; shortText = " - Auto-Resume Delay" }
+								@{ priority = 2; text = " - Cooldown active"; shortText = " - Cooldown active" }
 								@{ priority = 4; text = " [Resume: ${secondsRemaining}s]"; shortText = " [R: ${secondsRemaining}s]" }
 							)
 						}
@@ -657,14 +652,14 @@
 								if ($viewerConnected) {
 									try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'endtime' } } catch {}
 								}
-								Show-Notification -Title $script:WindowTitle -Body 'End time reached -- worker quit' -Action endtime
+								Show-Notification -Body "End time reached" -Action endtime
 								return
 							}
 						} catch {}
 					}
 				}
 			} finally {
-				Dispose-Notification
+				Remove-Notification
 				if ($null -ne $pipeReader) { try { $pipeReader.Dispose() } catch {} }
 				if ($null -ne $pipeWriter) { try { $pipeWriter.Dispose() } catch {} }
 				if ($null -ne $pipeServer) { try { $pipeServer.Dispose() } catch {} }

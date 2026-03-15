@@ -1,0 +1,66 @@
+---
+description: Core project conventions for mJig — commit workflow, documentation sync, file placement, and temp scripts
+alwaysApply: true
+---
+
+# mJig Project Conventions
+
+## Documentation Sync (Mandatory)
+
+When modifying mJig source files, also update `AGENTS.md` and `README.md` to reflect:
+- New or modified parameters
+- New or renamed functions
+- New files added to the `Private/` tree
+- New features, behaviors, theme colors, UI components
+- Changes to hotkeys or interactive controls
+- New gotchas or patterns discovered during development
+
+## AGENTS.md is the Source of Truth
+
+`AGENTS.md` lives at the **project root** (`c:\Projects\mJig\AGENTS.md`). Every change to the codebase must be cross-checked against `AGENTS.md` for accuracy. Before finishing any task:
+1. Re-read the relevant sections of `AGENTS.md` to confirm they still match the code
+2. Update any sections that have become stale due to your changes
+3. If you added a new pattern, gotcha, or architectural concept, add it to the appropriate section
+
+Never reference `AGENTS.md` at any other path (e.g. `resources/AGENTS.md` is stale — it was moved to root).
+
+## Maintain `.cursor/rules/` Alongside `AGENTS.md`
+
+The `.cursor/rules/*.mdc` files are distilled from `AGENTS.md` for fast AI context loading. When you update `AGENTS.md`, also update the relevant `.cursor/rules/` file(s) to stay in sync:
+- New rendering patterns or invariants -> `tui-rendering.mdc`
+- New PowerShell gotchas or collection rules -> `powershell-patterns.mdc`
+- New IPC protocol changes or epoch guard updates -> `ipc-patterns.mdc`
+- New dialog structure patterns -> `dialog-patterns.mdc`
+- New P/Invoke types or API gotchas -> `pinvoke-patterns.mdc`
+- New theme colors or notification changes -> `theme-and-notifications.mdc`
+- New resize handling patterns -> `resize-handling.mdc`
+- New project-wide conventions -> `project-conventions.mdc` (this file)
+
+If a change doesn't fit an existing rule file, create a new focused `.mdc` file with the appropriate `globs` scope.
+- New naming, terminology, or comment conventions -> `naming-standards.mdc`
+
+## File Placement Rule
+
+All new functions go in their own `.ps1` file under the appropriate `Private/` subdirectory and are dot-sourced in `Start-mJig.psm1`. Never inline new functions into the main `.psm1`.
+
+After adding new files:
+1. Add `. "$PSScriptRoot\Private\...\NewFunction.ps1"` in the appropriate section of `Start-mJig.psm1`
+2. Update `AGENTS.md` (Code Structure Map + Quick Reference table)
+3. Ensure `Build/Build-Module.ps1` picks up the new file
+
+## Commit Workflow
+
+When the user says they are ready to commit:
+1. Run `git status` and `git log --oneline -5`
+2. Write commit message: first line = concise summary of biggest changes. Body = bulleted key changes. End with "See CHANGELOG.md for full details."
+3. Write message to `_commit_msg.txt`, run `git commit -F _commit_msg.txt`, then delete the temp file (PowerShell does not support heredoc in git commands)
+4. Verify with `git status` that the working tree is clean
+5. **After commit**: move current `[Latest] - Unreleased` content into a versioned section with commit hash and today's date. Replace with fresh empty `[Latest] - Unreleased`. Do NOT stage or commit this changelog prep.
+
+## Comment Style
+
+Comments state **what** a block is for in one line. Detailed context belongs in `AGENTS.md`, not inline. No contractions, no editorial notes, no historical version notes. See `naming-standards.mdc` for the full rule set.
+
+## Temporary Test Scripts
+
+Place throwaway `.ps1` test scripts in `resources/` (git-ignored). Never in the project root. The `_diag/` folder is for runtime diagnostic output only, not agent-authored test scripts.

@@ -25,8 +25,8 @@
 			$baseSpeedMs = $baseSpeedSeconds * 1000
 			$varianceMs = $varianceSeconds * 1000
 			$varianceAmountMs = Get-Random -Minimum 0 -Maximum ($varianceMs + 1)
-			$ras = Get-Random -Maximum 2 -Minimum 0
-			if ($ras -eq 0) {
+		$varianceSign = Get-Random -Maximum 2 -Minimum 0
+		if ($varianceSign -eq 0) {
 				$movementTimeMs = ($baseSpeedMs - $varianceAmountMs)
 			} else {
 				$movementTimeMs = ($baseSpeedMs + $varianceAmountMs)
@@ -37,16 +37,11 @@
 				$movementTimeMs = 50
 			}
 			
-		# Generate one point per 5ms of movement time so the execution loop can advance
-		# at a constant 5ms interval. Acceleration/deceleration is expressed by point
-		# spacing along the curve (easing places points close together when the virtual
-		# speed is low, and far apart when it is high) rather than by varying the sleep
-		# duration. Duplicate pixel coordinates are fine - the cursor simply dwells there
-		# for one 5ms tick. t is always increasing so the cursor never moves backwards.
-		$numPoints = [Math]::Max(2, [Math]::Ceiling($movementTimeMs / 5))
+	# One point per 5ms; easing controls point spacing (not sleep duration)
+	$numPoints = [Math]::Max(2, [Math]::Ceiling($movementTimeMs / 5))
 		$numPoints = [Math]::Min($numPoints, 2000)  # safety cap (~10 seconds at 5ms/step)
 			
-		# Perpendicular unit vector (left of travel direction) used for lateral arc offsets
+		# Perpendicular unit vector for arc offsets
 		$perpendicularX = 0.0
 		$perpendicularY = 0.0
 		if ($distance -gt 0) {
@@ -54,20 +49,16 @@
 			$perpendicularY =  $deltaX / $distance
 		}
 
-		# Start arc -- window [0, 0.3], peaks at t=0.15: curve develops quickly after departure.
-		# Amplitude 1-10% of distance (was 5-20%), and only present ~50% of the time so it
-		# ranges naturally from nonexistent to subtle.
-		$startArcAmount = 0.0
+	# Start arc: [0, 0.3], 1-10% amplitude, ~50% probability — subtle natural departure curve
+	$startArcAmount = 0.0
 		$startArcSign   = 1
 		if ((Get-Random -Minimum 0 -Maximum 100) -ge 50) {
 			$startArcAmount = $distance * (Get-Random -Minimum 1 -Maximum 11) / 100  # 1-10%
 			$startArcSign   = if ((Get-Random -Maximum 2) -eq 0) { 1 } else { -1 }
 		}
 
-		# Body curve -- subtle background curve over the remaining 70% of travel [0.3, 1].
-		# Randomly U-shaped (half-sine: bows one way and returns) or S-shaped (full-sine:
-		# crosses sides at the midpoint). Amplitude 3-10% of distance keeps it natural.
-		$bodyCurveAmount = 0.0
+	# Body curve: [0.3, 1], 3-10% amplitude, 60% probability, U or S shaped
+	$bodyCurveAmount = 0.0
 		$bodyCurveSign   = 1
 		$bodyCurveType   = 0  # 0 = U-shape (half-sine), 1 = S-shape (full-sine)
 		if ((Get-Random -Minimum 0 -Maximum 100) -ge 40) {  # 60% chance
@@ -102,12 +93,8 @@
 				$baseY += $perpendicularY * $lateralOffset
 			}
 
-			# Body curve: window [0.3, 1] -- both shapes use squared-sine envelopes so the
-			# derivative is zero at both window boundaries (smooth departure AND smooth landing).
-			#   U-shape: sin(pi*bodyT)^2                     -- always same side, peaks at t=0.65
-			#   S-shape: sin(2pi*bodyT) * sin(pi*bodyT)      -- crosses sides at t=0.65
-			# Neither shape produces a hook; both glide naturally into the endpoint.
-			if ($bodyCurveAmount -gt 0 -and $t -ge 0.3) {
+		# Body curve over [0.3,1]: U-shape=sin(pi*t)^2, S-shape=sin(2pi*t)*sin(pi*t) — zero derivative at both ends
+		if ($bodyCurveAmount -gt 0 -and $t -ge 0.3) {
 				$bodyT   = ($t - 0.3) / 0.7  # normalise to [0,1] over the body segment
 				$sinBase = [Math]::Sin([Math]::PI * $bodyT)
 				$bodyArc = if ($bodyCurveType -eq 0) {

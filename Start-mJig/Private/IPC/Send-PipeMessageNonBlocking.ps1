@@ -9,9 +9,9 @@
 					return $false
 				}
 				if ($PendingFlush.Value.IsFaulted) {
-					$ex = $PendingFlush.Value.Exception
-					$PendingFlush.Value = $null
-					throw $ex
+			$flushException = $PendingFlush.Value.Exception
+				$PendingFlush.Value = $null
+				throw $flushException
 				}
 				$PendingFlush.Value = $null
 			}

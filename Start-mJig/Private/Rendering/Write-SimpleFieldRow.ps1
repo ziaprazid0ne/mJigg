@@ -1,43 +1,43 @@
-﻿		function Write-SimpleFieldRow {
+		function Write-SimpleFieldRow {
 			param(
-				[int]$x,
-				[int]$y,
-				[int]$width,
-				[string]$label,
-				[int]$longestLabel,
-				[string]$fieldValue,
-				[int]$fieldWidth,
-				[int]$fieldIndex,
-				[int]$currentFieldIndex,
-				[System.ConsoleColor]$backgroundColor = $null
+				[int]$X,
+				[int]$Y,
+				[int]$Width,
+				[string]$Label,
+				[int]$LongestLabel,
+				[string]$FieldValue,
+				[int]$FieldWidth,
+				[int]$FieldIndex,
+				[int]$CurrentFieldIndex,
+				[System.ConsoleColor]$BackgroundColor = $null
 			)
 			
-			$labelPadding = [Math]::Max(0, $longestLabel - $label.Length)
-			$labelText = "$($script:BoxVertical)  " + $label + (" " * $labelPadding)
+			$labelPadding = [Math]::Max(0, $LongestLabel - $Label.Length)
+			$labelText = "$($script:BoxVertical)  " + $Label + (" " * $labelPadding)
 			
-			$fieldDisplay = if ([string]::IsNullOrEmpty($fieldValue)) { "" } else { $fieldValue }
-			$fieldDisplay = $fieldDisplay.PadRight($fieldWidth)
+			$fieldDisplay = if ([string]::IsNullOrEmpty($FieldValue)) { "" } else { $FieldValue }
+			$fieldDisplay = $fieldDisplay.PadRight($FieldWidth)
 			$fieldContent = "[" + $fieldDisplay + "]"
 			
-			$labelFG = if ($null -ne $backgroundColor) { $script:MoveDialogText } else { $null }
-			$borderFG = if ($null -ne $backgroundColor) { $script:MoveDialogBorder } else { $null }
-			$fieldFG = if ($fieldIndex -eq $currentFieldIndex) {
-				if ($null -ne $backgroundColor) { $script:MoveDialogFieldText } else { $script:TimeDialogFieldText }
+			$labelFG = if ($null -ne $BackgroundColor) { $script:MoveDialogText } else { $null }
+			$borderFG = if ($null -ne $BackgroundColor) { $script:MoveDialogBorder } else { $null }
+			$fieldFG = if ($FieldIndex -eq $CurrentFieldIndex) {
+				if ($null -ne $BackgroundColor) { $script:MoveDialogFieldText } else { $script:TimeDialogFieldText }
 			} else {
 				$script:TextHighlight
 			}
-			$fieldBG = if ($fieldIndex -eq $currentFieldIndex) {
-				if ($null -ne $backgroundColor) { $script:MoveDialogFieldBg } else { $script:TimeDialogFieldBg }
+			$fieldBG = if ($FieldIndex -eq $CurrentFieldIndex) {
+				if ($null -ne $BackgroundColor) { $script:MoveDialogFieldBg } else { $script:TimeDialogFieldBg }
 			} else {
-				$backgroundColor
+				$BackgroundColor
 			}
 			
-			Write-Buffer -X $x -Y $y -Text $labelText -FG $labelFG -BG $backgroundColor
-			Write-Buffer -Text "[" -FG $labelFG -BG $backgroundColor
+			Write-Buffer -X $X -Y $Y -Text $labelText -FG $labelFG -BG $BackgroundColor
+			Write-Buffer -Text "[" -FG $labelFG -BG $BackgroundColor
 			Write-Buffer -Text $fieldDisplay -FG $fieldFG -BG $fieldBG
-			Write-Buffer -Text "]" -FG $labelFG -BG $backgroundColor
+			Write-Buffer -Text "]" -FG $labelFG -BG $BackgroundColor
 			$usedWidth = $labelText.Length + $fieldContent.Length
-			$remainingPadding = Get-Padding -usedWidth ($usedWidth + 1) -totalWidth $width
-			Write-Buffer -Text (" " * $remainingPadding) -BG $backgroundColor
-			Write-Buffer -Text "$($script:BoxVertical)" -FG $borderFG -BG $backgroundColor
+			$remainingPadding = Get-Padding -UsedWidth ($usedWidth + 1) -TotalWidth $Width
+			Write-Buffer -Text (" " * $remainingPadding) -BG $BackgroundColor
+			Write-Buffer -Text "$($script:BoxVertical)" -FG $borderFG -BG $BackgroundColor
 		}

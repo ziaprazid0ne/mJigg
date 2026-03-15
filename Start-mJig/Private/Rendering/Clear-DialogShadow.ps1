@@ -5,5 +5,5 @@
 				[int]$dialogWidth,
 				[int]$dialogHeight
 			)
-			Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -Clear
+			Write-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -Clear
 		}

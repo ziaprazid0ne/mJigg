@@ -1,6 +1,6 @@
 		function Show-TimeChangeDialog {
 			param(
-				[int]$currentEndTime,
+				[int]$CurrentEndTime,
 				[ref]$HostWidthRef,
 				[ref]$HostHeightRef,
 				[scriptblock]$ParentRedrawCallback = $null
@@ -24,26 +24,26 @@
 			
 		$checkmark = [char]::ConvertFromUtf32(0x2705)  # U+2705 green checkmark
 		$redX = [char]::ConvertFromUtf32(0x274C)  # U+274C red X
-$_bl = Get-DialogButtonLayout
-$dlgIconWidth = $_bl.IconWidth; $dlgBracketWidth = $_bl.BracketWidth; $dlgParenAdj = $_bl.ParenAdj
+$buttonLayout = Get-DialogButtonLayout
+$dialogIconWidth = $buttonLayout.IconWidth; $dialogBracketWidth = $buttonLayout.BracketWidth; $dialogParenOffset = $buttonLayout.ParenAdjustment
 # Button line: border+space(2) + btn1(bracketW+iconW+"(a)pply"=7) + gap(2) + btn2(bracketW+iconW+"(c)ancel"=8) = 19 + 2*iconWidth + 2*bracketWidth
-$bottomLinePadding = $dialogWidth - (19 + 2 * $dlgParenAdj + 2 * $dlgIconWidth + 2 * $dlgBracketWidth) - 1
+$bottomLinePadding = $dialogWidth - (19 + 2 * $dialogParenOffset + 2 * $dialogIconWidth + 2 * $dialogBracketWidth) - 1
 			
 			# Build all lines to be exactly 35 characters using Get-Padding helper
 			$line0 = "$($script:BoxTopLeft)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxHorizontal)$($script:BoxTopRight)"  # 35 chars
 			$line1Text = "$($script:BoxVertical)  Change End Time"
-			$line1Padding = Get-Padding -usedWidth ($line1Text.Length + 1) -totalWidth $dialogWidth
+			$line1Padding = Get-Padding -UsedWidth ($line1Text.Length + 1) -TotalWidth $dialogWidth
 			$line1 = $line1Text + (" " * $line1Padding) + "$($script:BoxVertical)"
 			
 			$line2 = "$($script:BoxVertical)" + (" " * 33) + "$($script:BoxVertical)"  # 35 chars
 			
 			$line3Text = "$($script:BoxVertical)  Enter new time (HHmm format):"
-			$line3Padding = Get-Padding -usedWidth ($line3Text.Length + 1) -totalWidth $dialogWidth
+			$line3Padding = Get-Padding -UsedWidth ($line3Text.Length + 1) -TotalWidth $dialogWidth
 			$line3 = $line3Text + (" " * $line3Padding) + "$($script:BoxVertical)"
 			
 			# Line 4 will be drawn separately with highlighted field
 			$line4Text = "$($script:BoxVertical)  "
-			$line4Padding = Get-Padding -usedWidth ($line4Text.Length + 1 + 6) -totalWidth $dialogWidth  # +6 for "[    ]"
+			$line4Padding = Get-Padding -UsedWidth ($line4Text.Length + 1 + 6) -TotalWidth $dialogWidth  # +6 for "[    ]"
 			$line4 = $line4Text + (" " * $line4Padding) + "$($script:BoxVertical)"
 			
 			$line5 = "$($script:BoxVertical)" + (" " * 33) + "$($script:BoxVertical)"  # 35 chars
@@ -72,12 +72,12 @@ $bottomLinePadding = $dialogWidth - (19 + 2 * $dlgParenAdj + 2 * $dlgIconWidth +
 					Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 					Write-Buffer -Text "Change End Time" -FG $script:TimeDialogTitle -BG $script:TimeDialogBg
 					$titleUsedWidth = 3 + "Change End Time".Length
-					$titlePadding = Get-Padding -usedWidth ($titleUsedWidth + 1) -totalWidth $dialogWidth
+					$titlePadding = Get-Padding -UsedWidth ($titleUsedWidth + 1) -TotalWidth $dialogWidth
 					Write-Buffer -Text (" " * $titlePadding) -BG $script:TimeDialogBg
 					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 				} elseif ($i -eq 4) {
-					$initialTimeDisplay = if ($currentEndTime -ne -1 -and $currentEndTime -ne 0) { 
-						$currentEndTime.ToString().PadLeft(4, '0') 
+					$initialTimeDisplay = if ($CurrentEndTime -ne -1 -and $CurrentEndTime -ne 0) { 
+						$CurrentEndTime.ToString().PadLeft(4, '0') 
 					} else { 
 						"" 
 					}
@@ -87,42 +87,42 @@ $bottomLinePadding = $dialogWidth - (19 + 2 * $dlgParenAdj + 2 * $dlgIconWidth +
 					Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
 					Write-Buffer -Text "]" -FG $script:TimeDialogText -BG $script:TimeDialogBg
 					$fieldUsedWidth = 3 + 6
-					$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+					$fieldPadding = Get-Padding -UsedWidth ($fieldUsedWidth + 1) -TotalWidth $dialogWidth
 					Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 			} elseif ($i -eq 6) {
-			$btn1X = $dialogX + 2
-		$btn2X = $btn1X + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj + 2  # bracket + icon + "(a)pply"(7) + gap(2)
+			$applyButtonX = $dialogX + 2
+		$cancelButtonX = $applyButtonX + $dialogBracketWidth + $dialogIconWidth + 7 + $dialogParenOffset + 2  # bracket + icon + "(a)pply"(7) + gap(2)
 		Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical) " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 		if ($script:DialogButtonShowBrackets) {
-			Write-Buffer -X $btn1X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+			Write-Buffer -X $applyButtonX -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
 		}
-		$btn1ContentX = $btn1X + [int]$script:DialogButtonShowBrackets
+		$applyButtonContentX = $applyButtonX + [int]$script:DialogButtonShowBrackets
 		if ($script:DialogButtonShowIcon) {
-			Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text $checkmark -FG $script:TextSuccess -BG $script:TimeDialogButtonBg -Wide
-			Write-Buffer -X ($btn1ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+			Write-Buffer -X $applyButtonContentX -Y ($dialogY + $i) -Text $checkmark -FG $script:TextSuccess -BG $script:TimeDialogButtonBg -Wide
+			Write-Buffer -X ($applyButtonContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 		} else {
-			Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
+			Write-Buffer -X $applyButtonContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
 		}
-		$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+		$closingParen = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
 		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
 	Write-Buffer -Text "a" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-	Write-Buffer -Text "${_rp}pply" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+	Write-Buffer -Text "$closingParenpply" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 		if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 		Write-Buffer -Text "  " -BG $script:TimeDialogBg
 		if ($script:DialogButtonShowBrackets) {
-			Write-Buffer -X $btn2X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+			Write-Buffer -X $cancelButtonX -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
 		}
-		$btn2ContentX = $btn2X + [int]$script:DialogButtonShowBrackets
+		$cancelButtonContentX = $cancelButtonX + [int]$script:DialogButtonShowBrackets
 		if ($script:DialogButtonShowIcon) {
-			Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text $redX -FG $script:TextError -BG $script:TimeDialogButtonBg -Wide
-			Write-Buffer -X ($btn2ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+			Write-Buffer -X $cancelButtonContentX -Y ($dialogY + $i) -Text $redX -FG $script:TextError -BG $script:TimeDialogButtonBg -Wide
+			Write-Buffer -X ($cancelButtonContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 		} else {
-			Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
+			Write-Buffer -X $cancelButtonContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
 		}
 		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
 		Write-Buffer -Text "c" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-		Write-Buffer -Text "${_rp}ancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+		Write-Buffer -Text "$closingParenancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 		if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 		Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:TimeDialogBg
 		Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
@@ -132,16 +132,16 @@ $bottomLinePadding = $dialogWidth - (19 + 2 * $dlgParenAdj + 2 * $dlgIconWidth +
 }
 
 # Draw drop shadow
-Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:TimeDialogShadow
+Write-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:TimeDialogShadow
 	Flush-Buffer
 	
 	# Calculate button bounds for click detection (visible characters only)
 	# Button row is at dialogY + 6 (line 6)
 	$buttonRowY = $dialogY + 6
 $updateButtonStartX = $dialogX + 2
-$updateButtonEndX   = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj - 1   # bracket + icon + "(a)pply"(7) - 1 inclusive
-$cancelButtonStartX = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj + 2   # after btn1 + gap(2)
-$cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8 + $dlgParenAdj - 1  # bracket + icon + "(c)ancel"(8) - 1 inclusive
+$updateButtonEndX   = $dialogX + 2 + $dialogBracketWidth + $dialogIconWidth + 7 + $dialogParenOffset - 1   # bracket + icon + "(a)pply"(7) - 1 inclusive
+$cancelButtonStartX = $dialogX + 2 + $dialogBracketWidth + $dialogIconWidth + 7 + $dialogParenOffset + 2   # after btn1 + gap(2)
+$cancelButtonEndX   = $cancelButtonStartX + $dialogBracketWidth + $dialogIconWidth + 8 + $dialogParenOffset - 1  # bracket + icon + "(c)ancel"(8) - 1 inclusive
 		
 		# Store button bounds in script scope for main loop click detection
 		$script:DialogButtonBounds = @{
@@ -162,8 +162,8 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 			
 			# Get input
 			# Initialize with current end time if it exists (convert to 4-digit string)
-			if ($currentEndTime -ne -1 -and $currentEndTime -ne 0) {
-				$timeInput = $currentEndTime.ToString().PadLeft(4, '0')
+			if ($CurrentEndTime -ne -1 -and $CurrentEndTime -ne 0) {
+				$timeInput = $CurrentEndTime.ToString().PadLeft(4, '0')
 			} else {
 				$timeInput = ""
 			}
@@ -173,7 +173,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 			$isFirstChar = $true  # Track if this is the first character typed
 			
 			# Don't draw initial input value - cursor is hidden until first character is typed
-			# Position cursor at the input field after initial draw (even if hidden, so it's ready when shown)
+			# Position cursor at the input field after initial draw (even if hidden, so it is ready when shown)
 			[Console]::SetCursorPosition($inputX + $timeInput.Length, $inputY)
 			
 			# Debug: Log that dialog input loop has started
@@ -192,7 +192,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 					$HostHeightRef.Value = $stableSize.Height
 					$currentHostWidth  = $stableSize.Width
 					$currentHostHeight = $stableSize.Height
-					Draw-MainFrame -Force -NoFlush
+					Write-MainFrame -Force -NoFlush
 					if ($null -ne $ParentRedrawCallback) {
 						& $ParentRedrawCallback $currentHostWidth $currentHostHeight
 					}
@@ -207,9 +207,9 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 				# Recalculate button bounds after repositioning
 			$buttonRowY = $dialogY + 6
 		$updateButtonStartX = $dialogX + 2
-		$updateButtonEndX   = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 7 - 1
-		$cancelButtonStartX = $dialogX + 2 + $dlgBracketWidth + $dlgIconWidth + 7 + 2
-		$cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8 - 1
+		$updateButtonEndX   = $dialogX + 2 + $dialogBracketWidth + $dialogIconWidth + 7 - 1
+		$cancelButtonStartX = $dialogX + 2 + $dialogBracketWidth + $dialogIconWidth + 7 + 2
+		$cancelButtonEndX   = $cancelButtonStartX + $dialogBracketWidth + $dialogIconWidth + 8 - 1
 		
 		# Update button bounds in script scope
 		$script:DialogButtonBounds = @{
@@ -225,7 +225,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 				Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 				Write-Buffer -Text "Change End Time" -FG $script:TimeDialogTitle -BG $script:TimeDialogBg
 					$titleUsedWidth = 3 + "Change End Time".Length
-					$titlePadding = Get-Padding -usedWidth ($titleUsedWidth + 1) -totalWidth $dialogWidth
+					$titlePadding = Get-Padding -UsedWidth ($titleUsedWidth + 1) -TotalWidth $dialogWidth
 					Write-Buffer -Text (" " * $titlePadding) -BG $script:TimeDialogBg
 					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 				} elseif ($i -eq 4) {
@@ -235,42 +235,42 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 					Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
 					Write-Buffer -Text "]" -FG $script:TimeDialogText -BG $script:TimeDialogBg
 					$fieldUsedWidth = 3 + 6
-					$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+					$fieldPadding = Get-Padding -UsedWidth ($fieldUsedWidth + 1) -TotalWidth $dialogWidth
 					Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 				} elseif ($i -eq 6) {
-				$btn1X = $dialogX + 2
-				$btn2X = $btn1X + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj + 2
+				$applyButtonX = $dialogX + 2
+				$cancelButtonX = $applyButtonX + $dialogBracketWidth + $dialogIconWidth + 7 + $dialogParenOffset + 2
 				Write-Buffer -X $dialogX -Y ($dialogY + $i) -Text "$($script:BoxVertical) " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 				if ($script:DialogButtonShowBrackets) {
-					Write-Buffer -X $btn1X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+					Write-Buffer -X $applyButtonX -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
 				}
-				$btn1ContentX = $btn1X + [int]$script:DialogButtonShowBrackets
+				$applyButtonContentX = $applyButtonX + [int]$script:DialogButtonShowBrackets
 				if ($script:DialogButtonShowIcon) {
-					Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text $checkmark -FG $script:TextSuccess -BG $script:TimeDialogButtonBg -Wide
-					Write-Buffer -X ($btn1ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+					Write-Buffer -X $applyButtonContentX -Y ($dialogY + $i) -Text $checkmark -FG $script:TextSuccess -BG $script:TimeDialogButtonBg -Wide
+					Write-Buffer -X ($applyButtonContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 				} else {
-					Write-Buffer -X $btn1ContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
+					Write-Buffer -X $applyButtonContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
 				}
-				$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+				$closingParen = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
 				if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
 	Write-Buffer -Text "a" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-	Write-Buffer -Text "${_rp}pply" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+	Write-Buffer -Text "$closingParenpply" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 				if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 				Write-Buffer -Text "  " -BG $script:TimeDialogBg
 				if ($script:DialogButtonShowBrackets) {
-					Write-Buffer -X $btn2X -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
+					Write-Buffer -X $cancelButtonX -Y ($dialogY + $i) -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg
 				}
-				$btn2ContentX = $btn2X + [int]$script:DialogButtonShowBrackets
+				$cancelButtonContentX = $cancelButtonX + [int]$script:DialogButtonShowBrackets
 				if ($script:DialogButtonShowIcon) {
-					Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text $redX -FG $script:TextError -BG $script:TimeDialogButtonBg -Wide
-					Write-Buffer -X ($btn2ContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+					Write-Buffer -X $cancelButtonContentX -Y ($dialogY + $i) -Text $redX -FG $script:TextError -BG $script:TimeDialogButtonBg -Wide
+					Write-Buffer -X ($cancelButtonContentX + 2) -Y ($dialogY + $i) -Text $script:DialogButtonSeparator -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 				} else {
-					Write-Buffer -X $btn2ContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
+					Write-Buffer -X $cancelButtonContentX -Y ($dialogY + $i) -Text "" -BG $script:TimeDialogButtonBg
 				}
 				if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
 				Write-Buffer -Text "c" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-				Write-Buffer -Text "${_rp}ancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+				Write-Buffer -Text "$closingParenancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 				if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 				Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:TimeDialogBg
 				Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
@@ -279,7 +279,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 			}
 		}
 					
-					Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:TimeDialogShadow
+					Write-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:TimeDialogShadow
 					
 					$fieldDisplay = $timeInput.PadRight(4)
 					Write-Buffer -X $dialogX -Y $inputY -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
@@ -287,14 +287,14 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 					Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
 					Write-Buffer -Text "]" -FG $script:TimeDialogText -BG $script:TimeDialogBg
 					$fieldUsedWidth = 3 + 6
-					$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+					$fieldPadding = Get-Padding -UsedWidth ($fieldUsedWidth + 1) -TotalWidth $dialogWidth
 					Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 					if ($errorMessage -ne "") {
 						Write-Buffer -X $dialogX -Y ($dialogY + 5) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 						Write-Buffer -Text $errorMessage -FG $script:TextError -BG $script:TimeDialogBg
 						$errorLineUsedWidth = 3 + $errorMessage.Length
-						$errorLinePadding = Get-Padding -usedWidth ($errorLineUsedWidth + 1) -totalWidth $dialogWidth
+						$errorLinePadding = Get-Padding -UsedWidth ($errorLineUsedWidth + 1) -TotalWidth $dialogWidth
 						Write-Buffer -Text (" " * $errorLinePadding) -BG $script:TimeDialogBg
 						Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 					} else {
@@ -384,13 +384,13 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 								Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
 								Write-Buffer -Text "]" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 								$fieldUsedWidth = 3 + 6
-								$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+								$fieldPadding = Get-Padding -UsedWidth ($fieldUsedWidth + 1) -TotalWidth $dialogWidth
 								Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 								Write-Buffer -X $dialogX -Y ($dialogY + 5) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 								Write-Buffer -Text $errorMessage -FG $script:TextError -BG $script:TimeDialogBg
 								$errorLineUsedWidth = 3 + $errorMessage.Length
-								$errorLinePadding = Get-Padding -usedWidth ($errorLineUsedWidth + 1) -totalWidth $dialogWidth
+								$errorLinePadding = Get-Padding -UsedWidth ($errorLineUsedWidth + 1) -TotalWidth $dialogWidth
 								Write-Buffer -Text (" " * $errorLinePadding) -BG $script:TimeDialogBg
 								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 								Flush-Buffer
@@ -406,13 +406,13 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 							Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
 							Write-Buffer -Text "]" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 							$fieldUsedWidth = 3 + 6
-							$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+							$fieldPadding = Get-Padding -UsedWidth ($fieldUsedWidth + 1) -TotalWidth $dialogWidth
 							Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 							Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 							Write-Buffer -X $dialogX -Y ($dialogY + 5) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 							Write-Buffer -Text $errorMessage -FG $script:TextError -BG $script:TimeDialogBg
 							$errorLineUsedWidth = 3 + $errorMessage.Length
-							$errorLinePadding = Get-Padding -usedWidth ($errorLineUsedWidth + 1) -totalWidth $dialogWidth
+							$errorLinePadding = Get-Padding -UsedWidth ($errorLineUsedWidth + 1) -TotalWidth $dialogWidth
 							Write-Buffer -Text (" " * $errorLinePadding) -BG $script:TimeDialogBg
 							Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 							Flush-Buffer
@@ -445,13 +445,13 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 								Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
 								Write-Buffer -Text "]" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 								$fieldUsedWidth = 3 + 6
-								$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+								$fieldPadding = Get-Padding -UsedWidth ($fieldUsedWidth + 1) -TotalWidth $dialogWidth
 								Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 								Write-Buffer -X $dialogX -Y ($dialogY + 5) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 								Write-Buffer -Text $errorMessage -FG $script:TextError -BG $script:TimeDialogBg
 								$errorLineUsedWidth = 3 + $errorMessage.Length
-								$errorLinePadding = Get-Padding -usedWidth ($errorLineUsedWidth + 1) -totalWidth $dialogWidth
+								$errorLinePadding = Get-Padding -UsedWidth ($errorLineUsedWidth + 1) -TotalWidth $dialogWidth
 								Write-Buffer -Text (" " * $errorLinePadding) -BG $script:TimeDialogBg
 								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 								Flush-Buffer
@@ -467,13 +467,13 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 							Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
 							Write-Buffer -Text "]" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 							$fieldUsedWidth = 3 + 6
-							$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+							$fieldPadding = Get-Padding -UsedWidth ($fieldUsedWidth + 1) -TotalWidth $dialogWidth
 							Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 							Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 							Write-Buffer -X $dialogX -Y ($dialogY + 5) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 							Write-Buffer -Text $errorMessage -FG $script:TextError -BG $script:TimeDialogBg
 							$errorLineUsedWidth = 3 + $errorMessage.Length
-							$errorLinePadding = Get-Padding -usedWidth ($errorLineUsedWidth + 1) -totalWidth $dialogWidth
+							$errorLinePadding = Get-Padding -UsedWidth ($errorLineUsedWidth + 1) -TotalWidth $dialogWidth
 							Write-Buffer -Text (" " * $errorLinePadding) -BG $script:TimeDialogBg
 							Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 							Flush-Buffer
@@ -489,13 +489,13 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 						Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
 						Write-Buffer -Text "]" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 						$fieldUsedWidth = 3 + 6
-						$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+						$fieldPadding = Get-Padding -UsedWidth ($fieldUsedWidth + 1) -TotalWidth $dialogWidth
 						Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 						Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 						Write-Buffer -X $dialogX -Y ($dialogY + 5) -Text "$($script:BoxVertical)  " -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 						Write-Buffer -Text $errorMessage -FG $script:TextError -BG $script:TimeDialogBg
 						$errorLineUsedWidth = 3 + $errorMessage.Length
-						$errorLinePadding = Get-Padding -usedWidth ($errorLineUsedWidth + 1) -totalWidth $dialogWidth
+						$errorLinePadding = Get-Padding -UsedWidth ($errorLineUsedWidth + 1) -TotalWidth $dialogWidth
 						Write-Buffer -Text (" " * $errorLinePadding) -BG $script:TimeDialogBg
 						Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 						Flush-Buffer
@@ -529,7 +529,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 						Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
 						Write-Buffer -Text "]" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 						$fieldUsedWidth = 3 + 6
-						$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+						$fieldPadding = Get-Padding -UsedWidth ($fieldUsedWidth + 1) -TotalWidth $dialogWidth
 						Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 						Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 						Write-Buffer -X $dialogX -Y ($dialogY + 5) -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
@@ -559,7 +559,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 					Write-Buffer -Text $fieldDisplay -FG $script:TimeDialogFieldText -BG $script:TimeDialogFieldBg
 					Write-Buffer -Text "]" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 					$fieldUsedWidth = 3 + 6
-					$fieldPadding = Get-Padding -usedWidth ($fieldUsedWidth + 1) -totalWidth $dialogWidth
+					$fieldPadding = Get-Padding -UsedWidth ($fieldUsedWidth + 1) -TotalWidth $dialogWidth
 					Write-Buffer -Text (" " * $fieldPadding) -BG $script:TimeDialogBg
 					Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
 					Write-Buffer -X $dialogX -Y ($dialogY + 5) -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
@@ -579,7 +579,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dlgBracketWidth + $dlgIconWidth + 8
 				}
 			} until ($false)
 			
-		Invoke-DialogExitCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -ClearShadow
+		Invoke-DialogCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -ClearShadow
 			return @{
 				Result = $result
 				NeedsRedraw = $needsRedraw

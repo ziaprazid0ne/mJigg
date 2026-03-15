@@ -1,0 +1,38 @@
+---
+description: IPC architecture patterns — named pipe protocol, epoch guard, worker/viewer architecture
+globs: "**/IPC/*.ps1,**/Start-mJig.psm1"
+alwaysApply: false
+---
+
+# IPC Architecture Patterns
+
+## Worker/Viewer Model
+
+- `Start-mJig` spawns a hidden background process (WMI) that performs cursor movement; the terminal becomes a viewer connected via named pipe
+- Pipe name is SHA256-derived hex (no 'mJig' string)
+- All pipe messages are AES-256-CBC encrypted (per-message random IV)
+- Worker sends: `welcome`, `state` (every 500ms), `log`, `stopped`, `togglePause`, `focus`
+- Viewer sends: `settings`, `endtime`, `output`, `title`, `quit`
+
+## Settings Epoch Guard (Stale State Prevention)
+
+After a viewer dialog closes, stale `state` messages in the pipe buffer could overwrite fresh values.
+
+- Viewer increments `$_settingsEpoch` before each send, includes `epoch` in the message
+- Worker captures `$_workerSettingsEpoch` from commands, includes it in `state` messages
+- Viewer skips `state` messages where `$msg.epoch -lt $_settingsEpoch`
+- Log and stopped messages are always processed regardless of epoch
+
+Epoch is incremented at all 6 viewer send sites.
+
+## Non-Blocking Writes
+
+`Send-PipeMessageNonBlocking` uses `FlushAsync()` with a `[ref]$PendingFlush` pattern. If a previous flush is pending (viewer in dialog), the message is skipped. Critical messages (`welcome`, `stopped`, log replay) use synchronous `Send-PipeMessage`.
+
+## Fast Disconnect Detection
+
+Worker stores `$_viewerProcess = Get-Process -Id $_clientPid` on connect. Each 50ms tick checks `$_viewerProcess.HasExited` before any pipe I/O — detects disconnect within one tick, much faster than `IsConnected`.
+
+## Pipe Reconnection
+
+All `BeginWaitForConnection` calls are wrapped in try/catch. On failure, the `NamedPipeServerStream` is disposed and recreated from scratch via `New-SecurePipeServer`. All pipe instances use 64KB (65536) in/out buffer sizes.

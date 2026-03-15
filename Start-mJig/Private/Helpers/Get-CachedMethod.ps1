@@ -1,11 +1,11 @@
-﻿		function Get-CachedMethod {
+		function Get-CachedMethod {
 			param(
-				$type,
-				[string]$methodName
+				$Type,
+				[string]$MethodName
 			)
-			$cacheKey = "$($type.FullName).$methodName"
+			$cacheKey = "$($Type.FullName).$MethodName"
 			if (-not $script:MethodCache.ContainsKey($cacheKey)) {
-				$script:MethodCache[$cacheKey] = $type.GetMethod($methodName)
+				$script:MethodCache[$cacheKey] = $Type.GetMethod($MethodName)
 			}
 			return $script:MethodCache[$cacheKey]
 		}

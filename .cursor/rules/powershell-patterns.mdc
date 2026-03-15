@@ -1,0 +1,60 @@
+---
+description: PowerShell coding patterns and critical gotchas for mJig
+globs: "**/*.ps1,**/*.psm1"
+alwaysApply: false
+---
+
+# PowerShell Patterns for mJig
+
+## Script Scope
+
+Parameters are copied to `$script:` variables (PowerShell params are read-only). Nested functions must use `$script:` prefix to modify persistent state.
+
+## LogArray (CRITICAL)
+
+`$LogArray` is a `System.Collections.Generic.List[object]`, NOT a plain array.
+
+```powershell
+# CORRECT
+$null = $LogArray.Add([PSCustomObject]@{
+    logRow = $true
+    components = @(
+        @{ priority = 1; text = "full"; shortText = "short" }
+    )
+})
+
+# WRONG — wipes entire log every call
+if ($LogArray -isnot [Array]) { $LogArray = @() }
+$LogArray += [PSCustomObject]@{ ... }
+```
+
+Never use `= @()` or `+=` on `$LogArray`. No guard needed — render loop trims to `$Rows` automatically.
+
+## Collection Allocation (Hot Path)
+
+Pre-allocated collections must be cleared/reused, never recreated:
+- `$intervalMouseInputs` (`HashSet[string]`) — use `.Clear()` and `$null = .Add(...)`, never `+=`
+- `$script:MenuItemsBounds` (`List[hashtable]`) — use `.Clear()` and `.Add()`
+- `$pressedMenuKeys` (hashtable) — use `.Clear()`
+- `$_waitPeekBuffer` (`INPUT_RECORD[]`) — reuse as-is
+
+## Encoding (CRITICAL)
+
+Box-drawing characters must use `[char]` casts, never literals (prevents encoding corruption):
+
+```powershell
+$char = [char]0x250C  # SAFE
+$char = "┌"           # RISKY — corrupts if encoding changes
+```
+
+## ReadKey Gotcha
+
+Never use `ReadKey("IncludeKeyDown")` alone — it blocks on KeyUp events. Always use:
+```powershell
+$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown,IncludeKeyUp,AllowCtrlC")
+```
+Filter KeyDown/KeyUp in code after the read.
+
+## GetDate in Hot Path
+
+`$date = Get-Date` is refreshed each 50ms tick. Use `$date.ToString("HH:mm:ss")` — don't call `(Get-Date)` again.

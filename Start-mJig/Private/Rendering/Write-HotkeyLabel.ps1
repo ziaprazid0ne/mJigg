@@ -2,7 +2,7 @@ function Write-HotkeyLabel {
 	param(
 		[string]$Text,
 		[string]$FG,
-		[string]$HotkeyFG,
+		[string]$HotkeyFg,
 		[string]$BG,
 		[bool]$ShowParens = $script:MenuButtonShowHotkeyParens
 	)
@@ -11,7 +11,7 @@ function Write-HotkeyLabel {
 		$part = $textParts[$j]
 		if ($part -eq "(" -and $j + 2 -lt $textParts.Count -and $textParts[$j + 1] -match "^[a-z]$" -and $textParts[$j + 2] -eq ")") {
 			if ($ShowParens) { Write-Buffer -Text "(" -FG $FG -BG $BG }
-			Write-Buffer -Text $textParts[$j + 1] -FG $HotkeyFG -BG $BG
+			Write-Buffer -Text $textParts[$j + 1] -FG $HotkeyFg -BG $BG
 			if ($ShowParens) { Write-Buffer -Text ")" -FG $FG -BG $BG }
 			$j += 2
 		} elseif ($part -ne "") {

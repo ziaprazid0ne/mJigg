@@ -1,4 +1,4 @@
-		function Invoke-PostDialogCleanup {
+		function Reset-PostDialogState {
 			param(
 				[ref]$SkipUpdateRef,
 				[ref]$ForceRedrawRef,

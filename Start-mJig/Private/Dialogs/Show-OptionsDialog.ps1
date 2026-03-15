@@ -11,14 +11,9 @@
 		$currentHostWidth  = $HostWidthRef.Value
 		$currentHostHeight = $HostHeightRef.Value
 
-		$dialogWidth  = 36
-		# Layout (15 rows, indices 0-14):
-		#  0: top border   1: title   2: divider   3: blank
-		#  4: (o)utput: Full/Min   5: blank   6: (d)ebug: On/Off   7: blank
-		#  8: (n)otifications: On/Off   9: blank
-		#  10: (w)indow Title: ...   11: blank
-		#  12: (c)lose   13: blank   14: bottom border
-		$dialogHeight = 14
+	$dialogWidth  = 36
+	# Rows: 0=border, 1=title, 2=divider, 3=blank, 4=output, 5=blank, 6=debug, 7=blank, 8=notifications, 9=blank, 10=window, 11=blank, 12=close, 13=blank, 14=border
+	$dialogHeight = 14
 
 		$dialogX = [math]::Max(0, [math]::Floor(($currentHostWidth - $dialogWidth) / 2))
 		$dialogY = [math]::Max(0, [math]::Floor(($currentHostHeight - $dialogHeight) / 2))
@@ -27,8 +22,8 @@
 		$script:CursorVisible = $false
 		[Console]::Write("$($script:ESC)[?25l")
 
-		$_bl = Get-DialogButtonLayout
-		$dlgIconWidth = $_bl.IconWidth; $dlgBracketWidth = $_bl.BracketWidth; $dlgParenAdj = $_bl.ParenAdj
+		$buttonLayout = Get-DialogButtonLayout
+		$dialogIconWidth = $buttonLayout.IconWidth; $dialogBracketWidth = $buttonLayout.BracketWidth; $dialogParenOffset = $buttonLayout.ParenAdjustment
 
 		$hLine      = [string]$script:BoxHorizontal
 		$inner      = $dialogWidth - 2
@@ -44,29 +39,29 @@
 		$emojiClose   = [char]::ConvertFromUtf32(0x274C)  # red X
 
 		$drawOptionsBtnRow = {
-			param($dx, $absRowY, $emoji, $hotkeyChar, $labelSuffix, $rowPad, $btnBg, $btnText, $btnHotkey, $bgColor, $borderColor, $labelPrefix = "")
-			$bX = $dx + 2
-			Write-Buffer -X $dx -Y $absRowY -Text "$($script:BoxVertical) " -FG $borderColor -BG $bgColor
-			if ($script:DialogButtonShowBrackets) { Write-Buffer -X $bX -Y $absRowY -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
-			$bCX = $bX + [int]$script:DialogButtonShowBrackets
+			param($DialogX, $RowY, $emoji, $hotkeyChar, $labelSuffix, $RowPadding, $ButtonBackground, $ButtonTextColor, $btnHotkey, $BackgroundColor, $borderColor, $labelPrefix = "")
+			$buttonX = $DialogX + 2
+			Write-Buffer -X $DialogX -Y $RowY -Text "$($script:BoxVertical) " -FG $borderColor -BG $BackgroundColor
+			if ($script:DialogButtonShowBrackets) { Write-Buffer -X $buttonX -Y $RowY -Text "[" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
+			$buttonContentX = $buttonX + [int]$script:DialogButtonShowBrackets
 			if ($script:DialogButtonShowIcon) {
-				Write-Buffer -X $bCX -Y $absRowY -Text $emoji -BG $btnBg -Wide
-				Write-Buffer -X ($bCX + 2) -Y $absRowY -Text $script:DialogButtonSeparator -FG $btnText -BG $btnBg
+				Write-Buffer -X $buttonContentX -Y $RowY -Text $emoji -BG $ButtonBackground -Wide
+				Write-Buffer -X ($buttonContentX + 2) -Y $RowY -Text $script:DialogButtonSeparator -FG $ButtonTextColor -BG $ButtonBackground
 			} else {
-				Write-Buffer -X $bCX -Y $absRowY -Text "" -BG $btnBg
+				Write-Buffer -X $buttonContentX -Y $RowY -Text "" -BG $ButtonBackground
 			}
-			if ($labelPrefix.Length -gt 0) { Write-Buffer -Text $labelPrefix -FG $btnText -BG $btnBg }
-			$_rp = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
-			if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $btnText -BG $btnBg }
-			Write-Buffer -Text $hotkeyChar -FG $btnHotkey -BG $btnBg
-			Write-Buffer -Text "${_rp}${labelSuffix}" -FG $btnText -BG $btnBg
+			if ($labelPrefix.Length -gt 0) { Write-Buffer -Text $labelPrefix -FG $ButtonTextColor -BG $ButtonBackground }
+			$closingParen = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
+			if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $ButtonTextColor -BG $ButtonBackground }
+			Write-Buffer -Text $hotkeyChar -FG $btnHotkey -BG $ButtonBackground
+			Write-Buffer -Text "$closingParen$labelSuffix" -FG $ButtonTextColor -BG $ButtonBackground
 			if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
-			Write-Buffer -Text (" " * [math]::Max(0, $rowPad)) -BG $bgColor
-			Write-Buffer -Text $script:BoxVertical -FG $borderColor -BG $bgColor
+			Write-Buffer -Text (" " * [math]::Max(0, $RowPadding)) -BG $BackgroundColor
+			Write-Buffer -Text $script:BoxVertical -FG $borderColor -BG $BackgroundColor
 		}
 
 		$drawOptionsDialog = {
-			param($dx, $dy)
+			param($DialogX, $DialogY)
 			$localBg        = $script:SettingsDialogBg
 			$localBorder    = $script:SettingsDialogBorder
 			$localTitle     = $script:SettingsDialogTitle
@@ -75,51 +70,51 @@
 			$localBtnText   = $script:SettingsDialogButtonText
 			$localBtnHotkey = $script:SettingsDialogButtonHotkey
 			for ($i = 0; $i -le $dialogHeight; $i++) {
-				$absY = $dy + $i
-				Write-Buffer -X $dx -Y $absY -Text (" " * $dialogWidth) -BG $localBg
+				$rowY = $DialogY + $i
+				Write-Buffer -X $DialogX -Y $rowY -Text (" " * $dialogWidth) -BG $localBg
 				if ($i -eq 0) {
-					Write-Buffer -X $dx -Y $absY -Text $line0 -FG $localBorder -BG $localBg
+					Write-Buffer -X $DialogX -Y $rowY -Text $line0 -FG $localBorder -BG $localBg
 				} elseif ($i -eq 1) {
-					Write-Buffer -X $dx -Y $absY -Text "$($script:BoxVertical)  " -FG $localBorder -BG $localBg
+					Write-Buffer -X $DialogX -Y $rowY -Text "$($script:BoxVertical)  " -FG $localBorder -BG $localBg
 					Write-Buffer -Text "Options" -FG $localTitle -BG $localBg
-					$tPad = Get-Padding -usedWidth (3 + "Options".Length + 1) -totalWidth $dialogWidth
-					Write-Buffer -Text (" " * $tPad) -BG $localBg
+					$titlePadding = Get-Padding -UsedWidth (3 + "Options".Length + 1) -TotalWidth $dialogWidth
+					Write-Buffer -Text (" " * $titlePadding) -BG $localBg
 					Write-Buffer -Text $script:BoxVertical -FG $localBorder -BG $localBg
 				} elseif ($i -eq 2) {
-					Write-Buffer -X $dx -Y $absY -Text $line2 -FG $localBorder -BG $localBg
+					Write-Buffer -X $DialogX -Y $rowY -Text $line2 -FG $localBorder -BG $localBg
 				} elseif ($i -eq 4) {
-					$_outName   = if ($script:Output -eq "full") { "Full" } else { "Min " }
-					$_outSuffix = "utput: $_outName"
-					$_outPad    = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 3 + $_outSuffix.Length + $dlgParenAdj + 1)
-					& $drawOptionsBtnRow $dx $absY $emojiScreen "o" $_outSuffix ([math]::Max(0, $_outPad)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
+					$outputDisplayName   = if ($script:Output -eq "full") { "Full" } else { "Min " }
+					$outputLabelSuffix = "utput: $outputDisplayName"
+					$outputRowPadding    = $dialogWidth - (2 + $dialogBracketWidth + $dialogIconWidth + 3 + $outputLabelSuffix.Length + $dialogParenOffset + 1)
+					& $drawOptionsBtnRow $DialogX $rowY $emojiScreen "o" $outputLabelSuffix ([math]::Max(0, $outputRowPadding)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
 				} elseif ($i -eq 6) {
-					$_dbgSuffix = if ($script:DebugMode) { "ebug: On " } else { "ebug: Off" }
-					$_dbgPad    = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 3 + $_dbgSuffix.Length + $dlgParenAdj + 1)
-					& $drawOptionsBtnRow $dx $absY $emojiDebug "d" $_dbgSuffix ([math]::Max(0, $_dbgPad)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
+					$debugLabelSuffix = if ($script:DebugMode) { "ebug: On " } else { "ebug: Off" }
+					$debugRowPadding    = $dialogWidth - (2 + $dialogBracketWidth + $dialogIconWidth + 3 + $debugLabelSuffix.Length + $dialogParenOffset + 1)
+					& $drawOptionsBtnRow $DialogX $rowY $emojiDebug "d" $debugLabelSuffix ([math]::Max(0, $debugRowPadding)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
 				} elseif ($i -eq 8) {
-					$_notifSuffix = if ($script:NotificationsEnabled) { "otifications: On " } else { "otifications: Off" }
-					$_notifPad    = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 3 + $_notifSuffix.Length + $dlgParenAdj + 1)
-					& $drawOptionsBtnRow $dx $absY $emojiNotify "n" $_notifSuffix ([math]::Max(0, $_notifPad)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
+					$notificationLabelSuffix = if ($script:NotificationsEnabled) { "otifications: On " } else { "otifications: Off" }
+					$notificationRowPadding    = $dialogWidth - (2 + $dialogBracketWidth + $dialogIconWidth + 3 + $notificationLabelSuffix.Length + $dialogParenOffset + 1)
+					& $drawOptionsBtnRow $DialogX $rowY $emojiNotify "n" $notificationLabelSuffix ([math]::Max(0, $notificationRowPadding)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
 				} elseif ($i -eq 10) {
-				$_curTitle = $script:TitlePresets[$script:TitlePresetIndex].Name
-				$_maxLen = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 10 + $dlgParenAdj + 1)
-				if ($_curTitle.Length -gt $_maxLen) { $_curTitle = $_curTitle.Substring(0, [math]::Max(0, $_maxLen - 1)) + [char]0x2026 }
-					$_titleSuffix = "indow: $_curTitle"
-					$_titlePad = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 3 + $_titleSuffix.Length + $dlgParenAdj + 1)
-					& $drawOptionsBtnRow $dx $absY $emojiTitle "w" $_titleSuffix ([math]::Max(0, $_titlePad)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
+				$currentTitleName = $script:TitlePresets[$script:TitlePresetIndex].Name
+				$maxTitleLength = $dialogWidth - (2 + $dialogBracketWidth + $dialogIconWidth + 10 + $dialogParenOffset + 1)
+				if ($currentTitleName.Length -gt $maxTitleLength) { $currentTitleName = $currentTitleName.Substring(0, [math]::Max(0, $maxTitleLength - 1)) + [char]0x2026 }
+					$titleLabelSuffix = "indow: $currentTitleName"
+					$titleRowPadding = $dialogWidth - (2 + $dialogBracketWidth + $dialogIconWidth + 3 + $titleLabelSuffix.Length + $dialogParenOffset + 1)
+					& $drawOptionsBtnRow $DialogX $rowY $emojiTitle "w" $titleLabelSuffix ([math]::Max(0, $titleRowPadding)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
 				} elseif ($i -eq 12) {
-					$_closePad = $dialogWidth - (2 + $dlgBracketWidth + $dlgIconWidth + 7 + $dlgParenAdj + 1)
-					& $drawOptionsBtnRow $dx $absY $emojiClose "c" "lose" ([math]::Max(0, $_closePad)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
+					$closeRowPadding = $dialogWidth - (2 + $dialogBracketWidth + $dialogIconWidth + 7 + $dialogParenOffset + 1)
+					& $drawOptionsBtnRow $DialogX $rowY $emojiClose "c" "lose" ([math]::Max(0, $closeRowPadding)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
 				} elseif ($i -eq $dialogHeight) {
-					Write-Buffer -X $dx -Y $absY -Text $lineBottom -FG $localBorder -BG $localBg
+					Write-Buffer -X $DialogX -Y $rowY -Text $lineBottom -FG $localBorder -BG $localBg
 				} elseif ($i -eq 3 -or $i -eq 5 -or $i -eq 7 -or $i -eq 9 -or $i -eq 11 -or $i -eq 13) {
-					Write-Buffer -X $dx -Y $absY -Text $lineBlank -FG $localText -BG $localBg
+					Write-Buffer -X $DialogX -Y $rowY -Text $lineBlank -FG $localText -BG $localBg
 				}
 			}
 		}
 
 		& $drawOptionsDialog $dialogX $dialogY
-		Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:SettingsDialogShadow
+		Write-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:SettingsDialogShadow
 		Flush-Buffer
 
 	$needsRedraw = $false
@@ -136,7 +131,7 @@
 				$HostHeightRef.Value = $stableSize.Height
 				$currentHostWidth    = $stableSize.Width
 				$currentHostHeight   = $stableSize.Height
-				Draw-MainFrame -Force -NoFlush
+				Write-MainFrame -Force -NoFlush
 				if ($null -ne $ParentRedrawCallback) {
 					& $ParentRedrawCallback $currentHostWidth $currentHostHeight
 				}
@@ -145,7 +140,7 @@
 				$dialogY = [math]::Max(0, [math]::Floor(($currentHostHeight - $dialogHeight) / 2))
 
 				& $drawOptionsDialog $dialogX $dialogY
-				Draw-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:SettingsDialogShadow
+				Write-DialogShadow -dialogX $dialogX -dialogY $dialogY -dialogWidth $dialogWidth -dialogHeight $dialogHeight -shadowColor $script:SettingsDialogShadow
 				Flush-Buffer -ClearFirst
 			}
 
@@ -185,9 +180,9 @@
 				$modeNames = @{ 'full' = 'Full'; 'min' = 'Minimal' }
 				$oldName = if ($modeNames.ContainsKey($oldOutput))     { $modeNames[$oldOutput] }     else { $oldOutput }
 				$newName = if ($modeNames.ContainsKey($script:Output)) { $modeNames[$script:Output] } else { $script:Output }
-				$cd = Get-Date
+				$currentDate = Get-Date
 				$null = $LogArrayRef.Value.Add([PSCustomObject]@{ logRow = $true; components = @(
-					@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
+					@{ priority = 1; text = $currentDate.ToString(); shortText = $currentDate.ToString("HH:mm:ss") },
 					@{ priority = 2; text = " - Output mode: $oldName $([char]0x2192) $newName"; shortText = " - Output: $newName" }
 				)})
 				& $drawOptionsDialog $dialogX $dialogY
@@ -196,10 +191,10 @@
 			} elseif ($char -eq "d" -or $char -eq "D") {
 				$script:DebugMode = -not $script:DebugMode
 				$needsRedraw = $true
-				$cd = Get-Date
+				$currentDate = Get-Date
 				$dbgLabel = if ($script:DebugMode) { "enabled" } else { "disabled" }
 				$null = $LogArrayRef.Value.Add([PSCustomObject]@{ logRow = $true; components = @(
-					@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
+					@{ priority = 1; text = $currentDate.ToString(); shortText = $currentDate.ToString("HH:mm:ss") },
 					@{ priority = 2; text = " - Debug mode: $dbgLabel"; shortText = " - Debug: $dbgLabel" }
 				)})
 				& $drawOptionsDialog $dialogX $dialogY
@@ -208,11 +203,11 @@
 			} elseif ($char -eq "n" -or $char -eq "N") {
 				$script:NotificationsEnabled = -not $script:NotificationsEnabled
 				$needsRedraw = $true
-				$cd = Get-Date
-				$notifLabel = if ($script:NotificationsEnabled) { "enabled" } else { "disabled" }
+				$currentDate = Get-Date
+				$notificationLabel = if ($script:NotificationsEnabled) { "enabled" } else { "disabled" }
 				$null = $LogArrayRef.Value.Add([PSCustomObject]@{ logRow = $true; components = @(
-					@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
-					@{ priority = 2; text = " - Notifications: $notifLabel"; shortText = " - Notif: $notifLabel" }
+					@{ priority = 1; text = $currentDate.ToString(); shortText = $currentDate.ToString("HH:mm:ss") },
+					@{ priority = 2; text = " - Notifications: $notificationLabel"; shortText = " - Notif: $notificationLabel" }
 				)})
 				& $drawOptionsDialog $dialogX $dialogY
 				Flush-Buffer
@@ -222,12 +217,12 @@
 			$_preset = $script:TitlePresets[$script:TitlePresetIndex]
 			$script:WindowTitle = $_preset.Name
 			$script:TitleEmoji  = $_preset.Emoji
-			try { $Host.UI.RawUI.WindowTitle = if ($script:DebugMode) { "$($script:WindowTitle) - DEBUGMODE" } else { $script:WindowTitle } } catch {}
+			try { $Host.UI.RawUI.WindowTitle = if ($script:DebugMode) { "$($script:WindowTitle) - Debug Mode" } else { $script:WindowTitle } } catch {}
 			$needsRedraw = $true
 			$titleChanged = $true
-			$cd = Get-Date
+			$currentDate = Get-Date
 			$null = $LogArrayRef.Value.Add([PSCustomObject]@{ logRow = $true; components = @(
-				@{ priority = 1; text = $cd.ToString(); shortText = $cd.ToString("HH:mm:ss") },
+				@{ priority = 1; text = $currentDate.ToString(); shortText = $currentDate.ToString("HH:mm:ss") },
 				@{ priority = 2; text = " - Window title: $($script:WindowTitle)"; shortText = " - Title changed" }
 			)})
 			& $drawOptionsDialog $dialogX $dialogY
@@ -244,6 +239,6 @@
 			} catch { }
 		} until ($false)
 
-		Invoke-DialogExitCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -ClearShadow
+		Invoke-DialogCleanup -DialogX $dialogX -DialogY $dialogY -DialogWidth $dialogWidth -DialogHeight $dialogHeight -SavedCursorVisible $savedCursorVisible -ClearShadow
 		return @{ NeedsRedraw = $needsRedraw; TitleChanged = $titleChanged }
 	}

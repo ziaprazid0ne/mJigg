@@ -1,17 +1,17 @@
-﻿		function Write-SectionLine {
+		function Write-SectionLine {
 			param(
-				[int]$x,
-				[int]$y,
-				[int]$width,
-				[string]$leftChar = "$($script:BoxVertical)",
-				[string]$rightChar = "$($script:BoxVertical)",
-				[string]$fillChar = " ",
-				[System.ConsoleColor]$borderColor = [System.ConsoleColor]::White,
-				[System.ConsoleColor]$fillColor = [System.ConsoleColor]::White
+				[int]$X,
+				[int]$Y,
+				[int]$Width,
+				[string]$LeftChar = "$($script:BoxVertical)",
+				[string]$RightChar = "$($script:BoxVertical)",
+				[string]$FillChar = " ",
+				[System.ConsoleColor]$BorderColor = [System.ConsoleColor]::White,
+				[System.ConsoleColor]$FillColor = [System.ConsoleColor]::White
 			)
 			
-			$fillWidth = $width - 2
-			Write-Buffer -X $x -Y $y -Text $leftChar -FG $borderColor
-			Write-Buffer -Text ($fillChar * $fillWidth) -FG $fillColor
-			Write-Buffer -Text $rightChar -FG $borderColor
+			$fillWidth = $Width - 2
+			Write-Buffer -X $X -Y $Y -Text $LeftChar -FG $BorderColor
+			Write-Buffer -Text ($FillChar * $fillWidth) -FG $FillColor
+			Write-Buffer -Text $RightChar -FG $BorderColor
 		}
