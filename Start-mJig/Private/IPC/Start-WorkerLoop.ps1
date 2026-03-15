@@ -114,8 +114,66 @@
 									continue
 								}
 
-								$viewerConnected = $true
-								if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER CONNECTED (auth OK)" | Out-File $_wDiagFile -Append }
+							$viewerConnected = $true
+							if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER CONNECTED (auth OK)" | Out-File $_wDiagFile -Append }
+
+							# Detect which terminal is hosting the viewer so we can reopen in the same one
+							$script:_ViewerTerminalExe = $null
+							$script:_ViewerTerminalIsWT = $false
+							try {
+								$_clientPid = [uint32]0
+								$_pipeHandle = $pipeServer.SafePipeHandle.DangerousGetHandle()
+								$null = $script:MouseAPI::GetNamedPipeClientProcessId($_pipeHandle, [ref]$_clientPid)
+								if ($_clientPid -gt 0) {
+									$_walkPid  = [int]$_clientPid
+									$_visited  = @{}
+									# Only accept these as valid terminals -- anything else falls back to plain pwsh
+									$_terminalAllowList = @(
+										'windowsterminal',   # Windows Terminal
+										'alacritty',         # Alacritty
+										'wezterm-gui',       # WezTerm
+										'wezterm',
+										'mintty',            # Git Bash / MSYS2 / Cygwin
+										'conemu64',          # ConEmu
+										'conemuc64',
+										'cmder',
+										'hyper',             # Hyper
+										'terminus',          # Terminus
+										'tabby',             # Tabby
+										'fluent-terminal'    # Fluent Terminal
+									)
+									# Walk up skipping low-level console hosts and system processes
+									$_skipProcs = @('conhost', 'openconsole', 'csrss', 'wininit', 'services',
+									                'svchost', 'lsass', 'system', 'idle', 'consent',
+									                'taskhostw', 'userinit', 'winlogon', 'sihost', 'ctfmon')
+									while ($_walkPid -gt 0 -and -not $_visited.ContainsKey($_walkPid)) {
+										$_visited[$_walkPid] = $true
+										$_wmiProc = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $_walkPid" -ErrorAction SilentlyContinue
+										if (-not $_wmiProc) { break }
+										$_parentPid = [int]$_wmiProc.ParentProcessId
+										if ($_parentPid -le 0 -or $_parentPid -eq $_walkPid) { break }
+										$_parentProc = Get-Process -Id $_parentPid -ErrorAction SilentlyContinue
+										if (-not $_parentProc) { break }
+										$_exeName = [System.IO.Path]::GetFileNameWithoutExtension($_parentProc.ProcessName).ToLower()
+										if ($_exeName -in $_skipProcs) {
+											# Keep walking up
+											$_walkPid = $_parentPid
+										} elseif ($_exeName -in $_terminalAllowList) {
+											# Known terminal found
+											if ($_exeName -eq 'windowsterminal') {
+												$script:_ViewerTerminalIsWT = $true
+											} else {
+												try { $script:_ViewerTerminalExe = $_parentProc.MainModule.FileName } catch {}
+											}
+											break
+										} else {
+											# Unknown parent (explorer.exe, admin launcher, IDE, etc.) -- do not use as terminal
+											break
+										}
+									}
+								}
+								if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER TERMINAL: IsWT=$($script:_ViewerTerminalIsWT) Exe=$($script:_ViewerTerminalExe)" | Out-File $_wDiagFile -Append }
+							} catch {}
 								
 								Send-PipeMessage -Writer $pipeWriter -Message @{
 									type = 'welcome'
@@ -221,17 +279,19 @@
 										if ($null -ne $msg.epoch) { $_workerSettingsEpoch = [int]$msg.epoch }
 										if ($null -ne $msg.mode) { $script:Output = $msg.mode }
 									}
-									'title' {
-										if ($null -ne $msg.windowTitle) { $script:WindowTitle = $msg.windowTitle }
-										if ($null -ne $msg.titleEmoji)  { $script:TitleEmoji  = [int]$msg.titleEmoji }
-									}
-									'togglePause' {
-											if ($null -ne $msg.paused) {
-												$manualPause = [bool]$msg.paused
-											} else {
-												$manualPause = -not $manualPause
-											}
+								'title' {
+									if ($null -ne $msg.windowTitle) { $script:WindowTitle = $msg.windowTitle }
+									if ($null -ne $msg.titleEmoji)  { $script:TitleEmoji  = [int]$msg.titleEmoji }
+									Update-TrayIcon
+								}
+								'togglePause' {
+										if ($null -ne $msg.paused) {
+											$manualPause = [bool]$msg.paused
+										} else {
+											$manualPause = -not $manualPause
 										}
+										Update-TrayPauseLabel -Paused $manualPause
+									}
 										'quit' {
 											if ($viewerConnected) {
 												try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
@@ -269,6 +329,7 @@
 						if ($_wGlobalAction -eq 'togglePause') {
 							try {
 								$manualPause = -not $manualPause
+								Update-TrayPauseLabel -Paused $manualPause
 								Show-Notification -Title $script:WindowTitle -Body $(if ($manualPause) { 'Paused' } else { 'Resumed' }) -Action $(if ($manualPause) { 'paused' } else { 'resumed' })
 								$_pauseLogMsg = @{
 									type = 'log'
@@ -394,13 +455,75 @@
 							$connectResult = $pipeServer.BeginWaitForConnection($null, $null)
 						}
 					}
-							$userInputDetected = $false
-							$mouseInputDetected = $false
-							$keyboardInputDetected = $false
+						$userInputDetected = $false
+						$mouseInputDetected = $false
+						$keyboardInputDetected = $false
+				}
+
+					# Pump Windows Forms messages so tray icon click/menu events fire
+					[System.Windows.Forms.Application]::DoEvents()
+
+					# Handle tray icon actions (set by NotifyIcon click/menu event handlers)
+					if ($null -ne $script:_TrayAction) {
+						$_pendingTrayAction = $script:_TrayAction
+						$script:_TrayAction = $null
+						switch ($_pendingTrayAction) {
+							'open' {
+								if ($viewerConnected) {
+									try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message @{ type = 'focus' } -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
+								} else {
+							try {
+								$_trayPsExe  = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+								$_trayModPath = $MyInvocation.MyCommand.Module.Path
+								if (-not $_trayModPath) {
+									$_trayModPath = (Get-Module | Where-Object { $_.Path -like '*Start-mJig.psm1' } | Select-Object -First 1).Path
+								}
+								if ($_trayModPath) {
+									$_trayCmd = "if (-not (Get-Module | Where-Object { `$_.Path -eq '$_trayModPath' })) { Import-Module '$_trayModPath' }; Start-mJig"
+									$_trayEnc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($_trayCmd))
+									$_psArgs  = @('-NoProfile', '-NoLogo', '-EncodedCommand', $_trayEnc)
+									if ($script:_ViewerTerminalIsWT) {
+										# Windows Terminal: open new tab in the existing window
+										Start-Process -FilePath 'wt.exe' -ArgumentList (@('-w', '0', 'nt', $_trayPsExe) + $_psArgs)
+									} elseif ($script:_ViewerTerminalExe) {
+										# Other terminal: pass pwsh as the command to run
+										Start-Process -FilePath $script:_ViewerTerminalExe -ArgumentList (@($_trayPsExe) + $_psArgs)
+									} else {
+										Start-Process -FilePath $_trayPsExe -ArgumentList $_psArgs
+									}
+								}
+							} catch {}
+								}
+							}
+							'toggle' {
+								$manualPause = -not $manualPause
+								Update-TrayPauseLabel -Paused $manualPause
+								Show-Notification -Title $script:WindowTitle -Body $(if ($manualPause) { 'Paused' } else { 'Resumed' }) -Action $(if ($manualPause) { 'paused' } else { 'resumed' })
+								$_pauseLogMsg = @{
+									type = 'log'
+									components = @(
+										@{ priority = 1; text = $date.ToString(); shortText = $date.ToString('HH:mm:ss') }
+										@{ priority = 2; text = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' }) (tray)"; shortText = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' })" }
+									)
+								}
+								if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
+								$null = $script:LogReplayBuffer.Enqueue($_pauseLogMsg)
+								if ($viewerConnected) {
+									try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message @{ type = 'togglePause'; paused = $manualPause; logMsg = $_pauseLogMsg } -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
+								}
+							}
+							'quit' {
+								try { Show-Notification -Title $script:WindowTitle -Body 'Worker quit' -Action quit } catch {}
+								if ($viewerConnected) {
+									try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
+								}
+								return
+							}
+						}
 					}
-						
-						Start-Sleep -Milliseconds 50
-					}
+
+					Start-Sleep -Milliseconds 50
+				}
 					
 					# Auto-resume delay check
 					if ($script:AutoResumeDelaySeconds -gt 0 -and $null -ne $workerLastUserInputTime) {

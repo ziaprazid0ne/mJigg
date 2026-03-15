@@ -133,6 +133,14 @@ namespace mJiggAPI {
 		
 		[DllImport("user32.dll")]
 		public static extern IntPtr GetForegroundWindow();
+
+		[DllImport("user32.dll")]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+		[DllImport("user32.dll")]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 		
 		[DllImport("user32.dll")]
 		public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
@@ -177,6 +185,24 @@ namespace mJiggAPI {
 		[DllImport("user32.dll")]
 		[return: MarshalAs(UnmanagedType.Bool)]
 		public static extern bool IsWindowVisible(IntPtr hWnd);
+
+		[DllImport("kernel32.dll")]
+		public static extern uint GetCurrentThreadId();
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool GetNamedPipeClientProcessId(IntPtr Pipe, out uint ClientProcessId);
+
+		[DllImport("user32.dll")]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+		[DllImport("user32.dll")]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		public static extern bool BringWindowToTop(IntPtr hWnd);
+
+		[DllImport("user32.dll")]
+		public static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
 		
 		private static IntPtr foundWindowHandle = IntPtr.Zero;
 		private static int targetProcessId = 0;
@@ -355,7 +381,7 @@ namespace mJiggAPI {
 			var typeface = new Typeface("Segoe UI Emoji");
 			double fontSize = size * 0.85;
 			var text = new FormattedText(emoji, CultureInfo.InvariantCulture,
-				FlowDirection.LeftToRight, typeface, fontSize, Brushes.Black, 96.0);
+				FlowDirection.LeftToRight, typeface, fontSize, Brushes.White, 96.0);
 
 			var geo = text.BuildGeometry(new System.Windows.Point(0, 0));
 			var bounds = geo.Bounds;

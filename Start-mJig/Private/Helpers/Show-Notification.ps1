@@ -1,3 +1,91 @@
+		function Update-TrayIcon {
+			if ($script:_SkipTrayIcon) { return }
+			$_trayPath = Join-Path ([System.IO.Path]::GetTempPath()) 'mjig_tray_icon.png'
+			$script:_TrayIconPath = $_trayPath
+
+			if ($script:_NotifyIconEmoji -ne $script:TitleEmoji) {
+				$_trayEmojiStr = [char]::ConvertFromUtf32($script:TitleEmoji)
+				$_rendered = $false
+				if ($null -ne $script:ToastAPI) {
+					try {
+						$script:ToastAPI::RenderEmojiToPng($_trayEmojiStr, $_trayPath, 64)
+						$_rendered = $true
+					} catch {
+						if ($script:DiagEnabled -and $script:NotifyDiagFile) {
+							"$(Get-Date -Format 'HH:mm:ss.fff') [RENDER-TRAY] $($_.Exception.GetType().Name): $($_.Exception.Message)" | Out-File $script:NotifyDiagFile -Append
+						}
+					}
+				}
+				if (-not $_rendered) {
+					$_bmp = New-Object System.Drawing.Bitmap(64, 64)
+					$_gfx = [System.Drawing.Graphics]::FromImage($_bmp)
+					$_gfx.Clear([System.Drawing.Color]::FromArgb(40, 40, 40))
+					$_emojiFont = New-Object System.Drawing.Font('Segoe UI Emoji', 36)
+					$_rect = New-Object System.Drawing.Rectangle(0, 0, 64, 64)
+					$_tflags = [System.Windows.Forms.TextFormatFlags]::HorizontalCenter -bor
+					           [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor
+					           [System.Windows.Forms.TextFormatFlags]::NoPadding
+					[System.Windows.Forms.TextRenderer]::DrawText(
+						$_gfx, $_trayEmojiStr, $_emojiFont, $_rect,
+						[System.Drawing.Color]::White, $_tflags)
+					$_gfx.Dispose()
+					$_emojiFont.Dispose()
+					$_bmp.Save($_trayPath, [System.Drawing.Imaging.ImageFormat]::Png)
+					$_bmp.Dispose()
+				}
+
+				# Create NotifyIcon with context menu on first call
+				if ($null -eq $script:_NotifyIcon) {
+					$script:_NotifyIcon = New-Object System.Windows.Forms.NotifyIcon
+
+					$script:_TrayOpenItem  = New-Object System.Windows.Forms.ToolStripMenuItem
+					$script:_TrayPauseItem = New-Object System.Windows.Forms.ToolStripMenuItem
+					$script:_TrayPauseItem.Text = 'Pause'
+					$_quitItem = New-Object System.Windows.Forms.ToolStripMenuItem
+					$_quitItem.Text = 'Quit'
+
+					$null = $script:_TrayOpenItem.Add_Click({ $script:_TrayAction = 'open' })
+					$null = $script:_TrayPauseItem.Add_Click({ $script:_TrayAction = 'toggle' })
+					$null = $_quitItem.Add_Click({ $script:_TrayAction = 'quit' })
+
+					$script:_TrayContextMenu = New-Object System.Windows.Forms.ContextMenuStrip
+					$null = $script:_TrayContextMenu.Items.Add($script:_TrayOpenItem)
+					$null = $script:_TrayContextMenu.Items.Add($script:_TrayPauseItem)
+					$null = $script:_TrayContextMenu.Items.Add($_quitItem)
+					$script:_NotifyIcon.ContextMenuStrip = $script:_TrayContextMenu
+
+					$null = $script:_NotifyIcon.Add_MouseClick({
+						if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+							$script:_TrayAction = 'open'
+						}
+					})
+
+					$script:_NotifyIcon.Visible = $true
+				}
+
+				$_trayBmp = New-Object System.Drawing.Bitmap($_trayPath)
+				$script:_NotifyIcon.Icon = [System.Drawing.Icon]::FromHandle($_trayBmp.GetHicon())
+				$_trayBmp.Dispose()
+
+				$script:_NotifyIconEmoji = $script:TitleEmoji
+			}
+
+			# Always sync tooltip and Open menu label
+			if ($null -ne $script:_NotifyIcon) {
+				$script:_NotifyIcon.Text = $script:WindowTitle
+			}
+			if ($null -ne $script:_TrayOpenItem) {
+				$script:_TrayOpenItem.Text = "Open '$($script:WindowTitle)'"
+			}
+		}
+
+		function Update-TrayPauseLabel {
+			param([bool]$Paused)
+			if ($null -ne $script:_TrayPauseItem) {
+				$script:_TrayPauseItem.Text = if ($Paused) { 'Resume' } else { 'Pause' }
+			}
+		}
+
 		function Show-Notification {
 			param(
 				[Parameter(Mandatory)][string]$Title,
@@ -26,53 +114,8 @@
 			try {
 				if ($null -eq $script:_ActionIconCache) { $script:_ActionIconCache = @{} }
 
-				# --- Tray icon: title emoji (unchanged) ---
-				if ($script:_NotifyIconEmoji -ne $script:TitleEmoji) {
-					$trayEmojiStr = [char]::ConvertFromUtf32($script:TitleEmoji)
-					$trayIconPath = Join-Path ([System.IO.Path]::GetTempPath()) "mjig_tray_icon.png"
-
-					$rendered = $false
-					if ($null -ne $script:ToastAPI) {
-						try {
-							$script:ToastAPI::RenderEmojiToPng($trayEmojiStr, $trayIconPath, 64)
-							$rendered = $true
-						} catch {
-							if ($script:DiagEnabled -and $script:NotifyDiagFile) {
-								"$(Get-Date -Format 'HH:mm:ss.fff') [RENDER-TRAY] $($_.Exception.GetType().Name): $($_.Exception.Message)" | Out-File $script:NotifyDiagFile -Append
-							}
-						}
-					}
-					if (-not $rendered) {
-						$bmp = New-Object System.Drawing.Bitmap(64, 64)
-						$gfx = [System.Drawing.Graphics]::FromImage($bmp)
-						$gfx.Clear([System.Drawing.Color]::FromArgb(40, 40, 40))
-						$emojiFont = New-Object System.Drawing.Font("Segoe UI Emoji", 36)
-						$rect = New-Object System.Drawing.Rectangle(0, 0, 64, 64)
-						$tflags = [System.Windows.Forms.TextFormatFlags]::HorizontalCenter -bor
-						          [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor
-						          [System.Windows.Forms.TextFormatFlags]::NoPadding
-						[System.Windows.Forms.TextRenderer]::DrawText(
-							$gfx, $trayEmojiStr, $emojiFont, $rect,
-							[System.Drawing.Color]::White, $tflags)
-						$gfx.Dispose()
-						$emojiFont.Dispose()
-						$bmp.Save($trayIconPath, [System.Drawing.Imaging.ImageFormat]::Png)
-						$bmp.Dispose()
-					}
-
-					if ($null -ne $script:_NotifyIcon) {
-						$script:_NotifyIcon.Visible = $false
-						$script:_NotifyIcon.Dispose()
-					}
-					$script:_NotifyIcon = New-Object System.Windows.Forms.NotifyIcon
-					$trayBmp = New-Object System.Drawing.Bitmap($trayIconPath)
-					$script:_NotifyIcon.Icon = [System.Drawing.Icon]::FromHandle($trayBmp.GetHicon())
-					$trayBmp.Dispose()
-					$script:_NotifyIcon.Visible = $true
-
-					$script:_NotifyIconEmoji = $script:TitleEmoji
-				}
-				$script:_NotifyIcon.Text = $script:WindowTitle
+				# --- Tray icon: title emoji (worker only, viewer skips) ---
+				Update-TrayIcon
 
 				# --- Action icon: per-action emoji for toast image ---
 				$actionCodepoint = $_actionEmojiMap[$Action]
@@ -126,6 +169,9 @@
 				$aumid  = "svc_$($script:PipeName)_${PID}_$($script:_NotifyAumidSeq)"
 				$regKey = "HKCU:\Software\Classes\AppUserModelId\$aumid"
 
+				# AUMID icon = title emoji; toast appLogoOverride = action emoji
+				$aumidIconPath = if ($null -ne $script:_TrayIconPath) { $script:_TrayIconPath } else { $toastImgPath }
+
 				$escapedTitle = [System.Security.SecurityElement]::Escape($Title)
 				$escapedBody  = [System.Security.SecurityElement]::Escape($Body)
 				$imgSrc  = $toastImgPath.Replace('\', '/')
@@ -139,7 +185,7 @@
 					try {
 						$null = New-Item -Path $regKey -Force
 						$null = New-ItemProperty -Path $regKey -Name 'DisplayName' -Value $script:WindowTitle -PropertyType ExpandString -Force
-						$null = New-ItemProperty -Path $regKey -Name 'IconUri' -Value $toastImgPath -PropertyType ExpandString -Force
+						$null = New-ItemProperty -Path $regKey -Name 'IconUri' -Value $aumidIconPath -PropertyType ExpandString -Force
 						try {
 							$script:ToastAPI::ShowToast($toastXml, $aumid)
 							$toastShown = $true
@@ -163,7 +209,7 @@
 					try {
 						$null = New-Item -Path $regKey -Force
 						$null = New-ItemProperty -Path $regKey -Name 'DisplayName' -Value $script:WindowTitle -PropertyType ExpandString -Force
-						$null = New-ItemProperty -Path $regKey -Name 'IconUri' -Value $toastImgPath -PropertyType ExpandString -Force
+						$null = New-ItemProperty -Path $regKey -Name 'IconUri' -Value $aumidIconPath -PropertyType ExpandString -Force
 						$safeTitle = $Title.Replace("'", "''")
 						$safeBody  = $Body.Replace("'", "''")
 						$safeImg   = $imgSrc.Replace("'", "''")
@@ -214,6 +260,12 @@
 				} catch {}
 				$script:_NotifyIcon     = $null
 				$script:_NotifyIconEmoji = $null
+			}
+			if ($null -ne $script:_TrayContextMenu) {
+				try { $script:_TrayContextMenu.Dispose() } catch {}
+				$script:_TrayContextMenu = $null
+				$script:_TrayOpenItem    = $null
+				$script:_TrayPauseItem   = $null
 			}
 			if ($null -ne $script:_ActionIconCache) {
 				foreach ($path in $script:_ActionIconCache.Values) {

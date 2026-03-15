@@ -59,7 +59,7 @@ $mJig = "C:\Projects\mJig\Start-mJig\Start-mJig.psm1"
 powershell -NoProfile -Command "Import-Module '$mJig'; Start-mJig -Output full -DebugMode"
 ```
 
-> **Note:** mJig automatically runs inside its own isolated, controlled runspace — separate from your session's profile, aliases, and loaded modules. No manual session management is needed.
+> **Note:** mJig automatically runs inside its own isolated, controlled runspace — separate from your session's profile, aliases, and loaded modules. No manual session management is needed. Closing the terminal window (clicking X) terminates the viewer instantly — a native `SetConsoleCtrlHandler` callback calls `TerminateProcess` directly, bypassing PowerShell's normal 5-second graceful shutdown period.
 
 ### Background Worker Mode (Default)
 
@@ -210,6 +210,8 @@ Enable with `-Diag` flag. Creates log files in `_diag/` relative to the module d
 - `worker-ipc.txt` - Worker-side IPC diagnostics (viewer connect/disconnect, command receipt, state send/skip events)
 
 The `-Diag` flag is automatically forwarded to the background worker process when it is spawned.
+
+At startup, when `-Diag` is set, all existing `*.txt` files in `_diag/` are wiped before any new files are created, so each run starts with a clean slate.
 
 After quitting (or if the viewer fails to connect to the worker), a 15-second countdown prompt offers to print all diagnostic files directly to the console. Each file is displayed in a distinct color and limited to 100 rows; files exceeding the limit show a truncation notice with the full file path.
 

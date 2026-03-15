@@ -138,6 +138,40 @@ function Start-mJig {
 			Write-Host ""
 		}
 
+		# Register a native SetConsoleCtrlHandler that calls Environment.Exit(0) the
+		# instant the terminal X button is clicked (CTRL_CLOSE_EVENT = 2).  This fires
+		# on the OS callback thread independently of PowerShell's own handler, so the
+		# process exits in <50 ms instead of waiting for the 5-second grace period.
+		try { [void][_mJigCloseHandlerX] } catch {
+			Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class _mJigCloseHandlerX {
+    public delegate bool HandlerDelegate(uint ctrlType);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCtrlHandler(HandlerDelegate h, bool add);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr hProcess, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetCurrentProcess();
+    private static HandlerDelegate _delegate;
+    public static void Register() {
+        _delegate = new HandlerDelegate(OnClose);
+        SetConsoleCtrlHandler(_delegate, true);
+    }
+    public static void Unregister() {
+        if (_delegate != null) { SetConsoleCtrlHandler(_delegate, false); _delegate = null; }
+    }
+    private static bool OnClose(uint t) {
+        if (t == 2 || t == 5 || t == 6) { TerminateProcess(GetCurrentProcess(), 0); }
+        return false;
+    }
+}
+'@ -ErrorAction SilentlyContinue
+		}
+		$_closeHandlerRegistered = $false
+		try { [_mJigCloseHandlerX]::Register(); $_closeHandlerRegistered = $true } catch {}
+
 		try {
 			$null = $_ps.AddScript("Import-Module '$_modPath'")
 			$null = $_ps.AddStatement().AddCommand('Start-mJig')
@@ -145,7 +179,14 @@ function Start-mJig {
 			foreach ($_kvp in $PSBoundParameters.GetEnumerator()) {
 				$null = $_ps.AddParameter($_kvp.Key, $_kvp.Value)
 			}
-			$_ps.Invoke()
+			# BeginInvoke + 50 ms poll: the outer thread stays interruptible so
+			# Environment.Exit(0) (called by the close handler above) can fire
+			# immediately instead of being blocked by a synchronous Invoke() call.
+			$_asyncResult = $_ps.BeginInvoke()
+			while (-not $_asyncResult.IsCompleted) {
+				Start-Sleep -Milliseconds 50
+			}
+			try { $null = $_ps.EndInvoke($_asyncResult) } catch {}
 			if ($_ps.HadErrors -and $DebugMode) {
 				$_errStream = $_ps.Streams.Error
 				if ($_errStream.Count -gt 0) {
@@ -169,6 +210,19 @@ function Start-mJig {
 				}
 			}
 		} finally {
+			if ($_closeHandlerRegistered) { try { [_mJigCloseHandlerX]::Unregister() } catch {} }
+			# Stop the inner pipeline if still running (Ctrl+C path).
+			if ($null -ne $_asyncResult -and -not $_asyncResult.IsCompleted) {
+				try { $null = $_ps.Stop() } catch {}
+			}
+			# EndInvoke() waits on IAsyncResult.AsyncWaitHandle, which is only signaled
+			# once the BatchInvocationWorkItem thread has FULLY exited -- not just when
+			# Stop() returns.  Without this there is a brief race where the work item
+			# thread is still writing to the PSDataCollection when Dispose() closes it,
+			# producing an unhandled PSInvalidOperationException on every other Ctrl+C.
+			if ($null -ne $_asyncResult) {
+				try { $null = $_ps.EndInvoke($_asyncResult) } catch {}
+			}
 			$_ps.Dispose()
 			$_rs.Close()
 			$_rs.Dispose()
@@ -184,6 +238,7 @@ function Start-mJig {
 			if ($null -ne $_savedTitle) {
 				try { $Host.UI.RawUI.WindowTitle = $_savedTitle } catch {}
 			}
+			try { [Console]::Clear() } catch {}
 			if ($DebugMode) {
 				Write-Host ""
 				Write-Host "[RUNSPACE] Child exited - console state restored" -ForegroundColor Cyan
@@ -1087,6 +1142,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 			return
 		}
 		$_isViewerMode = $true
+		$script:_SkipTrayIcon = $true
 		$_viewerPipeClient = $_pipeResult.Client
 		$_viewerPipeReader = $_pipeResult.Reader
 		$_viewerPipeWriter = $_pipeResult.Writer
@@ -1157,6 +1213,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 				return
 			}
 			$_isViewerMode = $true
+			$script:_SkipTrayIcon = $true
 			$_viewerPipeClient = $_pipeResult.Client
 			$_viewerPipeReader = $_pipeResult.Reader
 			$_viewerPipeWriter = $_pipeResult.Writer
@@ -1267,6 +1324,9 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 	}
 
 	# Main Processing Loop
+	# try/finally ensures pipe and mutex are always cleaned up, even when
+	# PipelineStoppedException (Ctrl+C) bypasses the normal break-process exit path.
+	try {
 	:process while ($true) {
 			$script:LoopIteration++
 			
@@ -1419,10 +1479,29 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 								}
 								$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $components })
 							}
-						}
+					}
 						'stopped' {
 							$_viewerStopped = $true
 							$_viewerStopReason = if ($null -ne $msg.reason) { $msg.reason } else { 'unknown' }
+						}
+						'focus' {
+							$_hwnd = $script:MouseAPI::GetConsoleWindow()
+							if ($_hwnd -ne [IntPtr]::Zero) {
+								$_root = $script:MouseAPI::GetAncestor($_hwnd, 2)
+								if ($_root -ne [IntPtr]::Zero) { $_hwnd = $_root }
+								$_fgWnd    = $script:MouseAPI::GetForegroundWindow()
+								$_fgThread = $script:MouseAPI::GetWindowThreadProcessId($_fgWnd, [ref]0)
+								$_myThread = $script:MouseAPI::GetCurrentThreadId()
+								if ($_fgThread -ne 0 -and $_fgThread -ne $_myThread) {
+									$null = $script:MouseAPI::AttachThreadInput($_fgThread, $_myThread, $true)
+								}
+								$null = $script:MouseAPI::ShowWindow($_hwnd, 9)
+								$null = $script:MouseAPI::BringWindowToTop($_hwnd)
+								$null = $script:MouseAPI::SetForegroundWindow($_hwnd)
+								if ($_fgThread -ne 0 -and $_fgThread -ne $_myThread) {
+									$null = $script:MouseAPI::AttachThreadInput($_fgThread, $_myThread, $false)
+								}
+							}
 						}
 					}
 					if ($_viewerStopped) { break }
@@ -1438,9 +1517,9 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 			$_viewerStopReason = 'disconnected'
 		}
 		if ($_viewerStopped) {
-			try { [Console]::Write("$([char]27)[?25h") } catch {}
-			Write-Host ""
-			if ($_viewerStopReason -eq 'endtime') {
+		try { [Console]::Write("$([char]27)[?25h") } catch {}
+		Write-Host ""
+		if ($_viewerStopReason -eq 'endtime') {
 				Write-Host "       END TIME REACHED: " -NoNewline -ForegroundColor $script:TextError
 				Write-Host "Worker stopped."
 			} elseif ($_viewerStopReason -eq 'quit') {
@@ -1509,82 +1588,101 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 					try {
 						$msg = Read-PipeMessage -Reader $_viewerPipeReader -PendingTask ([ref]$_viewerReadTask)
 						while ($null -ne $msg) {
-							switch ($msg.type) {
-								'state' {
-									$_msgEpoch = if ($null -ne $msg.epoch) { [int]$msg.epoch } else { 0 }
-									if ($_msgEpoch -lt $_settingsEpoch) { break }
-									$script:IntervalSeconds = [double]$msg.intervalSeconds
-									$script:IntervalVariance = [double]$msg.intervalVariance
-									$script:MoveSpeed = [double]$msg.moveSpeed
-									$script:MoveVariance = [double]$msg.moveVariance
-									$script:TravelDistance = [double]$msg.travelDistance
-									$script:TravelVariance = [double]$msg.travelVariance
-									$script:AutoResumeDelaySeconds = [double]$msg.autoResumeDelaySeconds
-									$script:LoopIteration = [int]$msg.loopIteration
-									$endTimeStr = [string]$msg.endTimeStr
-									$endTimeInt = [int]$msg.endTimeInt
-									$end = [string]$msg.end
-									$cooldownActive = [bool]$msg.cooldownActive
-									$secondsRemaining = if ($null -ne $msg.cooldownRemaining) { [int]$msg.cooldownRemaining } else { 0 }
-									if ([bool]$msg.mouseInputDetected) {
-										$mouseInputDetected = $true
-										$null = $intervalMouseInputs.Add("Mouse")
-									}
-									if ([bool]$msg.keyboardInputDetected) { $keyboardInputDetected = $true }
-									if ([bool]$msg.keyboardInferred) { $_keyboardInferred = $true }
-									$SkipUpdate = [bool]$msg.userInputDetected -or $cooldownActive
+						switch ($msg.type) {
+							'state' {
+								$_msgEpoch = if ($null -ne $msg.epoch) { [int]$msg.epoch } else { 0 }
+								if ($_msgEpoch -lt $_settingsEpoch) { break }
+								$script:IntervalSeconds = [double]$msg.intervalSeconds
+								$script:IntervalVariance = [double]$msg.intervalVariance
+								$script:MoveSpeed = [double]$msg.moveSpeed
+								$script:MoveVariance = [double]$msg.moveVariance
+								$script:TravelDistance = [double]$msg.travelDistance
+								$script:TravelVariance = [double]$msg.travelVariance
+								$script:AutoResumeDelaySeconds = [double]$msg.autoResumeDelaySeconds
+								$script:LoopIteration = [int]$msg.loopIteration
+								$endTimeStr = [string]$msg.endTimeStr
+								$endTimeInt = [int]$msg.endTimeInt
+								$end = [string]$msg.end
+								$cooldownActive = [bool]$msg.cooldownActive
+								$secondsRemaining = if ($null -ne $msg.cooldownRemaining) { [int]$msg.cooldownRemaining } else { 0 }
+								if ([bool]$msg.mouseInputDetected) {
+									$mouseInputDetected = $true
+									$null = $intervalMouseInputs.Add("Mouse")
 								}
-									'log' {
-										if ($null -ne $LogArray -and -not $script:ManualPause) {
-											$components = @()
-											foreach ($c in $msg.components) {
-												$components += @{
-													priority = [int]$c.priority
-													text = [string]$c.text
-													shortText = [string]$c.shortText
-												}
-											}
-											if ($LogArray.Count -gt 0 -and $LogArray.Count -ge $Rows) {
-												$LogArray.RemoveAt(0)
-											}
-											$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $components })
-										}
-									}
-									'togglePause' {
-										$script:ManualPause = [bool]$msg.paused
-										if ($null -ne $msg.logMsg -and $null -ne $LogArray) {
-											$components = @()
-											foreach ($c in $msg.logMsg.components) {
-												$components += @{
-													priority = [int]$c.priority
-													text = [string]$c.text
-													shortText = [string]$c.shortText
-												}
-											}
-											if ($LogArray.Count -gt 0 -and $LogArray.Count -ge $Rows) {
-												$LogArray.RemoveAt(0)
-											}
-											$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $components })
-										}
-									}
-									'stopped' {
-										$_viewerStopped = $true
-										$_viewerStopReason = if ($null -ne $msg.reason) { $msg.reason } else { 'unknown' }
-									}
-								}
-								if ($_viewerStopped) { break }
-								$msg = Read-PipeMessage -Reader $_viewerPipeReader -PendingTask ([ref]$_viewerReadTask)
+								if ([bool]$msg.keyboardInputDetected) { $keyboardInputDetected = $true }
+								if ([bool]$msg.keyboardInferred) { $_keyboardInferred = $true }
+								$SkipUpdate = [bool]$msg.userInputDetected -or $cooldownActive
 							}
-						} catch {
-							$_viewerReadTask = $null
-							$_viewerStopped = $true
-							$_viewerStopReason = 'pipe_error'
+							'log' {
+								if ($null -ne $LogArray -and -not $script:ManualPause) {
+									$components = @()
+									foreach ($c in $msg.components) {
+										$components += @{
+											priority = [int]$c.priority
+											text = [string]$c.text
+											shortText = [string]$c.shortText
+										}
+									}
+									if ($LogArray.Count -gt 0 -and $LogArray.Count -ge $Rows) {
+										$LogArray.RemoveAt(0)
+									}
+									$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $components })
+								}
+							}
+							'togglePause' {
+								$script:ManualPause = [bool]$msg.paused
+								if ($null -ne $msg.logMsg -and $null -ne $LogArray) {
+									$components = @()
+									foreach ($c in $msg.logMsg.components) {
+										$components += @{
+											priority = [int]$c.priority
+											text = [string]$c.text
+											shortText = [string]$c.shortText
+										}
+									}
+									if ($LogArray.Count -gt 0 -and $LogArray.Count -ge $Rows) {
+										$LogArray.RemoveAt(0)
+									}
+									$null = $LogArray.Add([PSCustomObject]@{ logRow = $true; components = $components })
+								}
+							}
+							'stopped' {
+								$_viewerStopped = $true
+								$_viewerStopReason = if ($null -ne $msg.reason) { $msg.reason } else { 'unknown' }
+							}
+							'focus' {
+								$_hwnd = $script:MouseAPI::GetConsoleWindow()
+								if ($_hwnd -ne [IntPtr]::Zero) {
+									$_root = $script:MouseAPI::GetAncestor($_hwnd, 2)
+									if ($_root -ne [IntPtr]::Zero) { $_hwnd = $_root }
+									$_fgWnd    = $script:MouseAPI::GetForegroundWindow()
+									$_fgThread = $script:MouseAPI::GetWindowThreadProcessId($_fgWnd, [ref]0)
+									$_myThread = $script:MouseAPI::GetCurrentThreadId()
+									if ($_fgThread -ne 0 -and $_fgThread -ne $_myThread) {
+										$null = $script:MouseAPI::AttachThreadInput($_fgThread, $_myThread, $true)
+									}
+									$null = $script:MouseAPI::ShowWindow($_hwnd, 9)
+									$null = $script:MouseAPI::BringWindowToTop($_hwnd)
+									$null = $script:MouseAPI::SetForegroundWindow($_hwnd)
+									if ($_fgThread -ne 0 -and $_fgThread -ne $_myThread) {
+										$null = $script:MouseAPI::AttachThreadInput($_fgThread, $_myThread, $false)
+									}
+								}
+							}
 						}
-					} else {
-						$_viewerStopped = $true
-						$_viewerStopReason = 'disconnected'
+						if ($_viewerStopped) { break }
+						$msg = Read-PipeMessage -Reader $_viewerPipeReader -PendingTask ([ref]$_viewerReadTask)
 					}
-					if ($_viewerStopped) { break waitLoop }
+				} catch {
+					$_viewerReadTask = $null
+					$_viewerStopped = $true
+					$_viewerStopReason = 'pipe_error'
+				}
+			} else {
+				$_viewerStopped = $true
+				$_viewerStopReason = 'disconnected'
+			}
+			if ($_viewerStopped) { break waitLoop }
 				}
 
 				if (-not $_isViewerMode) {
@@ -2982,24 +3080,36 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 		} # end if (-not $_isViewerMode) -- end-time check
 		} # end main loop
 
-	# Notification cleanup
+	# Normal exit cleanup (only reached via break process — not on Ctrl+C)
 	Dispose-Notification
 
-	# Viewer pipe cleanup
 	if ($_isViewerMode) {
 		if ($null -ne $_viewerPipeReader) { try { $_viewerPipeReader.Dispose() } catch {} }
 		if ($null -ne $_viewerPipeWriter) { try { $_viewerPipeWriter.Dispose() } catch {} }
 		if ($null -ne $_viewerPipeClient) { try { $_viewerPipeClient.Dispose() } catch {} }
 	}
 
-	# Offer to print diagnostic files to console after exit
 	if ($script:DiagEnabled) { Show-DiagnosticFiles }
 
-	# Release singleton mutex so another instance can start
 	if ($null -ne $script:InstanceMutex) {
 		try { $script:InstanceMutex.ReleaseMutex() } catch {}
 		$script:InstanceMutex.Dispose()
 		$script:InstanceMutex = $null
+	}
+
+	} finally {
+		# Runs on ALL exits including Ctrl+C (PipelineStoppedException).
+		# Dispose() on already-disposed objects is a safe no-op via try/catch.
+		if ($_isViewerMode) {
+			if ($null -ne $_viewerPipeReader) { try { $_viewerPipeReader.Dispose() } catch {} }
+			if ($null -ne $_viewerPipeWriter) { try { $_viewerPipeWriter.Dispose() } catch {} }
+			if ($null -ne $_viewerPipeClient) { try { $_viewerPipeClient.Dispose() } catch {} }
+		}
+		if ($null -ne $script:InstanceMutex) {
+			try { $script:InstanceMutex.ReleaseMutex() } catch {}
+			try { $script:InstanceMutex.Dispose() } catch {}
+			$script:InstanceMutex = $null
+		}
 	}
 }
 
