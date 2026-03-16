@@ -136,7 +136,7 @@ $bottomLinePadding = $dialogWidth - (13 + 2 * $dialogParenOffset + 2 * $dialogIc
 		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg }
 		Write-Buffer -Text "y" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
 		$closingParen = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
-		Write-Buffer -Text "$closingParenes" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+		Write-Buffer -Text "$($closingParen)es" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
 		if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 		Write-Buffer -Text "  " -BG $script:QuitDialogBg
 		if ($script:DialogButtonShowBrackets) {
@@ -151,7 +151,7 @@ $bottomLinePadding = $dialogWidth - (13 + 2 * $dialogParenOffset + 2 * $dialogIc
 		}
 		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg }
 		Write-Buffer -Text "n" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
-		Write-Buffer -Text "$closingPareno" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+		Write-Buffer -Text "$($closingParen)o" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
 		if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 		Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:QuitDialogBg
 		Write-Buffer -Text "$($script:BoxVertical)" -FG $script:QuitDialogBorder -BG $script:QuitDialogBg
@@ -230,7 +230,7 @@ $noButtonEndX    = $noButtonStartX + $dialogBracketWidth + $dialogIconWidth + 4 
 				if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg }
 				Write-Buffer -Text "y" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
 				$closingParen = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
-				Write-Buffer -Text "$closingParenes" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+				Write-Buffer -Text "$($closingParen)es" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
 				if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 				Write-Buffer -Text "  " -BG $script:QuitDialogBg
 				if ($script:DialogButtonShowBrackets) {
@@ -245,7 +245,7 @@ $noButtonEndX    = $noButtonStartX + $dialogBracketWidth + $dialogIconWidth + 4 
 				}
 				if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg }
 				Write-Buffer -Text "n" -FG $script:QuitDialogButtonHotkey -BG $script:QuitDialogButtonBg
-				Write-Buffer -Text "$closingPareno" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
+				Write-Buffer -Text "$($closingParen)o" -FG $script:QuitDialogButtonText -BG $script:QuitDialogButtonBg
 				if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 				Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:QuitDialogBg
 				Write-Buffer -Text "$($script:BoxVertical)" -FG $script:QuitDialogBorder -BG $script:QuitDialogBg

@@ -46,16 +46,40 @@
 			$script:LogReplayBuffer = New-Object 'System.Collections.Generic.Queue[hashtable]' 30
 			
 			$workerLastPos = Get-MousePosition
-			$workerLastMovementTime = $null
-			$workerLastMovementDurationMs = 0
+		$workerLastMovementTime = $null
+		$workerLastMovementDurationMs = 0
+		$workerLastSuccessMovementTime = $null
+		$workerLastSuccessMoveDurationMs = 0
 			$workerLastSimulatedKeyPress = $null
-			$workerLastAutomatedMouseMovement = $null
+			$workerLastAutomatedMouseMovement = (Get-Date).AddMinutes(-5)
 			$workerLastUserInputTime = $null
 			$workerLoopIteration = 0
 			$workerStateTicks = 0
-			$_writeSkipCount = 0
-			
-			$lii = New-Object $script:LastInputType
+		$_writeSkipCount = 0
+
+		# Worker stats tracking — mirrors inline mode counters; sent in every state message
+		$workerStartTime               = Get-Date
+		$workerStatsMoveCount          = 0
+		$workerStatsSkipCount          = 0
+		$workerStatsCurrentStreak      = 0
+		$workerStatsLongestStreak      = 0
+		$workerStatsTotalDistancePx    = 0.0
+		$workerStatsLastMoveDist       = 0.0
+		$workerStatsMinMoveDist        = [double]::MaxValue
+		$workerStatsMaxMoveDist        = 0.0
+		$workerStatsKbInterruptCount   = 0
+		$workerStatsMsInterruptCount   = 0
+		$workerStatsLongestCleanStreak = 0
+		$workerStatsCleanStreak        = 0
+		$workerStatsAvgActualIntervalSecs = 0.0
+		$workerStatsLastMoveTick       = $null
+		$workerStatsAvgDurationMs      = 0.0
+		$workerStatsMinDurationMs      = [int]::MaxValue
+		$workerStatsMaxDurationMs      = 0
+		$workerStatsDirectionCounts    = @{ N = 0.0; NE = 0.0; E = 0.0; SE = 0.0; S = 0.0; SW = 0.0; W = 0.0; NW = 0.0 }
+	$workerStatsLastCurveParams    = $null
+
+	$lii = New-Object $script:LastInputType
 			$lii.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($lii)
 			$_workerReadTask = $null
 			$_pendingWriteFlush = $null
@@ -63,18 +87,31 @@
 			$manualPause = $false
 			$script:_HotkeyDebounce = $false
 
+		# Viewer visual state — preserved across viewer sessions and sent in welcome message
+		$_viewerVisualState = @{
+			outputMode       = $script:Output
+			previousView     = $null
+			windowTitle      = $script:WindowTitle
+			titleEmoji       = $script:TitleEmoji
+			titlePresetIndex = $script:TitlePresetIndex
+			activeDialog     = $null
+			activeSubDialog  = $null
+		}
+
 			try {
 				:workerLoop while ($true) {
 					$workerLoopIteration++
 					$script:LoopIteration = $workerLoopIteration
 					
-					$userInputDetected = $false
-					$mouseInputDetected = $false
-					$keyboardInputDetected = $false
-					$_anyInputThisIteration = $false
-					$cooldownActive = $false
-					$secondsRemaining = 0
-				$date = Get-Date
+				$userInputDetected = $false
+				$mouseInputDetected = $false
+				$keyboardInputDetected = $false
+				$_anyInputThisIteration = $false
+				$_iterHadKbInput = $false
+				$_iterHadMsInput = $false
+				$cooldownActive = $false
+				$secondsRemaining = 0
+			$date = Get-Date
 				
 				# Interval calculation (same as main loop)
 					$intervalMs = 1000
@@ -174,11 +211,22 @@
 								if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER TERMINAL: IsWT=$($script:_ViewerTerminalIsWT) Exe=$($script:_ViewerTerminalExe)" | Out-File $_wDiagFile -Append }
 							} catch {}
 								
-								Send-PipeMessage -Writer $pipeWriter -Message @{
-									type = 'welcome'
-									pid = $PID
-									version = $script:Version
-								}
+						$_welcomeVisualState = @{
+							outputMode       = $_viewerVisualState.outputMode
+							previousView     = $_viewerVisualState.previousView
+							windowTitle      = $_viewerVisualState.windowTitle
+							titleEmoji       = $_viewerVisualState.titleEmoji
+							titlePresetIndex = $_viewerVisualState.titlePresetIndex
+							activeDialog     = $_viewerVisualState.activeDialog
+							activeSubDialog  = $_viewerVisualState.activeSubDialog
+							manualPause      = $manualPause
+						}
+							Send-PipeMessage -Writer $pipeWriter -Message @{
+								type        = 'welcome'
+								pid         = $PID
+								version     = $script:Version
+								visualState = $_welcomeVisualState
+							}
 							Send-PipeMessage -Writer $pipeWriter -Message @{
 								type = 'state'
 								epoch = $_workerSettingsEpoch
@@ -276,21 +324,41 @@
 										}
 									'output' {
 										if ($null -ne $msg.epoch) { $_workerSettingsEpoch = [int]$msg.epoch }
-										if ($null -ne $msg.mode) { $script:Output = $msg.mode }
-									}
-								'title' {
-									if ($null -ne $msg.windowTitle) { $script:WindowTitle = $msg.windowTitle }
-									if ($null -ne $msg.titleEmoji)  { $script:TitleEmoji  = [int]$msg.titleEmoji }
-									Update-TrayIcon
-								}
-								'togglePause' {
-										if ($null -ne $msg.paused) {
-											$manualPause = [bool]$msg.paused
-										} else {
-											$manualPause = -not $manualPause
+										if ($null -ne $msg.mode) {
+											$script:Output = $msg.mode
+											$_viewerVisualState.outputMode = $msg.mode
 										}
-										Update-TrayPauseLabel -Paused $manualPause
+									$_viewerVisualState.previousView = $msg.previousView
+									$_viewerVisualState.activeDialog = $null
 									}
+							'title' {
+								if ($null -ne $msg.windowTitle) {
+									$script:WindowTitle = $msg.windowTitle
+									$_viewerVisualState.windowTitle = $msg.windowTitle
+								}
+								if ($null -ne $msg.titleEmoji) {
+									$script:TitleEmoji = [int]$msg.titleEmoji
+									$_viewerVisualState.titleEmoji = [int]$msg.titleEmoji
+								}
+								if ($null -ne $msg.titlePresetIndex) { $_viewerVisualState.titlePresetIndex = [int]$msg.titlePresetIndex }
+								Update-TrayIcon
+							}
+					'viewerState' {
+						if ($msg.PSObject.Properties.Name -contains 'activeDialog') {
+							$_viewerVisualState.activeDialog = if ($null -ne $msg.activeDialog -and $msg.activeDialog -ne '') { [string]$msg.activeDialog } else { $null }
+						}
+						if ($msg.PSObject.Properties.Name -contains 'activeSubDialog') {
+							$_viewerVisualState.activeSubDialog = if ($null -ne $msg.activeSubDialog -and $msg.activeSubDialog -ne '') { [string]$msg.activeSubDialog } else { $null }
+						}
+					}
+							'togglePause' {
+									if ($null -ne $msg.paused) {
+										$manualPause = [bool]$msg.paused
+									} else {
+										$manualPause = -not $manualPause
+									}
+									Update-TrayPauseLabel -Paused $manualPause
+								}
 										'quit' {
 											if ($viewerConnected) {
 												try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'quit' } } catch {}
@@ -324,15 +392,17 @@
 					$_wGlobalAction = $null
 						try { $_wGlobalAction = Test-GlobalHotkey } catch {}
 						if ($_wGlobalAction -eq 'togglePause') {
-							try {
-								$manualPause = -not $manualPause
-								Update-TrayPauseLabel -Paused $manualPause
-							Show-Notification -Body (if ($manualPause) { "Paused" } else { "Resumed" }) -Action (if ($manualPause) { "paused" } else { "resumed" })
-							$_pauseLogMsg = @{
-								type = 'log'
-								components = @(
-									@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
-										@{ priority = 2; text = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' })  via hotkey"; shortText = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' })" }
+						try {
+							$manualPause = -not $manualPause
+							Update-TrayPauseLabel -Paused $manualPause
+							$_hotkeyBody = if ($manualPause) { "Paused" } else { "Resumed" }
+							$_hotkeyAction = if ($manualPause) { "paused" } else { "resumed" }
+							Show-Notification -Body $_hotkeyBody -Action $_hotkeyAction
+						$_pauseLogMsg = @{
+							type = 'log'
+							components = @(
+								@{ priority = 1; text = $date.ToString(); shortText = $date.ToString("HH:mm:ss") }
+									@{ priority = 2; text = " - $_hotkeyBody via hotkey"; shortText = " - $_hotkeyBody" }
 									)
 								}
 								if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
@@ -350,45 +420,43 @@
 							return
 						}
 
-					# GetLastInputInfo idle check — skipped until first movement completes to avoid skip deadlock
-					if ($null -ne $workerLastAutomatedMouseMovement) {
-						try {
-							if ($script:MouseAPI::GetLastInputInfo([ref]$lii)) {
-								$tickNow = [uint64]$script:MouseAPI::GetTickCount64()
-								$systemIdleMs = $tickNow - [uint64]$lii.dwTime
-								$recentSimulated = ($null -ne $workerLastSimulatedKeyPress) -and ((Get-TimeSinceMs -StartTime $workerLastSimulatedKeyPress) -lt 500)
-								$recentAutoMove = (Get-TimeSinceMs -StartTime $workerLastAutomatedMouseMovement) -lt 500
-								if ($systemIdleMs -lt 300 -and -not $recentSimulated -and -not $recentAutoMove) {
-									$userInputDetected = $true
-									$_anyInputThisIteration = $true
-									if ($script:AutoResumeDelaySeconds -gt 0) {
-										$workerLastUserInputTime = Get-Date
-									}
-								}
+				# GetLastInputInfo idle check
+				try {
+					if ($script:MouseAPI::GetLastInputInfo([ref]$lii)) {
+						$tickNow = [uint64]$script:MouseAPI::GetTickCount64()
+						$systemIdleMs = $tickNow - [uint64]$lii.dwTime
+						$recentSimulated = ($null -ne $workerLastSimulatedKeyPress) -and ((Get-TimeSinceMs -StartTime $workerLastSimulatedKeyPress) -lt 500)
+						$recentAutoMove = (Get-TimeSinceMs -StartTime $workerLastAutomatedMouseMovement) -lt 500
+						if ($systemIdleMs -lt 300 -and -not $recentSimulated -and -not $recentAutoMove) {
+							$userInputDetected = $true
+							$_anyInputThisIteration = $true
+							$_iterHadKbInput = $true
+							if ($script:AutoResumeDelaySeconds -gt 0) {
+								$workerLastUserInputTime = Get-Date
 							}
-						} catch {}
 						}
-						
-					# Mouse position tracking — skipped until first movement completes (same deadlock avoidance as above)
-					try {
-							$currentCheckPos = Get-MousePosition
-							if ($null -ne $currentCheckPos -and $null -ne $workerLastPos) {
-								if (Test-MouseMoved -CurrentPos $currentCheckPos -LastPos $workerLastPos -Threshold 2) {
-									if ($null -ne $workerLastAutomatedMouseMovement) {
-										$recentAutoMove2 = (Get-TimeSinceMs -StartTime $workerLastAutomatedMouseMovement) -lt 500
-										if (-not $recentAutoMove2) {
-											$mouseInputDetected = $true
-											$userInputDetected = $true
-											$_anyInputThisIteration = $true
-											if ($script:AutoResumeDelaySeconds -gt 0) {
-												$workerLastUserInputTime = Get-Date
-											}
-										}
-									}
-									$workerLastPos = $currentCheckPos
+					}
+				} catch {}
+
+				# Mouse position tracking
+				try {
+					$currentCheckPos = Get-MousePosition
+					if ($null -ne $currentCheckPos -and $null -ne $workerLastPos) {
+						if (Test-MouseMoved -CurrentPos $currentCheckPos -LastPos $workerLastPos -Threshold 2) {
+							$recentAutoMove2 = (Get-TimeSinceMs -StartTime $workerLastAutomatedMouseMovement) -lt 500
+							if (-not $recentAutoMove2) {
+								$mouseInputDetected = $true
+								$userInputDetected = $true
+								$_anyInputThisIteration = $true
+								$_iterHadMsInput = $true
+								if ($script:AutoResumeDelaySeconds -gt 0) {
+									$workerLastUserInputTime = Get-Date
 								}
 							}
-						} catch {}
+							$workerLastPos = $currentCheckPos
+						}
+					}
+				} catch {}
 						
 						# Send state every 500ms (every 10th tick)
 						$workerStateTicks++
@@ -423,11 +491,31 @@
 							endTimeInt = $endTimeInt
 							end = $end
 							output = $script:Output
-							mouseInputDetected = $mouseInputDetected
-							keyboardInputDetected = $keyboardInputDetected
-							keyboardInferred = $keyboardInputDetected
-							userInputDetected = $userInputDetected
-						} -PendingFlush ([ref]$_pendingWriteFlush)
+						mouseInputDetected = $mouseInputDetected
+						keyboardInputDetected = $keyboardInputDetected
+						keyboardInferred = $keyboardInputDetected
+						userInputDetected = $userInputDetected
+						statsWorkerStartTime      = $workerStartTime.ToString('o')
+						statsMoveCount            = $workerStatsMoveCount
+						statsSkipCount            = $workerStatsSkipCount
+						statsCurrentStreak        = $workerStatsCurrentStreak
+						statsLongestStreak        = $workerStatsLongestStreak
+					statsTotalDistancePx      = $workerStatsTotalDistancePx
+					statsLastMoveDist         = $workerStatsLastMoveDist
+					statsMinMoveDist          = $workerStatsMinMoveDist
+					statsMaxMoveDist          = $workerStatsMaxMoveDist
+					statsLastMoveDurationMs   = $workerLastSuccessMoveDurationMs
+					statsLastMoveSecondsAgo   = if ($null -ne $workerLastSuccessMovementTime) { [int]((Get-Date) - $workerLastSuccessMovementTime).TotalSeconds } else { $null }
+						statsKbInterruptCount     = $workerStatsKbInterruptCount
+						statsMsInterruptCount     = $workerStatsMsInterruptCount
+						statsLongestCleanStreak   = $workerStatsLongestCleanStreak
+						statsAvgActualIntervalSecs = $workerStatsAvgActualIntervalSecs
+						statsAvgDurationMs        = $workerStatsAvgDurationMs
+						statsMinDurationMs        = $workerStatsMinDurationMs
+						statsMaxDurationMs        = $workerStatsMaxDurationMs
+						statsDirectionCounts      = $workerStatsDirectionCounts
+						statsLastCurveParams      = $workerStatsLastCurveParams
+					} -PendingFlush ([ref]$_pendingWriteFlush)
 								if (-not $_sendResult) {
 									$_writeSkipCount++
 									if ($_wDiag) { "$(Get-Date -Format 'HH:mm:ss.fff') - WORKER STATE SKIPPED (flush pending) skipCount=$_writeSkipCount" | Out-File $_wDiagFile -Append }
@@ -490,15 +578,18 @@
 							} catch {}
 								}
 							}
-							'toggle' {
-								$manualPause = -not $manualPause
-								Update-TrayPauseLabel -Paused $manualPause
-							Show-Notification -Body (if ($manualPause) { "Paused" } else { "Resumed" }) -Action (if ($manualPause) { "paused" } else { "resumed" })
-							$_pauseLogMsg = @{
-								type = 'log'
-								components = @(
-									@{ priority = 1; text = $date.ToString(); shortText = $date.ToString('HH:mm:ss') }
-										@{ priority = 2; text = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' }) via tray"; shortText = " - $(if ($manualPause) { 'Paused' } else { 'Resumed' })" }
+					'toggle' {
+						try {
+							$manualPause = -not $manualPause
+							try { Update-TrayPauseLabel -Paused $manualPause } catch {}
+							$_toggleBody = if ($manualPause) { "Paused" } else { "Resumed" }
+							$_toggleAction = if ($manualPause) { "paused" } else { "resumed" }
+							Show-Notification -Body $_toggleBody -Action $_toggleAction
+								$_pauseLogMsg = @{
+									type = 'log'
+									components = @(
+										@{ priority = 1; text = $date.ToString(); shortText = $date.ToString('HH:mm:ss') }
+										@{ priority = 2; text = " - $_toggleBody via tray"; shortText = " - $_toggleBody" }
 									)
 								}
 								if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
@@ -506,7 +597,12 @@
 								if ($viewerConnected) {
 									try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message @{ type = 'togglePause'; paused = $manualPause; logMsg = $_pauseLogMsg } -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
 								}
+						} catch {
+							if ($script:DiagEnabled -and $script:NotifyDiagFile) {
+								"$(Get-Date -Format 'HH:mm:ss.fff') [TOGGLE-CATCH] $($_.Exception.GetType().Name): $($_.Exception.Message)" | Out-File $script:NotifyDiagFile -Append
 							}
+						}
+					}
 							'quit' {
 								try { Show-Notification -Body "Stopped" -Action quit } catch {}
 								if ($viewerConnected) {
@@ -605,9 +701,61 @@
 							}
 						}
 						
-						$workerLastMovementTime = Get-Date
-				} else {
-					if ($_isFirstWorkerRun) {
+					$workerLastMovementTime = Get-Date
+
+				if (-not $movementAborted) {
+					# Record timing for successful move (used in state message display)
+					$workerLastSuccessMovementTime   = Get-Date
+					$workerLastSuccessMoveDurationMs = $workerLastMovementDurationMs
+
+					# Successful move — update worker cumulative stats
+					$workerStatsMoveCount++
+						$workerStatsTotalDistancePx  += $distance
+						$workerStatsLastMoveDist       = $distance
+						if ($distance -lt $workerStatsMinMoveDist) { $workerStatsMinMoveDist = $distance }
+						if ($distance -gt $workerStatsMaxMoveDist) { $workerStatsMaxMoveDist = $distance }
+
+						# Direction bucket
+						if ($deltaX -ne 0 -or $deltaY -ne 0) {
+							$_wDirAngle = [Math]::Atan2($deltaY, $deltaX) * 180.0 / [Math]::PI
+							if ($_wDirAngle -lt 0) { $_wDirAngle += 360.0 }
+							$_wDirSector = [int][Math]::Round($_wDirAngle / 45.0) % 8
+							$_wDirKey = @('E','SE','S','SW','W','NW','N','NE')[$_wDirSector]
+							$workerStatsDirectionCounts[$_wDirKey] += $distance
+						}
+
+						# Animation timing
+						if ($workerLastMovementDurationMs -lt $workerStatsMinDurationMs) { $workerStatsMinDurationMs = $workerLastMovementDurationMs }
+						if ($workerLastMovementDurationMs -gt $workerStatsMaxDurationMs) { $workerStatsMaxDurationMs = $workerLastMovementDurationMs }
+						$workerStatsAvgDurationMs = if ($workerStatsMoveCount -le 1) { $workerLastMovementDurationMs } else { ($workerStatsAvgDurationMs * ($workerStatsMoveCount - 1) + $workerLastMovementDurationMs) / $workerStatsMoveCount }
+
+						# Actual interval between consecutive moves
+						if ($null -ne $workerStatsLastMoveTick) {
+							$_wActualSecs = ((Get-Date) - $workerStatsLastMoveTick).TotalSeconds
+							$workerStatsAvgActualIntervalSecs = if ($workerStatsMoveCount -le 1) { $_wActualSecs } else { ($workerStatsAvgActualIntervalSecs * ($workerStatsMoveCount - 1) + $_wActualSecs) / $workerStatsMoveCount }
+						}
+						$workerStatsLastMoveTick = Get-Date
+
+						# Move streak
+						if ($workerStatsCurrentStreak -ge 0) { $workerStatsCurrentStreak++ } else { $workerStatsCurrentStreak = 1 }
+						if ($workerStatsCurrentStreak -gt $workerStatsLongestStreak) { $workerStatsLongestStreak = $workerStatsCurrentStreak }
+
+						# Clean streak
+						$workerStatsCleanStreak++
+						if ($workerStatsCleanStreak -gt $workerStatsLongestCleanStreak) { $workerStatsLongestCleanStreak = $workerStatsCleanStreak }
+
+						# Capture curve params for last-movement diagram
+						$workerStatsLastCurveParams = @{
+							Distance      = $distance
+							StartArcAmt   = $movementPath.StartArcAmt
+							StartArcSign  = $movementPath.StartArcSign
+							BodyCurveAmt  = $movementPath.BodyCurveAmt
+							BodyCurveSign = $movementPath.BodyCurveSign
+							BodyCurveType = $movementPath.BodyCurveType
+						}
+					}
+			} else {
+				if ($_isFirstWorkerRun) {
 						$logMsg = @{
 							type = 'log'
 							components = @(
@@ -631,32 +779,39 @@
 							)
 						}
 					}
-					if ($manualPause -and -not $_isFirstWorkerRun) { $logMsg = $null }
-					if ($null -ne $logMsg) {
-						if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
-						$null = $script:LogReplayBuffer.Enqueue($logMsg)
-						if ($viewerConnected) {
-							try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message $logMsg -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
-						}
+				if ($manualPause -and -not $_isFirstWorkerRun) { $logMsg = $null }
+				if ($null -ne $logMsg) {
+					if ($script:LogReplayBuffer.Count -ge 30) { $null = $script:LogReplayBuffer.Dequeue() }
+					$null = $script:LogReplayBuffer.Enqueue($logMsg)
+					if ($viewerConnected) {
+						try { $null = Send-PipeMessageNonBlocking -Writer $pipeWriter -Message $logMsg -PendingFlush ([ref]$_pendingWriteFlush) } catch {}
 					}
-					
-					if ($null -eq $workerLastMovementTime) { $workerLastMovementTime = Get-Date }
 				}
+
+			# Skip stats (only on actual user-input detection; not on first run or manual pause)
+			if (-not $_isFirstWorkerRun -and -not $manualPause) {
+				$workerStatsSkipCount++
+					if ($workerStatsCurrentStreak -le 0) { $workerStatsCurrentStreak-- } else { $workerStatsCurrentStreak = -1 }
+					if ($_iterHadKbInput) { $workerStatsKbInterruptCount++ }
+					if ($_iterHadMsInput) { $workerStatsMsInterruptCount++ }
+					$workerStatsCleanStreak = 0
+				}
+
+				if ($null -eq $workerLastMovementTime) { $workerLastMovementTime = Get-Date }
+			}
 					
-					# End time check
-					if ($endTimeInt -ne -1 -and -not [string]::IsNullOrEmpty($end)) {
-						try {
-							$currentDateTimeInt = [int]($date.ToString("MMddHHmm"))
-							$endDateTimeInt = [int]$end
-							if ($currentDateTimeInt -ge $endDateTimeInt) {
-								if ($viewerConnected) {
-									try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'endtime' } } catch {}
-								}
-								Show-Notification -Body "End time reached" -Action endtime
-								return
-							}
-						} catch {}
+				# End time check
+				if ($endTimeInt -ne -1 -and -not [string]::IsNullOrEmpty($end)) {
+					$currentDateTimeInt = [int]($date.ToString("MMddHHmm"))
+					$endDateTimeInt = [int]$end
+					if ($currentDateTimeInt -ge $endDateTimeInt) {
+						if ($viewerConnected) {
+							try { Send-PipeMessage -Writer $pipeWriter -Message @{ type = 'stopped'; reason = 'endtime' } } catch {}
+						}
+						Show-Notification -Body "End time reached" -Action endtime
+						return
 					}
+				}
 				}
 			} finally {
 				Remove-Notification

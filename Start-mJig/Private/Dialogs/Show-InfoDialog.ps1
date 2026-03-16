@@ -156,7 +156,7 @@
 		$closingParen = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
 		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:InfoDialogButtonText -BG $script:InfoDialogButtonBg }
 		Write-Buffer -Text "c" -FG $script:InfoDialogButtonHotkey -BG $script:InfoDialogButtonBg
-		Write-Buffer -Text "$closingParenlose" -FG $script:InfoDialogButtonText -BG $script:InfoDialogButtonBg
+		Write-Buffer -Text "$($closingParen)lose" -FG $script:InfoDialogButtonText -BG $script:InfoDialogButtonBg
 			if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 			Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:InfoDialogBg
 			Write-Buffer -Text $script:BoxVertical -FG $script:InfoDialogBorder -BG $script:InfoDialogBg

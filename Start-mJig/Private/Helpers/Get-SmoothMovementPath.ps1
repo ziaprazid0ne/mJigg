@@ -13,13 +13,19 @@
 			$deltaY = $endY - $startY
 			$distance = [Math]::Sqrt($deltaX * $deltaX + $deltaY * $deltaY)
 			
-			# If distance is very small, return single point
-			if ($distance -lt 1) {
-				return @{
-					Points = @([PSCustomObject]@{ X = $endX; Y = $endY })
-					TotalTimeMs = 0
-				}
+		# If distance is very small, return single point
+		if ($distance -lt 1) {
+			return @{
+				Points        = @([PSCustomObject]@{ X = $endX; Y = $endY })
+				TotalTimeMs   = 0
+				Distance      = 0.0
+				StartArcAmt   = 0.0
+				StartArcSign  = 1
+				BodyCurveAmt  = 0.0
+				BodyCurveSign = 1
+				BodyCurveType = -1
 			}
+		}
 			
 			# Calculate movement time with variance (in milliseconds)
 			$baseSpeedMs = $baseSpeedSeconds * 1000
@@ -113,8 +119,14 @@
 		$points[$i] = [PSCustomObject]@{ X = $x; Y = $y }
 	}
 			
-			return @{
-				Points = $points
-				TotalTimeMs = [Math]::Round($movementTimeMs)
-			}
+		return @{
+			Points        = $points
+			TotalTimeMs   = [Math]::Round($movementTimeMs)
+			Distance      = $distance
+			StartArcAmt   = $startArcAmount
+			StartArcSign  = $startArcSign
+			BodyCurveAmt  = $bodyCurveAmount
+			BodyCurveSign = $bodyCurveSign
+			BodyCurveType = $bodyCurveType
+		}
 		}

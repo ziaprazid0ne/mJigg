@@ -7,7 +7,9 @@
 			[ref]$EndRef,           # $end
 			[ref]$LogArrayRef,      # $LogArray
 			[bool]$SkipAnimation = $false,
-			[switch]$DeferFlush = $false
+			[switch]$DeferFlush = $false,
+			[string]$RestoreSubDialog = '',
+			[System.IO.StreamWriter]$ViewerPipeWriter = $null
 		)
 
 		$script:CurrentScreenState = "dialog-settings"
@@ -38,7 +40,7 @@ $dialogHeight = 12
 		$buttonLayout = Get-DialogButtonLayout
 		$dialogIconWidth = $buttonLayout.IconWidth; $dialogBracketWidth = $buttonLayout.BracketWidth; $dialogParenOffset = $buttonLayout.ParenAdjustment
 	# Per-button right padding: dialogWidth - border(1) - space(1) - btnChars - border(1)
-	# "End (T)ime"=10, "(M)ouse Movement"=16, "(O)ptions"=9, "(T)heme"=7
+	# "(E)nd Time"=10, "(M)ouse Movement"=16, "(O)ptions"=9, "(T)heme"=7
 		$timePad    = $dialogWidth - (2 + $dialogBracketWidth + $dialogIconWidth + 10 + $dialogParenOffset + 1)
 		$movePad    = $dialogWidth - (2 + $dialogBracketWidth + $dialogIconWidth + 16 + $dialogParenOffset + 1)
 		$optionsPad = $dialogWidth - (2 + $dialogBracketWidth + $dialogIconWidth + 9  + $dialogParenOffset + 1)
@@ -148,13 +150,13 @@ $dialogHeight = 12
 					Write-Buffer -Text (" " * $titlePadding) -BG $localBg
 					Write-Buffer -Text $script:BoxVertical -FG $localBorder -BG $localBg
 				} elseif ($i -eq 4) {
-				& $drawSettingsBtnRow $dx $rowY $emojiHourglass "t" "ime" $timePad $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder "End "
+				& $drawSettingsBtnRow $dx $rowY $emojiHourglass "e" "nd Time" $timePad $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
 			} elseif ($i -eq 6) {
 				& $drawSettingsBtnRow $dx $rowY $emojiMouse "m" "ouse Movement" $movePad $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
 			} elseif ($i -eq 8) {
 				& $drawSettingsBtnRow $dx $rowY $emojiOptions "o" "ptions" $optionsPad $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
 			} elseif ($i -eq 10) {
-				& $drawSettingsBtnRow $dx $rowY $emojiTheme "t" "heme" ([math]::Max(0, $themePad)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
+			& $drawSettingsBtnRow $dx $rowY $emojiTheme "t" "heme" ([math]::Max(0, $themePad)) $localBtnBg $localBtnText $localBtnHotkey $localBg $localBorder
 				} elseif ($i -eq $dialogHeight) {
 					Write-Buffer -X $dx -Y $rowY -Text $lineBottom -FG $localBorder -BG $localBg
 				} elseif ($null -ne $dlgLines[$i]) {
@@ -165,6 +167,12 @@ $dialogHeight = 12
 
 		& $drawSettingsDialog $dialogX $dialogY $true
 		if ($DeferFlush) { Flush-Buffer -ClearFirst } else { Flush-Buffer }
+
+	# Auto-trigger a sub-dialog on restore (used when reconnecting with a sub-dialog previously open)
+	$_pendingSubDialogKey = $null
+	if ($RestoreSubDialog -eq 'time')     { $_pendingSubDialogKey = 'e' }
+	elseif ($RestoreSubDialog -eq 'movement') { $_pendingSubDialogKey = 'm' }
+	elseif ($RestoreSubDialog -eq 'options')  { $_pendingSubDialogKey = 'o' }
 
 	# — Button row Y coordinates -----------------------------------------------
 	$timeButtonRowY    = $dialogY + 4
@@ -231,30 +239,37 @@ $dialogHeight = 12
 		}
 		}
 
-			# — Mouse input --------------------------------------------------------
-			$keyProcessed = $false
-			$char = $null; $key = $null; $keyInfo = $null
+		# — Mouse input --------------------------------------------------------
+		$keyProcessed = $false
+		$char = $null; $key = $null; $keyInfo = $null
 
-		$_click = Get-DialogMouseClick -PeekBuffer $script:_DialogPeekBuffer
+		# Consume pending sub-dialog key injected by RestoreSubDialog on first iteration
+		if ($null -ne $_pendingSubDialogKey) {
+			$char = $_pendingSubDialogKey
+			$_pendingSubDialogKey = $null
+			$keyProcessed = $true
+		}
+
+	$_click = Get-DialogMouseClick -PeekBuffer $script:_DialogPeekBuffer
 		if ($null -ne $_click) {
 			$clickX = $_click.X; $clickY = $_click.Y
 			if ($clickX -lt $dialogX -or $clickX -ge ($dialogX + $dialogWidth) -or $clickY -lt $dialogY -or $clickY -gt ($dialogY + $dialogHeight)) {
 				$char = "s"; $keyProcessed = $true
-			} elseif ($clickY -eq $timeButtonRowY -and $clickX -ge $timeButtonStartX -and $clickX -le $timeButtonEndX) {
-				$char = "t"; $keyProcessed = $true
-			} elseif ($clickY -eq $moveButtonRowY -and $clickX -ge $moveButtonStartX -and $clickX -le $moveButtonEndX) {
-				$char = "m"; $keyProcessed = $true
-			} elseif ($clickY -eq $optionsButtonRowY -and $clickX -ge $optionsButtonStartX -and $clickX -le $optionsButtonEndX) {
-				$char = "o"; $keyProcessed = $true
-			} elseif ($clickY -eq $themeButtonRowY -and $clickX -ge $themeButtonStartX -and $clickX -le $themeButtonEndX) {
-				$keyProcessed = $true
-			}
+		} elseif ($clickY -eq $timeButtonRowY -and $clickX -ge $timeButtonStartX -and $clickX -le $timeButtonEndX) {
+			$char = "e"; $keyProcessed = $true
+		} elseif ($clickY -eq $moveButtonRowY -and $clickX -ge $moveButtonStartX -and $clickX -le $moveButtonEndX) {
+			$char = "m"; $keyProcessed = $true
+		} elseif ($clickY -eq $optionsButtonRowY -and $clickX -ge $optionsButtonStartX -and $clickX -le $optionsButtonEndX) {
+			$char = "o"; $keyProcessed = $true
+		} elseif ($clickY -eq $themeButtonRowY -and $clickX -ge $themeButtonStartX -and $clickX -le $themeButtonEndX) {
+			$char = "t"; $keyProcessed = $true
+		}
 		}
 
 			if (-not $keyProcessed -and $null -ne $script:DialogButtonClick) {
 				$buttonClick = $script:DialogButtonClick
 				$script:DialogButtonClick = $null
-				if ($buttonClick -eq "Update") { $char = "t"; $keyProcessed = $true }
+				if ($buttonClick -eq "Update") { $char = "e"; $keyProcessed = $true }
 				elseif ($buttonClick -eq "Cancel") { $char = "m"; $keyProcessed = $true }
 			}
 
@@ -268,15 +283,16 @@ $dialogHeight = 12
 			if (-not $keyProcessed) { Start-Sleep -Milliseconds 50; continue }
 
 			# — Dispatch -----------------------------------------------------------
-		if ($char -eq "t" -or $char -eq "T") {
+		if ($char -eq "e" -or $char -eq "E") {
 			# — Go offfocus while time dialog is open --------------------------
-				& $drawSettingsDialog $dialogX $dialogY $false
-				Flush-Buffer
-				$script:DialogButtonBounds = $null  # prevent outer loop interference
+			if ($null -ne $ViewerPipeWriter) { try { Send-PipeMessage -Writer $ViewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'settings'; activeSubDialog = 'time' } } catch {} }
+			& $drawSettingsDialog $dialogX $dialogY $false
+			Flush-Buffer
+			$script:DialogButtonBounds = $null  # prevent outer loop interference
 
-				$subHostWidthRef  = $HostWidthRef
-				$subHostHeightRef = $HostHeightRef
-				$settingsParentRedraw = {
+			$subHostWidthRef  = $HostWidthRef
+			$subHostHeightRef = $HostHeightRef
+			$settingsParentRedraw = {
 					param($w, $h)
 					$dialogWidth  = $_stgDialogWidth
 					$dialogHeight = $_stgDialogHeight
@@ -326,29 +342,31 @@ $dialogHeight = 12
 					}
 				}
 
-			# Sub-dialog dirtied the background — break out so the caller can do a
-			# full screen repaint and then reopen settings cleanly.
-			$settingsReopen = $true
-			break :settingsLoop
+		# Sub-dialog dirtied the background — break out so the caller can do a
+		# full screen repaint and then reopen settings cleanly.
+		if ($null -ne $ViewerPipeWriter) { try { Send-PipeMessage -Writer $ViewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'settings'; activeSubDialog = $null } } catch {} }
+		$settingsReopen = $true
+		break :settingsLoop
 
-			} elseif ($char -eq "m" -or $char -eq "M") {
-				# — Go offfocus while movement dialog is open ----------------------
-				& $drawSettingsDialog $dialogX $dialogY $false
-				Flush-Buffer
-				$script:DialogButtonBounds = $null
+		} elseif ($char -eq "m" -or $char -eq "M") {
+			# — Go offfocus while movement dialog is open ----------------------
+			if ($null -ne $ViewerPipeWriter) { try { Send-PipeMessage -Writer $ViewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'settings'; activeSubDialog = 'movement' } } catch {} }
+			& $drawSettingsDialog $dialogX $dialogY $false
+			Flush-Buffer
+			$script:DialogButtonBounds = $null
 
-				$subHostWidthRef  = $HostWidthRef
-				$subHostHeightRef = $HostHeightRef
-				$settingsParentRedraw = {
-					param($w, $h)
-					$dialogWidth  = $_stgDialogWidth
-					$dialogHeight = $_stgDialogHeight
-					$_bpH     = [math]::Max(1, $script:BorderPadH)
-					$parentDX = [math]::Max(0, [math]::Min($_bpH - 1, $w - $dialogWidth))
-					$mBarY    = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $h - 2 }
-					$parentDY = [math]::Max(0, $mBarY - 2 - $dialogHeight)
-					& $drawSettingsDialog $parentDX $parentDY $false $_stgDialogLines
-				}
+			$subHostWidthRef  = $HostWidthRef
+			$subHostHeightRef = $HostHeightRef
+			$settingsParentRedraw = {
+				param($w, $h)
+				$dialogWidth  = $_stgDialogWidth
+				$dialogHeight = $_stgDialogHeight
+				$_bpH     = [math]::Max(1, $script:BorderPadH)
+				$parentDX = [math]::Max(0, [math]::Min($_bpH - 1, $w - $dialogWidth))
+				$mBarY    = if ($null -ne $script:MenuBarY) { $script:MenuBarY } else { $h - 2 }
+				$parentDY = [math]::Max(0, $mBarY - 2 - $dialogHeight)
+				& $drawSettingsDialog $parentDX $parentDY $false $_stgDialogLines
+			}
 				$moveResult = Show-MovementModifyDialog `
 					-currentIntervalSeconds $script:IntervalSeconds -currentIntervalVariance $script:IntervalVariance `
 					-currentMoveSpeed $script:MoveSpeed -currentMoveVariance $script:MoveVariance `
@@ -394,13 +412,15 @@ $dialogHeight = 12
 					}
 				}
 
-			# Sub-dialog dirtied the background — break out so the caller can do a
-			# full screen repaint and then reopen settings cleanly.
-			$settingsReopen = $true
-			break :settingsLoop
+		# Sub-dialog dirtied the background — break out so the caller can do a
+		# full screen repaint and then reopen settings cleanly.
+		if ($null -ne $ViewerPipeWriter) { try { Send-PipeMessage -Writer $ViewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'settings'; activeSubDialog = $null } } catch {} }
+		$settingsReopen = $true
+		break :settingsLoop
 
 	} elseif ($char -eq "o" -or $char -eq "O") {
 		# — Go offfocus while options dialog is open -----------------------
+		if ($null -ne $ViewerPipeWriter) { try { Send-PipeMessage -Writer $ViewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'settings'; activeSubDialog = 'options' } } catch {} }
 		& $drawSettingsDialog $dialogX $dialogY $false
 		Flush-Buffer
 		$script:DialogButtonBounds = $null
@@ -429,6 +449,27 @@ $dialogHeight = 12
 	if ($null -ne $optionsResult -and $optionsResult.TitleChanged) {
 		$titleChanged = $true
 	}
+
+		if ($null -ne $ViewerPipeWriter) { try { Send-PipeMessage -Writer $ViewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'settings'; activeSubDialog = $null } } catch {} }
+		$settingsReopen = $true
+		break :settingsLoop
+
+	} elseif ($char -eq "t" -or $char -eq "T") {
+		# — Go offfocus while theme dialog is open ---------------------------------
+		if ($null -ne $ViewerPipeWriter) { try { Send-PipeMessage -Writer $ViewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'settings'; activeSubDialog = $null } } catch {} }
+		& $drawSettingsDialog $dialogX $dialogY $false
+		Flush-Buffer
+		$script:DialogButtonBounds = $null
+
+		$subHostWidthRef  = $HostWidthRef
+		$subHostHeightRef = $HostHeightRef
+		$themeResult = Show-ThemeDialog -HostWidthRef $subHostWidthRef -HostHeightRef $subHostHeightRef -ViewerPipeWriter $ViewerPipeWriter
+		$currentHostWidth  = $subHostWidthRef.Value
+		$currentHostHeight = $subHostHeightRef.Value
+		$HostWidthRef.Value  = $currentHostWidth
+		$HostHeightRef.Value = $currentHostHeight
+
+		if ($null -ne $themeResult -and $themeResult.NeedsRedraw) { $needsRedraw = $true }
 
 		$settingsReopen = $true
 		break :settingsLoop

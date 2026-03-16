@@ -1,4 +1,4 @@
-function Start-mJig {
+﻿function Start-mJig {
 
 	<############################################################
 	## mJig - An overly complex powershell mouse jiggling tool ##
@@ -48,21 +48,23 @@ function Start-mJig {
 		[Parameter(Mandatory = $false)]
 		[int]$EndVariance = 0,  # Variance in minutes to randomly add/subtract from EndTime to avoid overly consistent end times. Only applies if EndTime is specified (not 0).
 		[Parameter(Mandatory = $false)]
-		[double]$IntervalSeconds = 2,  # sets the base interval time between refreshes
+		[double]$IntervalSeconds = 5,   # sets the base interval time between refreshes
 		[Parameter(Mandatory = $false)]
-		[double]$IntervalVariance = 2,  # Sets the maximum random plus and minus variance in seconds each refresh
+		[double]$IntervalVariance = 3,  # Sets the maximum random plus and minus variance in seconds each refresh
 		[Parameter(Mandatory = $false)]
 		[double]$MoveSpeed = 0.5,  # Base movement speed in seconds (time to complete movement)
 		[Parameter(Mandatory = $false)]
 		[double]$MoveVariance = 0.2,  # Maximum random variance in movement speed (in seconds)
 		[Parameter(Mandatory = $false)]
-		[double]$TravelDistance = 100,  # Base travel distance in pixels
+		[double]$TravelDistance = 400,  # Base travel distance in pixels
 		[Parameter(Mandatory = $false)]
-		[double]$TravelVariance = 5,  # Maximum random variance in travel distance (in pixels)
+		[double]$TravelVariance = 365,  # Maximum random variance in travel distance (in pixels)
 		[Parameter(Mandatory = $false)]
 		[double]$AutoResumeDelaySeconds = 0,  # Timer in seconds that resets on user input detection. When > 0, coordinate updates and simulated key presses are skipped.
 		[Parameter(Mandatory = $false)]
 		[string]$Title = "",  # Custom window title override (e.g. "Windows Update")
+		[Parameter(Mandatory = $false)]
+		[string]$Theme = "",  # Theme profile name to apply at startup (e.g. "default", "debug")
 		[Parameter(Mandatory = $false)]
 		[switch]$Headless,  # Fire-and-forget mode: spawn worker then exit (no TUI)
 		[Parameter(Mandatory = $false)]
@@ -337,6 +339,31 @@ public class _mJigCloseHandlerX {
 	$LastAutomatedMouseMovement = $null  # Track when we last performed automated mouse movement
 	$LastUserInputTime = $null  # Track when user input was last detected (for auto-resume delay timer)
 
+	# Stats tracking — cumulative counters updated every move/skip cycle
+	$script:StatsMoveCount             = 0
+	$script:StatsSkipCount             = 0
+	$script:StatsCurrentStreak         = 0
+	$script:StatsLongestStreak         = 0
+	$script:StatsTotalDistancePx       = 0.0
+	$script:StatsLastMoveDist          = 0.0
+	$script:StatsMinMoveDist           = [double]::MaxValue
+	$script:StatsMaxMoveDist           = 0.0
+	$script:StatsKbInterruptCount      = 0
+	$script:StatsMsInterruptCount      = 0
+	$script:StatsLongestCleanStreak    = 0
+	$script:StatsCleanStreak           = 0
+	$script:StatsAvgActualIntervalSecs = 0.0
+	$script:StatsLastMoveTick          = $null
+	$script:StatsAvgDurationMs         = 0.0
+	$script:StatsMinDurationMs         = [int]::MaxValue
+	$script:StatsMaxDurationMs         = 0
+	$script:StatsDirectionCounts       = @{ N = 0.0; NE = 0.0; E = 0.0; SE = 0.0; S = 0.0; SW = 0.0; W = 0.0; NW = 0.0 }
+	$script:StatsLastCurveParams       = $null
+
+	# Curve animation — pending flag set whenever new curve params arrive; cleared by animation loop
+	$script:StatsCurveAnimPending  = $false
+	$script:_LastCurveParamKey     = ""
+
 	$script:PreviousIntervalKeys = @()
 	$script:ResizeThrottleMs = 100
 	$script:LoopIteration = 0  # Track loop iterations for diagnostics
@@ -400,6 +427,7 @@ public class _mJigCloseHandlerX {
 	$script:BoxVerticalLeft = [char]0x2524  # vertical + left tee
 	
 	. "$PSScriptRoot\Private\Config\Initialize-Theme.ps1"
+	. "$PSScriptRoot\Private\Config\Set-ThemeProfile.ps1"
 	
 	# ============================================================================
 	# Startup / Initializing Screen
@@ -706,9 +734,11 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 			"$(Get-Date -Format 'HH:mm:ss.fff') - CHECKPOINT 1: Starting initialization" | Out-File $script:StartupDiagFile -Append
 			"  Diag enabled, folder: $script:DiagFolder" | Out-File $script:StartupDiagFile -Append
 			"  Runspace ID: $diagRsId  Thread: $([System.Threading.Thread]::CurrentThread.ManagedThreadId)  Modules: $((Get-Module | ForEach-Object { $_.Name }) -join ', ')" | Out-File $script:StartupDiagFile -Append
-		$script:IpcDiagFile = Join-Path $script:DiagFolder "ipc.txt"
-		$script:NotifyDiagFile = Join-Path $script:DiagFolder "notify.txt"
-		"=== mJig Settle Diag: $diagTimestamp ===" | Out-File $script:SettleDiagFile
+	$script:IpcDiagFile = Join-Path $script:DiagFolder "ipc.txt"
+	$script:NotifyDiagFile = Join-Path $script:DiagFolder "notify.txt"
+	"=== mJig Notify Diag: $diagTimestamp ===" | Out-File $script:NotifyDiagFile
+	"$(Get-Date -Format 'HH:mm:ss.fff') [INIT] Notification diagnostics started  Mode=$(if ($_WorkerMode) { 'worker' } else { 'viewer' })" | Out-File $script:NotifyDiagFile -Append
+	"=== mJig Settle Diag: $diagTimestamp ===" | Out-File $script:SettleDiagFile
 		"$(Get-Date -Format 'HH:mm:ss.fff') - Settle diagnostics started" | Out-File $script:SettleDiagFile -Append
 			"=== mJig Input Diag: $diagTimestamp ===" | Out-File $script:InputDiagFile
 			"$(Get-Date -Format 'HH:mm:ss.fff') - Input diagnostics started (PeekConsoleInput + GetLastInputInfo)" | Out-File $script:InputDiagFile -Append
@@ -717,10 +747,13 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 		if ($_WorkerMode -and $script:_wsDiagFile) {
 			"$(Get-Date -Format 'HH:mm:ss.fff') [4a] About to dot-source Initialize-PInvoke.ps1" | Out-File $script:_wsDiagFile -Append
 		}
-		. "$PSScriptRoot\Private\Config\Initialize-PInvoke.ps1"
-		if ($_WorkerMode -and $script:_wsDiagFile) {
-			"$(Get-Date -Format 'HH:mm:ss.fff') [4b] P/Invoke loaded  ns=$($script:_ApiNamespace)  MouseAPI=$($null -ne $script:MouseAPI)  KeyboardAPI=$($null -ne $script:KeyboardAPI)  ToastAPI=$($null -ne $script:ToastAPI)" | Out-File $script:_wsDiagFile -Append
-		}
+	. "$PSScriptRoot\Private\Config\Initialize-PInvoke.ps1"
+	if ($_WorkerMode -and $script:_wsDiagFile) {
+		"$(Get-Date -Format 'HH:mm:ss.fff') [4b] P/Invoke loaded  ns=$($script:_ApiNamespace)  MouseAPI=$($null -ne $script:MouseAPI)  KeyboardAPI=$($null -ne $script:KeyboardAPI)  ToastAPI=$($null -ne $script:ToastAPI)" | Out-File $script:_wsDiagFile -Append
+	}
+	if ($script:DiagEnabled -and $script:NotifyDiagFile) {
+		"$(Get-Date -Format 'HH:mm:ss.fff') [PINVOKE] ToastAPI=$($null -ne $script:ToastAPI)  Tier1Failed=$($script:_Tier1NotifyFailed -eq $true)  NotificationsEnabled=$($script:NotificationsEnabled)" | Out-File $script:NotifyDiagFile -Append
+	}
 		
 		# Verify types loaded correctly
 		if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - CHECKPOINT 2: Types loaded, verifying" | Out-File $script:StartupDiagFile -Append }
@@ -1052,6 +1085,17 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 	# Triggered by pressing '?' or clicking the mJig logo in the header.
 	. "$PSScriptRoot\Private\Dialogs\Show-InfoDialog.ps1"
 
+	# Theme dialog — cycles through built-in theme profiles.
+	# Triggered by 'h' hotkey or the t(h)eme button in the menu bar and Settings.
+	. "$PSScriptRoot\Private\Dialogs\Show-ThemeDialog.ps1"
+
+	# ---- Theme Profile Initialization ----------------------------------------------
+	# Apply default theme first; override with debug theme if debug mode is active;
+	# then apply any explicit -Theme parameter last (takes highest precedence).
+	Set-ThemeProfile -Name "default" | Out-Null
+	if ($script:DebugMode) { Set-ThemeProfile -Name "debug" | Out-Null }
+	if (-not [string]::IsNullOrEmpty($Theme)) { Set-ThemeProfile -Name $Theme | Out-Null }
+
 	# ---- IPC Mode Branching --------------------------------------------------------
 	# Worker mode: enter headless activity simulation loop with IPC server (no console UI)
 	if ($_WorkerMode) {
@@ -1186,7 +1230,24 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 				@{ priority = 2; text = " - Connected to background process (PID: $workerPid)"; shortText = " - Connected (PID: $workerPid)" }
 			)
 		})
+
+		# Restore viewer visual state from previous session (carried in welcome message)
+		$_restoredState = $pipeResult.VisualState
+		if ($null -ne $_restoredState) {
+			if ($null -ne $_restoredState.outputMode)       { $Output = $_restoredState.outputMode; $script:Output = $Output }
+			if ($null -ne $_restoredState.previousView)     { $PreviousView = $_restoredState.previousView }
+			if ($null -ne $_restoredState.windowTitle)      { $script:WindowTitle = $_restoredState.windowTitle; $Host.UI.RawUI.WindowTitle = $script:WindowTitle }
+			if ($null -ne $_restoredState.titleEmoji)       { $script:TitleEmoji = [int]$_restoredState.titleEmoji }
+			if ($null -ne $_restoredState.titlePresetIndex) { $script:TitlePresetIndex = [int]$_restoredState.titlePresetIndex }
+		if ([bool]$_restoredState.manualPause)           { $script:ManualPause = $true }
+		switch ($null -ne $_restoredState.activeDialog -and $_restoredState.activeDialog -ne '' ? [string]$_restoredState.activeDialog : '') {
+			'settings' { $script:PendingReopenSettings = $true }
+			'quit'     { $script:_PendingReopenQuit    = $true }
+			'info'     { $script:_PendingReopenInfo    = $true }
+		}
+		$script:_PendingRestoreSubDialog = if ($null -ne $_restoredState.activeSubDialog -and $_restoredState.activeSubDialog -ne '') { [string]$_restoredState.activeSubDialog } else { $null }
 	}
+}
 
 	if ($script:DiagEnabled -and $_isViewerMode) {
 		"=== mJig IPC Viewer Diag: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') ===" | Out-File $script:IpcDiagFile
@@ -1270,6 +1331,18 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 	$_waitPeekBuffer     = New-Object "$($script:_ApiNamespace).INPUT_RECORD[]" 32
 	$lii                 = New-Object $script:LastInputType
 	$lii.cbSize          = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($lii)
+
+	# Cached running time string — updated at interval boundary in viewer mode, empty in inline mode
+	$script:StatsRunningTimeStr = ""
+
+	# Viewer-mode interval-boundary input accumulation (persists across main-loop iterations)
+	$_viewerWorkerIter         = -1
+	$_viewerWorkerIterChanged  = $false
+	$_viewerIntervalMouseTypes = [System.Collections.Generic.HashSet[string]]::new()
+	$_viewerIntervalKbDetected = $false
+	$_viewerIntervalKbInferred = $false
+	$_viewerIntervalKbLocal    = $false
+	$_viewerIntervalScrollDet  = $false
 
 	if ($script:DiagEnabled -and $_isViewerMode) {
 		"$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER ENTERING MAIN LOOP" | Out-File $script:IpcDiagFile -Append
@@ -1358,8 +1431,8 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 			Write-Host ") " -NoNewline -ForegroundColor $script:HeaderAppName
 			Write-Host "Stopped" -ForegroundColor $script:TextError
 			Write-Host ""
-			Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:StatsBoxLabel
-			Write-Host $runtimeStr -ForegroundColor $script:StatsBoxValue
+			Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:TextMuted
+			Write-Host $runtimeStr -ForegroundColor $script:TextDefault
 			Write-Host ""
 			break process
 		}
@@ -1387,6 +1460,8 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 							$script:TravelVariance = [double]$msg.travelVariance
 							$script:AutoResumeDelaySeconds = [double]$msg.autoResumeDelaySeconds
 							$script:LoopIteration = [int]$msg.loopIteration
+						$_incomingIter = [int]$msg.loopIteration
+						if ($_incomingIter -ne $_viewerWorkerIter) { $_viewerWorkerIterChanged = $true; $_viewerWorkerIter = $_incomingIter }
 							$endTimeStr = [string]$msg.endTimeStr
 							$endTimeInt = [int]$msg.endTimeInt
 							$end = [string]$msg.end
@@ -1399,6 +1474,42 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 							if ([bool]$msg.keyboardInputDetected) { $keyboardInputDetected = $true }
 							if ([bool]$msg.keyboardInferred) { $_keyboardInferred = $true }
 							$SkipUpdate = [bool]$msg.userInputDetected -or $cooldownActive
+					# Stats from worker
+					if ($null -ne $msg.statsWorkerStartTime) { try { $ScriptStartTime = [DateTime]::Parse([string]$msg.statsWorkerStartTime) } catch {} }
+						if ($null -ne $msg.statsMoveCount)             { $script:StatsMoveCount             = [int]$msg.statsMoveCount }
+						if ($null -ne $msg.statsSkipCount)             { $script:StatsSkipCount             = [int]$msg.statsSkipCount }
+						if ($null -ne $msg.statsCurrentStreak)         { $script:StatsCurrentStreak         = [int]$msg.statsCurrentStreak }
+						if ($null -ne $msg.statsLongestStreak)         { $script:StatsLongestStreak         = [int]$msg.statsLongestStreak }
+						if ($null -ne $msg.statsTotalDistancePx)       { $script:StatsTotalDistancePx       = [double]$msg.statsTotalDistancePx }
+						if ($null -ne $msg.statsLastMoveDist)          { $script:StatsLastMoveDist          = [double]$msg.statsLastMoveDist }
+						if ($null -ne $msg.statsMinMoveDist)           { $script:StatsMinMoveDist           = [double]$msg.statsMinMoveDist }
+						if ($null -ne $msg.statsMaxMoveDist)           { $script:StatsMaxMoveDist           = [double]$msg.statsMaxMoveDist }
+						if ($null -ne $msg.statsLastMoveDurationMs)    { $LastMovementDurationMs            = [int]$msg.statsLastMoveDurationMs }
+						if ($null -ne $msg.statsLastMoveSecondsAgo)    { $LastMovementTime                  = (Get-Date).AddSeconds(-[int]$msg.statsLastMoveSecondsAgo) }
+						if ($null -ne $msg.statsKbInterruptCount)      { $script:StatsKbInterruptCount      = [int]$msg.statsKbInterruptCount }
+							if ($null -ne $msg.statsMsInterruptCount)      { $script:StatsMsInterruptCount      = [int]$msg.statsMsInterruptCount }
+							if ($null -ne $msg.statsLongestCleanStreak)    { $script:StatsLongestCleanStreak    = [int]$msg.statsLongestCleanStreak }
+							if ($null -ne $msg.statsAvgActualIntervalSecs) { $script:StatsAvgActualIntervalSecs = [double]$msg.statsAvgActualIntervalSecs }
+							if ($null -ne $msg.statsAvgDurationMs)         { $script:StatsAvgDurationMs         = [double]$msg.statsAvgDurationMs }
+							if ($null -ne $msg.statsMinDurationMs)         { $script:StatsMinDurationMs         = [int]$msg.statsMinDurationMs }
+							if ($null -ne $msg.statsMaxDurationMs)         { $script:StatsMaxDurationMs         = [int]$msg.statsMaxDurationMs }
+							if ($null -ne $msg.statsDirectionCounts) {
+								foreach ($_sdir in @('N','NE','E','SE','S','SW','W','NW')) {
+									$script:StatsDirectionCounts[$_sdir] = [double]$msg.statsDirectionCounts.$_sdir
+								}
+							}
+							if ($null -ne $msg.statsLastCurveParams -and $null -ne $msg.statsLastCurveParams.Distance) {
+								$script:StatsLastCurveParams = @{
+									Distance      = [double]$msg.statsLastCurveParams.Distance
+									StartArcAmt   = [double]$msg.statsLastCurveParams.StartArcAmt
+									StartArcSign  = [int]$msg.statsLastCurveParams.StartArcSign
+									BodyCurveAmt  = [double]$msg.statsLastCurveParams.BodyCurveAmt
+									BodyCurveSign = [int]$msg.statsLastCurveParams.BodyCurveSign
+									BodyCurveType = [int]$msg.statsLastCurveParams.BodyCurveType
+								}
+							$_ck = "$($script:StatsLastCurveParams.Distance)|$($script:StatsLastCurveParams.StartArcAmt)|$($script:StatsLastCurveParams.BodyCurveAmt)|$($script:StatsLastCurveParams.BodyCurveType)"
+							if ($_ck -ne $script:_LastCurveParamKey) { $script:_LastCurveParamKey = $_ck; $script:StatsCurveAnimPending = $true }
+							}
 						}
 						'log' {
 							if ($null -ne $LogArray -and -not $script:ManualPause) {
@@ -1596,40 +1707,78 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 						$msg = Read-PipeMessage -Reader $_viewerPipeReader -PendingTask ([ref]$_viewerReadTask)
 						while ($null -ne $msg) {
 						switch ($msg.type) {
-							'state' {
-								$messageEpoch = if ($null -ne $msg.epoch) { [int]$msg.epoch } else { 0 }
-								if ($messageEpoch -lt $_settingsEpoch) { break }
-								$script:IntervalSeconds = [double]$msg.intervalSeconds
-								$script:IntervalVariance = [double]$msg.intervalVariance
-								$script:MoveSpeed = [double]$msg.moveSpeed
-								$script:MoveVariance = [double]$msg.moveVariance
-								$script:TravelDistance = [double]$msg.travelDistance
-								$script:TravelVariance = [double]$msg.travelVariance
-								$script:AutoResumeDelaySeconds = [double]$msg.autoResumeDelaySeconds
-								$script:LoopIteration = [int]$msg.loopIteration
-								$endTimeStr = [string]$msg.endTimeStr
-								$endTimeInt = [int]$msg.endTimeInt
-								$end = [string]$msg.end
-								$cooldownActive = [bool]$msg.cooldownActive
-								$secondsRemaining = if ($null -ne $msg.cooldownRemaining) { [int]$msg.cooldownRemaining } else { 0 }
-								if ([bool]$msg.mouseInputDetected) {
-									$mouseInputDetected = $true
-									$null = $intervalMouseInputs.Add("Mouse")
-								}
-								if ([bool]$msg.keyboardInputDetected) { $keyboardInputDetected = $true }
-								if ([bool]$msg.keyboardInferred) { $_keyboardInferred = $true }
-								$SkipUpdate = [bool]$msg.userInputDetected -or $cooldownActive
+						'state' {
+							$messageEpoch = if ($null -ne $msg.epoch) { [int]$msg.epoch } else { 0 }
+							if ($messageEpoch -lt $_settingsEpoch) { break }
+							$script:IntervalSeconds = [double]$msg.intervalSeconds
+							$script:IntervalVariance = [double]$msg.intervalVariance
+							$script:MoveSpeed = [double]$msg.moveSpeed
+							$script:MoveVariance = [double]$msg.moveVariance
+							$script:TravelDistance = [double]$msg.travelDistance
+							$script:TravelVariance = [double]$msg.travelVariance
+							$script:AutoResumeDelaySeconds = [double]$msg.autoResumeDelaySeconds
+							$script:LoopIteration = [int]$msg.loopIteration
+						$_incomingIter = [int]$msg.loopIteration
+						if ($_incomingIter -ne $_viewerWorkerIter) { $_viewerWorkerIterChanged = $true; $_viewerWorkerIter = $_incomingIter }
+							$endTimeStr = [string]$msg.endTimeStr
+							$endTimeInt = [int]$msg.endTimeInt
+							$end = [string]$msg.end
+							$cooldownActive = [bool]$msg.cooldownActive
+							$secondsRemaining = if ($null -ne $msg.cooldownRemaining) { [int]$msg.cooldownRemaining } else { 0 }
+							if ([bool]$msg.mouseInputDetected) {
+								$mouseInputDetected = $true
+								$null = $intervalMouseInputs.Add("Mouse")
 							}
-							'log' {
-								if ($null -ne $LogArray -and -not $script:ManualPause) {
-									$components = @()
-									foreach ($c in $msg.components) {
-										$components += @{
-											priority = [int]$c.priority
-											text = [string]$c.text
-											shortText = [string]$c.shortText
-										}
+							if ([bool]$msg.keyboardInputDetected) { $keyboardInputDetected = $true }
+							if ([bool]$msg.keyboardInferred) { $_keyboardInferred = $true }
+							$SkipUpdate = [bool]$msg.userInputDetected -or $cooldownActive
+					# Stats from worker (wait-loop tick handler)
+					if ($null -ne $msg.statsWorkerStartTime) { try { $ScriptStartTime = [DateTime]::Parse([string]$msg.statsWorkerStartTime) } catch {} }
+						if ($null -ne $msg.statsMoveCount)             { $script:StatsMoveCount             = [int]$msg.statsMoveCount }
+						if ($null -ne $msg.statsSkipCount)             { $script:StatsSkipCount             = [int]$msg.statsSkipCount }
+						if ($null -ne $msg.statsCurrentStreak)         { $script:StatsCurrentStreak         = [int]$msg.statsCurrentStreak }
+						if ($null -ne $msg.statsLongestStreak)         { $script:StatsLongestStreak         = [int]$msg.statsLongestStreak }
+						if ($null -ne $msg.statsTotalDistancePx)       { $script:StatsTotalDistancePx       = [double]$msg.statsTotalDistancePx }
+						if ($null -ne $msg.statsLastMoveDist)          { $script:StatsLastMoveDist          = [double]$msg.statsLastMoveDist }
+						if ($null -ne $msg.statsMinMoveDist)           { $script:StatsMinMoveDist           = [double]$msg.statsMinMoveDist }
+						if ($null -ne $msg.statsMaxMoveDist)           { $script:StatsMaxMoveDist           = [double]$msg.statsMaxMoveDist }
+						if ($null -ne $msg.statsLastMoveDurationMs)    { $LastMovementDurationMs            = [int]$msg.statsLastMoveDurationMs }
+						if ($null -ne $msg.statsLastMoveSecondsAgo)    { $LastMovementTime                  = (Get-Date).AddSeconds(-[int]$msg.statsLastMoveSecondsAgo) }
+						if ($null -ne $msg.statsKbInterruptCount)      { $script:StatsKbInterruptCount      = [int]$msg.statsKbInterruptCount }
+							if ($null -ne $msg.statsMsInterruptCount)      { $script:StatsMsInterruptCount      = [int]$msg.statsMsInterruptCount }
+							if ($null -ne $msg.statsLongestCleanStreak)    { $script:StatsLongestCleanStreak    = [int]$msg.statsLongestCleanStreak }
+							if ($null -ne $msg.statsAvgActualIntervalSecs) { $script:StatsAvgActualIntervalSecs = [double]$msg.statsAvgActualIntervalSecs }
+							if ($null -ne $msg.statsAvgDurationMs)         { $script:StatsAvgDurationMs         = [double]$msg.statsAvgDurationMs }
+							if ($null -ne $msg.statsMinDurationMs)         { $script:StatsMinDurationMs         = [int]$msg.statsMinDurationMs }
+							if ($null -ne $msg.statsMaxDurationMs)         { $script:StatsMaxDurationMs         = [int]$msg.statsMaxDurationMs }
+							if ($null -ne $msg.statsDirectionCounts) {
+								foreach ($_sdir in @('N','NE','E','SE','S','SW','W','NW')) {
+									$script:StatsDirectionCounts[$_sdir] = [double]$msg.statsDirectionCounts.$_sdir
+								}
+							}
+							if ($null -ne $msg.statsLastCurveParams -and $null -ne $msg.statsLastCurveParams.Distance) {
+								$script:StatsLastCurveParams = @{
+									Distance      = [double]$msg.statsLastCurveParams.Distance
+									StartArcAmt   = [double]$msg.statsLastCurveParams.StartArcAmt
+									StartArcSign  = [int]$msg.statsLastCurveParams.StartArcSign
+									BodyCurveAmt  = [double]$msg.statsLastCurveParams.BodyCurveAmt
+									BodyCurveSign = [int]$msg.statsLastCurveParams.BodyCurveSign
+									BodyCurveType = [int]$msg.statsLastCurveParams.BodyCurveType
+								}
+							$_ck = "$($script:StatsLastCurveParams.Distance)|$($script:StatsLastCurveParams.StartArcAmt)|$($script:StatsLastCurveParams.BodyCurveAmt)|$($script:StatsLastCurveParams.BodyCurveType)"
+							if ($_ck -ne $script:_LastCurveParamKey) { $script:_LastCurveParamKey = $_ck; $script:StatsCurveAnimPending = $true }
+							}
+						}
+						'log' {
+							if ($null -ne $LogArray -and -not $script:ManualPause) {
+								$components = @()
+								foreach ($c in $msg.components) {
+									$components += @{
+										priority = [int]$c.priority
+										text = [string]$c.text
+										shortText = [string]$c.shortText
 									}
+								}
 									if ($LogArray.Count -gt 0 -and $LogArray.Count -ge $Rows) {
 										$LogArray.RemoveAt(0)
 									}
@@ -1880,7 +2029,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 										$script:LButtonWasDown = $lmbNow
 									}
 									}
-									if ($peekBuffer[$e].EventType -eq 0x0001 -and $peekBuffer[$e].KeyEvent.wVirtualKeyCode -ne 0xA5) {
+									if ($peekBuffer[$e].EventType -eq 0x0001 -and $peekBuffer[$e].KeyEvent.wVirtualKeyCode -notin @(0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5)) {
 										$hasKeyboardEvent = $true
 									}
 								}
@@ -2116,10 +2265,10 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 						$oldOutput = $Output
 						if ($Output -eq "full") { $Output = "min" } else { $Output = "full" }
 						$script:Output = $Output
-						if ($_isViewerMode) { $_settingsEpoch++; try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output; epoch = $_settingsEpoch } } catch {} }
-						if ($DebugMode) {
-							Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "View toggle: $oldOutput $([char]0x2192) $Output" -ShortMessage "View: $oldOutput $([char]0x2192) $Output"
-						}
+				if ($_isViewerMode) { $_settingsEpoch++; try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output; epoch = $_settingsEpoch; previousView = $PreviousView; activeDialog = $null } } catch {} }
+				if ($DebugMode) {
+					Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "View toggle: $oldOutput $([char]0x2192) $Output" -ShortMessage "View: $oldOutput $([char]0x2192) $Output"
+					}
 						$menuHotkeyToProcess = $null
 						Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw)
 						break
@@ -2136,12 +2285,14 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 						if ($shouldProcessEscape) {
 							$lastKeyPress = $null
 							$lastKeyInfo = $null
+							if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'quit' } } catch {} }
 							$HostWidthRef = [ref]$HostWidth
 							$HostHeightRef = [ref]$HostHeight
 							$quitResult = Show-QuitConfirmationDialog -hostWidthRef $HostWidthRef -hostHeightRef $HostHeightRef
 							$HostWidth = $HostWidthRef.Value
 							$HostHeight = $HostHeightRef.Value
 							if ($quitResult.NeedsRedraw) {
+								if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = $null } } catch {} }
 								Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 								break
 							}
@@ -2165,31 +2316,33 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 								Write-Host "  mJig($mouseEmoji) " -NoNewline -ForegroundColor $script:HeaderAppName
 								Write-Host "Stopped" -ForegroundColor $script:TextError
 								Write-Host ""
-								Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:StatsBoxLabel
-								Write-Host $runtimeStr -ForegroundColor $script:StatsBoxValue
+								Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:TextMuted
+								Write-Host $runtimeStr -ForegroundColor $script:TextDefault
 								Write-Host ""
-								break process
-							} else {
+							break process
+						} else {
+							if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = $null } } catch {} }
+							Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
+							break
+						}
+					} elseif ($lastKeyPress -eq "q") {
+							$lastKeyPress = $null
+							$lastKeyInfo = $null
+							
+						if ($DebugMode) {
+							Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Quit dialog opened" -ShortMessage "Quit opened"
+						}
+							if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'quit' } } catch {} }
+							$HostWidthRef = [ref]$HostWidth
+							$HostHeightRef = [ref]$HostHeight
+							$quitResult = Show-QuitConfirmationDialog -hostWidthRef $HostWidthRef -hostHeightRef $HostHeightRef
+							$HostWidth = $HostWidthRef.Value
+							$HostHeight = $HostHeightRef.Value
+							if ($quitResult.NeedsRedraw) {
+								if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = $null } } catch {} }
 								Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 								break
 							}
-						} elseif ($lastKeyPress -eq "q") {
-								$lastKeyPress = $null
-								$lastKeyInfo = $null
-								
-							if ($DebugMode) {
-								Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Quit dialog opened" -ShortMessage "Quit opened"
-							}
-								
-								$HostWidthRef = [ref]$HostWidth
-								$HostHeightRef = [ref]$HostHeight
-								$quitResult = Show-QuitConfirmationDialog -hostWidthRef $HostWidthRef -hostHeightRef $HostHeightRef
-								$HostWidth = $HostWidthRef.Value
-								$HostHeight = $HostHeightRef.Value
-								if ($quitResult.NeedsRedraw) {
-									Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
-									break
-								}
 								if ($quitResult.Result -eq $true) {
 									if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'quit' } } catch {} }
 								if ($DebugMode) {
@@ -2218,17 +2371,18 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 									Write-Host ") " -NoNewline -ForegroundColor $script:HeaderAppName
 									Write-Host "Stopped" -ForegroundColor $script:TextError
 									Write-Host ""
-									Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:StatsBoxLabel
-									Write-Host $runtimeStr -ForegroundColor $script:StatsBoxValue
+								Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:TextMuted
+								Write-Host $runtimeStr -ForegroundColor $script:TextDefault
 									Write-Host ""
 									break process
-								} else {
-								if ($DebugMode) {
-									Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Quit canceled"
-								}
-									Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
-									break
-								}
+							} else {
+							if ($DebugMode) {
+								Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Quit canceled"
+							}
+								if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = $null } } catch {} }
+								Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
+								break
+							}
 				} elseif ($lastKeyPress -eq "i") {
 					$oldOutput = $Output
 					if ($Output -eq "hidden") {
@@ -2244,23 +2398,26 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 					$script:MenuItemsBounds.Clear()
 					}
 					$script:Output = $Output
-					if ($_isViewerMode) { $_settingsEpoch++; try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output; epoch = $_settingsEpoch } } catch {} }
-					if ($DebugMode) {
-						Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Incognito toggle: $oldOutput $([char]0x2192) $Output" -ShortMessage "Incognito: $oldOutput $([char]0x2192) $Output"
+				if ($_isViewerMode) { $_settingsEpoch++; try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output; epoch = $_settingsEpoch; previousView = $PreviousView; activeDialog = $null } } catch {} }
+				if ($DebugMode) {
+					Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Incognito toggle: $oldOutput $([char]0x2192) $Output" -ShortMessage "Incognito: $oldOutput $([char]0x2192) $Output"
 					}
 						Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw)
 						break
 				} elseif ($lastKeyPress -eq "s") {
 					$lastKeyPress = $null
 					$lastKeyInfo  = $null
-					if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG OPEN type=settings pipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append }
-					$HostWidthRef  = [ref]$HostWidth;  $HostHeightRef = [ref]$HostHeight
-					$endTimeIntRef = [ref]$endTimeInt; $endTimeStrRef = [ref]$endTimeStr
-					$endRef        = [ref]$end;        $logArrayRef   = [ref]$LogArray
-					$settingsResult = Show-SettingsDialog `
-						-HostWidthRef $HostWidthRef -HostHeightRef $HostHeightRef `
-						-EndTimeIntRef $endTimeIntRef -EndTimeStrRef $endTimeStrRef `
-						-EndRef $endRef -LogArrayRef $logArrayRef
+				if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG OPEN type=settings pipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append }
+			if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'settings' } } catch {} }
+			$HostWidthRef  = [ref]$HostWidth;  $HostHeightRef = [ref]$HostHeight
+			$endTimeIntRef = [ref]$endTimeInt; $endTimeStrRef = [ref]$endTimeStr
+			$endRef        = [ref]$end;        $logArrayRef   = [ref]$LogArray
+			$_stgPipeWriter = if ($_isViewerMode) { $_viewerPipeWriter } else { $null }
+			$settingsResult = Show-SettingsDialog `
+				-HostWidthRef $HostWidthRef -HostHeightRef $HostHeightRef `
+				-EndTimeIntRef $endTimeIntRef -EndTimeStrRef $endTimeStrRef `
+				-EndRef $endRef -LogArrayRef $logArrayRef `
+				-ViewerPipeWriter $_stgPipeWriter
 			if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG CLOSED type=settings reopen=$($settingsResult.ReopenSettings) needsRedraw=$($settingsResult.NeedsRedraw) pipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append }
 			$HostWidth  = $HostWidthRef.Value;  $HostHeight = $HostHeightRef.Value
 			$endTimeInt = $endTimeIntRef.Value; $endTimeStr = $endTimeStrRef.Value
@@ -2282,10 +2439,10 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 						travelVariance = $script:TravelVariance
 						autoResumeDelaySeconds = $script:AutoResumeDelaySeconds
 					}
-				Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance }
-				Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output }
-				Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'title'; windowTitle = $script:WindowTitle; titleEmoji = $script:TitleEmoji }
-				if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND COMPLETE (4 messages sent)" | Out-File $script:IpcDiagFile -Append }
+		Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance }
+		Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output; previousView = $PreviousView; activeDialog = $null }
+		Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'title'; windowTitle = $script:WindowTitle; titleEmoji = $script:TitleEmoji; titlePresetIndex = $script:TitlePresetIndex }
+		if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND COMPLETE (4 messages sent)" | Out-File $script:IpcDiagFile -Append }
 				} catch {
 					if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND FAILED: $($_.Exception.Message)" | Out-File $script:IpcDiagFile -Append }
 				}
@@ -2375,7 +2532,7 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 								if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG CLOSED type=movement" | Out-File $script:IpcDiagFile -Append }
 								Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 								break
-							} elseif ($lastKeyPress -eq "t") {
+							} elseif ($lastKeyPress -eq "e") {
 								if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG OPEN type=time pipeConnected=$($_viewerPipeClient.IsConnected)" | Out-File $script:IpcDiagFile -Append }
 							if ($DebugMode) {
 								Add-DebugLogEntry -LogArray $LogArray -Date $date -Message "Time dialog opened" -ShortMessage "Time opened"
@@ -2449,18 +2606,31 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 							if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG CLOSED type=time" | Out-File $script:IpcDiagFile -Append }
 							Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 							break
-				} elseif (($lastKeyPress -eq "?" -or $lastKeyPress -eq "/") -and $Output -ne "hidden") {
-						$lastKeyPress = $null
-						$lastKeyInfo  = $null
-						$HostWidthRef  = [ref]$HostWidth
-						$HostHeightRef = [ref]$HostHeight
-						$null = Show-InfoDialog -hostWidthRef $HostWidthRef -hostHeightRef $HostHeightRef
-						$HostWidth  = $HostWidthRef.Value
-						$HostHeight = $HostHeightRef.Value
-						Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
-						break
-					}
-				}
+			} elseif (($lastKeyPress -eq "?" -or $lastKeyPress -eq "/") -and $Output -ne "hidden") {
+				$lastKeyPress = $null
+				$lastKeyInfo  = $null
+				if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'info' } } catch {} }
+				$HostWidthRef  = [ref]$HostWidth
+				$HostHeightRef = [ref]$HostHeight
+				$null = Show-InfoDialog -hostWidthRef $HostWidthRef -hostHeightRef $HostHeightRef
+				$HostWidth  = $HostWidthRef.Value
+				$HostHeight = $HostHeightRef.Value
+				if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = $null } } catch {} }
+				Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
+				break
+			} elseif ($lastKeyPress -eq "t" -and $Output -ne "hidden") {
+				$lastKeyPress = $null
+				$lastKeyInfo  = $null
+				$HostWidthRef  = [ref]$HostWidth
+				$HostHeightRef = [ref]$HostHeight
+			$_themeDialogResult = Show-ThemeDialog -HostWidthRef $HostWidthRef -HostHeightRef $HostHeightRef -ViewerPipeWriter $(if ($_isViewerMode) { $_viewerPipeWriter } else { $null })
+			$HostWidth  = $HostWidthRef.Value
+			$HostHeight = $HostHeightRef.Value
+			if ($null -ne $_themeDialogResult -and $_themeDialogResult.NeedsRedraw) { $SkipUpdate = $false }
+			Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
+				break
+			}
+			}
 				
 				# Check for window size / text zoom changes (both normal and hidden mode)
 				# Only check every 200ms (every 4th iteration) to avoid blocking Windows mouse messages
@@ -2875,16 +3045,71 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 					}
 				}
 				
-					$LastMovementTime = Get-Date
+			if ($PosUpdate) {
+				$LastMovementTime = Get-Date
+
+				# Successful move — update cumulative stats
+				$script:StatsMoveCount++
+					$script:StatsTotalDistancePx  += $distance
+					$script:StatsLastMoveDist      = $distance
+					if ($distance -lt $script:StatsMinMoveDist) { $script:StatsMinMoveDist = $distance }
+					if ($distance -gt $script:StatsMaxMoveDist) { $script:StatsMaxMoveDist = $distance }
+
+					# Direction bucket (Atan2 uses screen coords: Y increases downward)
+					if ($deltaX -ne 0 -or $deltaY -ne 0) {
+						$_dirAngle = [Math]::Atan2($deltaY, $deltaX) * 180.0 / [Math]::PI
+						if ($_dirAngle -lt 0) { $_dirAngle += 360.0 }
+						$_dirSector = [int][Math]::Round($_dirAngle / 45.0) % 8
+						$_dirKey = @('E','SE','S','SW','W','NW','N','NE')[$_dirSector]
+						$script:StatsDirectionCounts[$_dirKey] += $distance
+					}
+
+					# Animation timing
+					if ($LastMovementDurationMs -lt $script:StatsMinDurationMs) { $script:StatsMinDurationMs = $LastMovementDurationMs }
+					if ($LastMovementDurationMs -gt $script:StatsMaxDurationMs) { $script:StatsMaxDurationMs = $LastMovementDurationMs }
+					$script:StatsAvgDurationMs = if ($script:StatsMoveCount -le 1) { $LastMovementDurationMs } else { ($script:StatsAvgDurationMs * ($script:StatsMoveCount - 1) + $LastMovementDurationMs) / $script:StatsMoveCount }
+
+					# Actual interval between consecutive moves
+					if ($null -ne $script:StatsLastMoveTick) {
+						$_actualSecs = ((Get-Date) - $script:StatsLastMoveTick).TotalSeconds
+						$script:StatsAvgActualIntervalSecs = if ($script:StatsMoveCount -le 1) { $_actualSecs } else { ($script:StatsAvgActualIntervalSecs * ($script:StatsMoveCount - 1) + $_actualSecs) / $script:StatsMoveCount }
+					}
+					$script:StatsLastMoveTick = Get-Date
+
+					# Move streak
+					if ($script:StatsCurrentStreak -ge 0) { $script:StatsCurrentStreak++ } else { $script:StatsCurrentStreak = 1 }
+					if ($script:StatsCurrentStreak -gt $script:StatsLongestStreak) { $script:StatsLongestStreak = $script:StatsCurrentStreak }
+
+					# Clean streak (no user input this interval)
+					$script:StatsCleanStreak++
+					if ($script:StatsCleanStreak -gt $script:StatsLongestCleanStreak) { $script:StatsLongestCleanStreak = $script:StatsCleanStreak }
+
+				# Capture curve params for last-movement diagram
+				$script:StatsLastCurveParams = @{
+					Distance      = $distance
+					StartArcAmt   = $movementPath.StartArcAmt
+					StartArcSign  = $movementPath.StartArcSign
+					BodyCurveAmt  = $movementPath.BodyCurveAmt
+					BodyCurveSign = $movementPath.BodyCurveSign
+					BodyCurveType = $movementPath.BodyCurveType
 				}
-			} else {
-				# skipUpdate was set - just update tracking
-				$PosUpdate = $false
-				$LastPos = $currentPos
-				if ($null -eq $LastMovementTime) {
-					$LastMovementTime = Get-Date
+				$script:StatsCurveAnimPending = $true
 				}
 			}
+		} else {
+		# skipUpdate was set - just update tracking
+		$PosUpdate = $false
+		$LastPos = $currentPos
+
+		# Skip stats (only on actual user-input detection; not on first run or manual pause)
+		if (-not $isFirstRun -and -not $script:ManualPause) {
+			$script:StatsSkipCount++
+			if ($script:StatsCurrentStreak -le 0) { $script:StatsCurrentStreak-- } else { $script:StatsCurrentStreak = -1 }
+			if ($keyboardInputDetected) { $script:StatsKbInterruptCount++ }
+			if ($mouseInputDetected)    { $script:StatsMsInterruptCount++ }
+			$script:StatsCleanStreak = 0
+		}
+		}
 			
 		$allInputs = @()
 		$hasMouse = $false
@@ -3029,18 +3254,44 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 		} # end if (-not $_isViewerMode) — post-wait movement + log building
 
 	if ($_isViewerMode) {
-		$allInputs = @()
-		$hasMouse = $false
-		foreach ($mouseInput in $intervalMouseInputs) {
-			if ($mouseInput -eq "Mouse") { if (-not $hasMouse) { $allInputs += "Mouse"; $hasMouse = $true } }
-			else { $allInputs += $mouseInput }
+		# Accumulate this iteration's detections into interval-level trackers
+		foreach ($mouseInput in $intervalMouseInputs) { $null = $_viewerIntervalMouseTypes.Add($mouseInput) }
+		if ($scrollDetectedInInterval) { $_viewerIntervalScrollDet  = $true }
+		if ($keyboardInputDetected)    { $_viewerIntervalKbDetected = $true }
+		if ($_keyboardInferred)        { $_viewerIntervalKbInferred = $true }
+		if ($_keyboardLocallyDetected) { $_viewerIntervalKbLocal    = $true }
+
+		# Flush accumulated inputs to PreviousIntervalKeys only at worker interval boundary,
+		# preventing mid-interval flicker and the scroll->Keyboard/Other race condition.
+		if ($_viewerWorkerIterChanged) {
+			$_viAllInputs = @()
+			$_viHasMouse  = $false
+			foreach ($mouseInput in $_viewerIntervalMouseTypes) {
+				if ($mouseInput -eq "Mouse") { if (-not $_viHasMouse) { $_viAllInputs += "Mouse"; $_viHasMouse = $true } }
+				else { $_viAllInputs += $mouseInput }
+			}
+			if ($_viewerIntervalKbDetected) {
+				# Only promote worker-inferred keyboard to "Keyboard/Other" when the terminal had
+				# zero local activity this interval (no scroll, click, or mouse movement).
+				# Any local evidence means the terminal was focused and PeekConsoleInput is
+				# authoritative — the worker's GetLastInputInfo inference is noise in that case.
+				$_viNoLocalActivity = (-not $_viewerIntervalKbLocal -and -not $_viewerIntervalScrollDet -and ($_viewerIntervalMouseTypes.Count -eq 0))
+				if ($_viewerIntervalKbInferred -and $_viNoLocalActivity) {
+					$_viAllInputs += "Keyboard/Other"
+				} elseif (-not $_viewerIntervalKbInferred -or $_viewerIntervalKbLocal) {
+					$_viAllInputs += "Keyboard"
+				}
+			}
+		$script:PreviousIntervalKeys = $_viAllInputs
+		$_rt = (Get-Date) - $ScriptStartTime
+		$script:StatsRunningTimeStr = "$([int][math]::Floor($_rt.TotalHours))h $($_rt.Minutes.ToString('D2'))m $($_rt.Seconds.ToString('D2'))s"
+		$_viewerIntervalMouseTypes.Clear()
+			$_viewerIntervalKbDetected = $false
+			$_viewerIntervalKbInferred = $false
+			$_viewerIntervalKbLocal    = $false
+			$_viewerIntervalScrollDet  = $false
+			$_viewerWorkerIterChanged  = $false
 		}
-		if ($keyboardInputDetected) {
-			if ($_keyboardInferred -and -not $_keyboardLocallyDetected) {
-				if (-not $scrollDetectedInInterval) { $allInputs += "Keyboard/Other" }
-			} else { $allInputs += "Keyboard" }
-		}
-		$script:PreviousIntervalKeys = $allInputs
 	}
 
 	if ($script:DiagEnabled -and $_isViewerMode -and $script:LoopIteration -le 5) {
@@ -3051,11 +3302,14 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 			Write-MainFrame -Force:$true -Date $date -NoFlush
 			if ($script:PendingReopenSettings) {
 				$script:PendingReopenSettings = $false
-				if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG REOPEN type=settings (PendingReopenSettings)" | Out-File $script:IpcDiagFile -Append }
-				$HostWidthRef  = [ref]$HostWidth;  $HostHeightRef = [ref]$HostHeight
-				$endTimeIntRef = [ref]$endTimeInt; $endTimeStrRef = [ref]$endTimeStr
-				$endRef        = [ref]$end;        $logArrayRef   = [ref]$LogArray
-				$settingsResult = Show-SettingsDialog -HostWidthRef $HostWidthRef -HostHeightRef $HostHeightRef -EndTimeIntRef $endTimeIntRef -EndTimeStrRef $endTimeStrRef -EndRef $endRef -LogArrayRef $logArrayRef -SkipAnimation:$true -DeferFlush:$true
+		if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG REOPEN type=settings (PendingReopenSettings)" | Out-File $script:IpcDiagFile -Append }
+		if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'settings' } } catch {} }
+		$HostWidthRef  = [ref]$HostWidth;  $HostHeightRef = [ref]$HostHeight
+		$endTimeIntRef = [ref]$endTimeInt; $endTimeStrRef = [ref]$endTimeStr
+		$endRef        = [ref]$end;        $logArrayRef   = [ref]$LogArray
+		$_stgRestoreSub = $script:_PendingRestoreSubDialog; $script:_PendingRestoreSubDialog = $null
+		$_stgPipeWriter = if ($_isViewerMode) { $_viewerPipeWriter } else { $null }
+		$settingsResult = Show-SettingsDialog -HostWidthRef $HostWidthRef -HostHeightRef $HostHeightRef -EndTimeIntRef $endTimeIntRef -EndTimeStrRef $endTimeStrRef -EndRef $endRef -LogArrayRef $logArrayRef -SkipAnimation:$true -DeferFlush:$true -RestoreSubDialog $_stgRestoreSub -ViewerPipeWriter $_stgPipeWriter
 				if ($script:DiagEnabled -and $_isViewerMode) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER DIALOG CLOSED type=settings (reopen) needsRedraw=$($settingsResult.NeedsRedraw) reopen=$($settingsResult.ReopenSettings)" | Out-File $script:IpcDiagFile -Append }
 				$HostWidth  = $HostWidthRef.Value;  $HostHeight = $HostHeightRef.Value
 				$endTimeInt = $endTimeIntRef.Value; $endTimeStr = $endTimeStrRef.Value
@@ -3077,10 +3331,10 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 							travelVariance = $script:TravelVariance
 							autoResumeDelaySeconds = $script:AutoResumeDelaySeconds
 						}
-					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance }
-					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output }
-					Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'title'; windowTitle = $script:WindowTitle; titleEmoji = $script:TitleEmoji }
-					if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND COMPLETE (reopen path, 4 messages)" | Out-File $script:IpcDiagFile -Append }
+			Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'endtime'; endTime = $endTimeInt; endVariance = $script:EndVariance }
+			Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'output'; mode = $script:Output; previousView = $PreviousView; activeDialog = $null }
+			Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'title'; windowTitle = $script:WindowTitle; titleEmoji = $script:TitleEmoji; titlePresetIndex = $script:TitlePresetIndex }
+			if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND COMPLETE (reopen path, 4 messages)" | Out-File $script:IpcDiagFile -Append }
 					} catch {
 						if ($script:DiagEnabled) { "$(Get-Date -Format 'HH:mm:ss.fff') - VIEWER SEND FAILED (reopen path): $($_.Exception.Message)" | Out-File $script:IpcDiagFile -Append }
 					}
@@ -3093,15 +3347,110 @@ public static extern IntPtr GetStdHandle(int nStdHandle);
 				$OldBufferSize = (Get-Host).UI.RawUI.BufferSize
 				Write-MainFrame -Force:$true -Date $date -NoFlush
 				Flush-Buffer -ClearFirst
+			} elseif ($script:_PendingReopenQuit) {
+				$script:_PendingReopenQuit = $false
+				Flush-Buffer -ClearFirst
+				if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'quit' } } catch {} }
+				$HostWidthRef = [ref]$HostWidth; $HostHeightRef = [ref]$HostHeight
+				$quitResult = Show-QuitConfirmationDialog -hostWidthRef $HostWidthRef -hostHeightRef $HostHeightRef
+				$HostWidth = $HostWidthRef.Value; $HostHeight = $HostHeightRef.Value
+				if ($_isViewerMode -and $quitResult.Result -ne $true) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = $null } } catch {} }
+				if ($quitResult.NeedsRedraw) {
+					Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
+					Write-MainFrame -Force:$true -Date $date -NoFlush
+					Flush-Buffer -ClearFirst
+				} elseif ($quitResult.Result -eq $true) {
+					if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'quit' } } catch {} }
+					Clear-Host
+					$runtime = (Get-Date) - $ScriptStartTime
+					$hours = [math]::Floor($runtime.TotalHours); $minutes = $runtime.Minutes; $seconds = $runtime.Seconds
+					$runtimeStr = if ($hours -gt 0) { "$hours hour$(if ($hours -ne 1) { 's' }), $minutes minute$(if ($minutes -ne 1) { 's' })" } elseif ($minutes -gt 0) { "$minutes minute$(if ($minutes -ne 1) { 's' }), $seconds second$(if ($seconds -ne 1) { 's' })" } else { "$seconds second$(if ($seconds -ne 1) { 's' })" }
+					Write-Host ""; $mouseEmoji = [char]::ConvertFromUtf32(0x1F400)
+					Write-Host "  mJig($mouseEmoji) " -NoNewline -ForegroundColor $script:HeaderAppName
+					Write-Host "Stopped" -ForegroundColor $script:TextError
+				Write-Host ""; Write-Host "  Runtime: " -NoNewline -ForegroundColor $script:TextMuted
+				Write-Host $runtimeStr -ForegroundColor $script:TextDefault; Write-Host ""
+					break process
+				} else {
+					Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
+				}
+			} elseif ($script:_PendingReopenInfo) {
+				$script:_PendingReopenInfo = $false
+				Flush-Buffer -ClearFirst
+				if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = 'info' } } catch {} }
+				$HostWidthRef = [ref]$HostWidth; $HostHeightRef = [ref]$HostHeight
+				$null = Show-InfoDialog -hostWidthRef $HostWidthRef -hostHeightRef $HostHeightRef
+				$HostWidth = $HostWidthRef.Value; $HostHeight = $HostHeightRef.Value
+				if ($_isViewerMode) { try { Send-PipeMessage -Writer $_viewerPipeWriter -Message @{ type = 'viewerState'; activeDialog = $null } } catch {} }
+				Reset-PostDialogState -SkipUpdateRef ([ref]$SkipUpdate) -ForceRedrawRef ([ref]$forceRedraw) -OldWindowSizeRef ([ref]$oldWindowSize) -OldBufferSizeRef ([ref]$OldBufferSize)
 			} else {
 				Flush-Buffer -ClearFirst
+			}
+	} else {
+		if ($script:StatsCurveAnimPending) {
+			$script:StatsCurveAnimPending = $false
+			# Frame 0: full render with no dots — establishes static content and caches path metadata
+			$date = Get-Date
+			Write-MainFrame -Force -Date $date -NoFlush -CurveRevealFraction 0.0
+			Flush-Buffer
+
+			# Frames 1-N: partial re-render of only the diagram rows (fast — skips full frame rebuild)
+			# Falls back to full render if terminal was resized during animation
+			$_animFrames     = 15
+			$_animMsPerFrame = [int](250 / $_animFrames)
+			$_animMetaReady  = ($null -ne $script:_CurveAnimPtA -and $script:_CurveAnimDiagRows -gt 0)
+			for ($_animF = 1; $_animF -le $_animFrames; $_animF++) {
+				Start-Sleep -Milliseconds $_animMsPerFrame
+				$_animFrac = [double]$_animF / $_animFrames
+				$_sizeChanged = ($HostWidth -ne $script:_CurveAnimHostWidth -or $HostHeight -ne $script:_CurveAnimHostHeight)
+				if (-not $_animMetaReady -or $_sizeChanged) {
+					# Fall back to full render if metadata unavailable or window was resized
+					$date = Get-Date
+					Write-MainFrame -Force -Date $date -NoFlush -CurveRevealFraction $(if ($_animF -ge $_animFrames) { -1.0 } else { $_animFrac })
+					Flush-Buffer
+					continue
+				}
+				# Rebuild only the diagram rows for this fraction — all rows queued before flush
+				$_aw = $script:_CurveAnimInnerW
+				$_ac = $script:_CurveAnimCenterRow
+				$_an = $script:_CurveAnimDiagRows
+				$_aCanvas = [System.Collections.Generic.List[char[]]]::new()
+				for ($_ar = 0; $_ar -lt $_an; $_ar++) {
+					$_aRow = [char[]](' ' * $_aw)
+					if ($_ar -eq $_ac) { for ($_acc = 0; $_acc -lt $_aw; $_acc++) { $_aRow[$_acc] = $script:BoxHorizontal } }
+					$null = $_aCanvas.Add($_aRow)
+				}
+				for ($_asi = 0; $_asi -le $script:_CurveAnimNS; $_asi++) {
+					if ($script:_CurveAnimPtA[$_asi] -gt $_animFrac) { continue }
+					$_aCol = [int]($script:_CurveAnimPtA[$_asi] * ($_aw - 1))
+					$_aCol = [math]::Max(0, [math]::Min($_aw - 1, $_aCol))
+					$_aRO  = [int]($script:_CurveAnimPtL[$_asi] / $script:_CurveAnimMaxLat * $_ac)
+					$_aPR  = [math]::Max(0, [math]::Min($_an - 1, $_ac - $_aRO))
+					$_aCanvas[$_aPR][$_aCol] = [char]0x25CF
+				}
+			for ($_ar = 0; $_ar -lt $_an; $_ar++) {
+				$_animRowY   = $script:_CurveAnimDiagramStartY + $_ar
+				$_animRowChars = $_aCanvas[$_ar]
+				$_animFirstOnRow = $true
+				for ($_aci = 0; $_aci -lt $_animRowChars.Length; $_aci++) {
+					$_aCh = $_animRowChars[$_aci]
+					$_animX = if ($_animFirstOnRow) { $script:_CurveAnimBoxInnerX + $_aci } else { -1 }
+					$_animY = if ($_animFirstOnRow) { $_animRowY } else { -1 }
+					$_animFirstOnRow = $false
+					if    ($_aCh -eq [char]0x25CF)          { Write-Buffer -X $_animX -Y $_animY -Text $_aCh -FG $script:StatsCurveDots }
+					elseif($_aCh -eq $script:BoxHorizontal) { Write-Buffer -X $_animX -Y $_animY -Text $_aCh -FG $script:StatsCurveLine }
+					else                                     { Write-Buffer -X $_animX -Y $_animY -Text " " }
+				}
+			}
+				Flush-Buffer
 			}
 		} else {
 			Write-MainFrame -Date $date
 		}
+	}
 
-		if (-not $_isViewerMode) {
-		# Check if end time reached (only if end time is set)
+	if (-not $_isViewerMode) {
+	# Check if end time reached (only if end time is set)
 			# Compare full MMddHHmm values to handle overnight runs correctly
 			$endTimeReached = $false
 			if ($endTimeInt -ne -1 -and -not [string]::IsNullOrEmpty($end)) {

@@ -172,7 +172,7 @@ if ($script:DialogButtonShowIcon) {
 $closingParen = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
 if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg }
 Write-Buffer -Text "a" -FG $script:MoveDialogButtonHotkey -BG $script:MoveDialogButtonBg
-Write-Buffer -Text "$closingParenpply" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
+Write-Buffer -Text "$($closingParen)pply" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
 if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 Write-Buffer -Text "  " -BG $script:MoveDialogBg
 if ($script:DialogButtonShowBrackets) {
@@ -187,7 +187,7 @@ if ($script:DialogButtonShowIcon) {
 }
 if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg }
 Write-Buffer -Text "c" -FG $script:MoveDialogButtonHotkey -BG $script:MoveDialogButtonBg
-Write-Buffer -Text "$closingParenancel" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
+Write-Buffer -Text "$($closingParen)ancel" -FG $script:MoveDialogButtonText -BG $script:MoveDialogButtonBg
 	if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 	Write-Buffer -Text (" " * $buttonPadding) -BG $script:MoveDialogBg
 	Write-Buffer -Text "$($script:BoxVertical)" -FG $script:MoveDialogBorder -BG $script:MoveDialogBg

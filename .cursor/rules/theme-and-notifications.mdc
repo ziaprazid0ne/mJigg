@@ -16,12 +16,49 @@ All colors are centralized as `$script:` variables in `Initialize-Theme.ps1`. Ca
 - `Header*` / `Footer*` — chrome group backgrounds
 - `HeaderRowBg` / `MenuRowBg` — per-row inset backgrounds
 - `BorderPadV` / `BorderPadH` — blank-row/column border thickness
-- `*Dialog*` — per-dialog color sets (Quit, Settings, Time, Move, Info, Options)
+- `HeaderPauseButton` — pause/play emoji color in the header
+- `HeaderSeparator` — full-width separator line color (used in `Write-MainFrame.ps1`)
+- `*Dialog*` — per-dialog color sets (Quit, Settings, SettingsOffFocus, Time, Move, Info, Options, Theme)
+- `StatsBox{Border,Title,Bg}` — outer stats panel chrome
+- `Stats{Session,Movement,Performance,Travel,Settings}{Title,Label,Value}` — per-section granular colors
+- `StatsInputs{Title,Label,Value}` — Detected Inputs sub-section colors
+- `StatsCurve{Header,Line,Dots,Eq1,Eq2,Border}` — ease curve diagram colors
+- `ThemeButton*` — dedicated colors for the `(t)heme` Settings dialog button
+
+### Dialog Button Background and Hotkey Colors (Default Theme)
+
+All dialog action button backgrounds use `"DarkCyan"` in the default theme (not `"Blue"`). All dialog button hotkey letters use `"Green"` in the default theme. Exception: in the debug theme, `MoveDialogButtonBg = "DarkGreen"` so `MoveDialogButtonHotkey` stays `"Yellow"` to remain visible. The debug theme `QuitDialogButtonHotkey` also uses `"White"` for distinctiveness on the `Magenta` background.
+
+```powershell
+# Default values (base + default theme):
+$script:QuitDialogButtonBg     = "Magenta"
+$script:QuitDialogButtonHotkey = "Green"
+$script:TimeDialogButtonBg     = "DarkCyan"
+$script:TimeDialogButtonHotkey = "Green"
+$script:MoveDialogButtonBg     = "DarkCyan"
+$script:MoveDialogButtonHotkey = "Green"
+$script:InfoDialogButtonBg     = "DarkCyan"
+$script:InfoDialogButtonHotkey = "Green"
+$script:ThemeDialogButtonBg    = "DarkCyan"
+$script:ThemeDialogButtonHotkey = "Green"
+$script:SettingsDialogButtonBg     = "DarkCyan"
+$script:SettingsDialogButtonHotkey = "Green"
+```
 
 When adding new theme colors:
-1. Add `$script:NewColor = "..."` in `Initialize-Theme.ps1`
-2. Use via `Write-Buffer -FG $script:NewColor`
-3. Update `AGENTS.md` color categories table
+1. Add `$script:NewColor = "..."` in the base variables section of `Initialize-Theme.ps1`
+2. Add the same variable in **both** the `"default"` and `"debug"` `Apply` scriptblocks
+3. Use via `Write-Buffer -FG $script:NewColor`
+4. Update `AGENTS.md` color categories table
+
+## Theme Profile System
+
+`$script:ThemeProfiles` is an array of `@{ Name = "..."; Apply = { ... } }` hashtables. `Set-ThemeProfile -Name "..."` invokes the `Apply` scriptblock and updates `$script:CurrentThemeName` / `$script:CurrentThemeIndex`.
+
+- `"default"` — transparent backgrounds everywhere except dialogs and on-click states
+- `"debug"` — maximally distinct colors for all elements; `BorderPadV = 2`, `BorderPadH = 2`
+
+Startup order: `default` → `debug` (if DebugMode) → `-Theme` param (overrides both). Debug toggle in `Show-OptionsDialog` auto-applies `"debug"` / `"default"` via `Set-ThemeProfile`.
 
 ## Emoji Handling
 

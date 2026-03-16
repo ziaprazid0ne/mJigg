@@ -53,7 +53,22 @@ By default, `Start-mJig` spawns a hidden background worker process that performs
 - **`Start-mJig -Inline`**: Legacy single-process mode, no IPC
 - **`Start-mJig -_WorkerMode`** (internal): Headless worker entry point
 
-**IPC protocol:** JSON lines over `NamedPipeServerStream` / `NamedPipeClientStream`. All messages are encrypted with AES-256-CBC (per-message random IV) via `Protect-PipeMessage` / `Unprotect-PipeMessage`. The first message from the viewer is an auth handshake containing `$script:PipeAuthToken` **and `viewerPid = $PID`** (the viewer's own process ID); the worker validates the token and stores the PID for fast disconnect detection. Worker sends `welcome`, `state` (every 500ms), `log`, and `stopped` messages. Viewer sends `settings`, `endtime`, `output`, `title`, and `quit` commands. State messages include `mouseInputDetected`, `keyboardInputDetected`, `keyboardInferred`, `userInputDetected`, `cooldownActive`, `cooldownRemaining`, and `epoch` so the viewer can display live input detection and cooldown status and discard stale state messages.
+**IPC protocol:** JSON lines over `NamedPipeServerStream` / `NamedPipeClientStream`. All messages are encrypted with AES-256-CBC (per-message random IV) via `Protect-PipeMessage` / `Unprotect-PipeMessage`. The first message from the viewer is an auth handshake containing `$script:PipeAuthToken` **and `viewerPid = $PID`** (the viewer's own process ID); the worker validates the token and stores the PID for fast disconnect detection. Worker sends `welcome`, `state` (every 500ms), `log`, and `stopped` messages. Viewer sends `settings`, `endtime`, `output`, `title`, `viewerState`, and `quit` commands. State messages include `mouseInputDetected`, `keyboardInputDetected`, `keyboardInferred`, `userInputDetected`, `cooldownActive`, `cooldownRemaining`, and `epoch` so the viewer can display live input detection and cooldown status and discard stale state messages.
+
+**Viewer visual state persistence:** The worker maintains a `$_viewerVisualState` hashtable that tracks the last-known visual state of the connected viewer. It is updated on every `output`, `title`, and `viewerState` message received from the viewer. When a new viewer connects, the worker includes the current `$_viewerVisualState` (plus `$manualPause`) as a `visualState` field in the `welcome` message. The new viewer reads this field from `$pipeResult.VisualState` (returned by `Connect-WorkerPipe`) and immediately applies it: `$Output`, `$PreviousView`, `$script:WindowTitle`, `$script:TitleEmoji`, `$script:TitlePresetIndex`, `$script:ManualPause`, and sets one of `$script:PendingReopenSettings` / `$script:_PendingReopenQuit` / `$script:_PendingReopenInfo` based on `activeDialog`, plus `$script:_PendingRestoreSubDialog`. This preserves output mode (full/min/incognito), incognito state, title preset, manual pause, which dialog was open, and which sub-dialog was active inside Settings — all restored to exactly as the previous viewer left them.
+
+**`viewerState` message** (viewer → worker): `{ type = 'viewerState'; activeDialog = $string|$null; activeSubDialog = $string|$null }`. The `activeDialog` field is one of `'settings'`, `'quit'`, `'info'`, or `$null`. Sent in these contexts:
+- Before Settings opens: `{ activeDialog = 'settings' }` (no `activeSubDialog` field)
+- Before a Settings sub-dialog opens: `{ activeDialog = 'settings'; activeSubDialog = 'time'|'movement'|'options' }`
+- After a Settings sub-dialog closes (before Settings breaks out): `{ activeDialog = 'settings'; activeSubDialog = $null }`
+- Before Quit confirmation opens: `{ activeDialog = 'quit' }` (both Escape key and `q` key paths)
+- Before Info/About opens: `{ activeDialog = 'info' }`
+- After any dialog closes (cancelled/NeedsRedraw for Quit; any close for Info): `{ activeDialog = $null }`
+Both fields use `PSObject.Properties.Name -contains 'field'` to distinguish explicit `$null` from absent. The Settings close 4-message sync sends `output` with `activeDialog=$null`, which also clears the field on the worker.
+
+**Updated `output` message schema** (viewer → worker): `{ type = 'output'; mode = $string; epoch = $int; previousView = $string|$null; settingsOpen = $bool }`. The `previousView` field carries the mode to restore when exiting incognito (`null` if not currently in incognito). The `settingsOpen` field is always `$false` in normal output-toggle sends (mode-label click, incognito toggle, settings-close sync).
+
+**Updated `title` message schema** (viewer → worker): `{ type = 'title'; windowTitle = $string; titleEmoji = $int; titlePresetIndex = $int }`. The `titlePresetIndex` field is stored in `$_viewerVisualState` and restored to `$script:TitlePresetIndex` on the new viewer's connect.
 
 **Key functions:**
 - `Start-WorkerLoop` — headless jiggling loop with pipe server; accepts one viewer at a time. Resilient pipe reconnection: all `BeginWaitForConnection` calls are wrapped in try/catch; if the call fails (e.g. broken pipe after abrupt viewer death), the `NamedPipeServerStream` is disposed and recreated from scratch. All `NamedPipeServerStream` instances use 64KB (65536) in/out buffer sizes to prevent pipe saturation during viewer dialog interactions. **Fast disconnect detection:** on viewer connect, stores `$_viewerProcess = Get-Process -Id $_clientPid`; at the top of each 50ms tick checks `$_viewerProcess.HasExited` before attempting any pipe I/O. Disconnect is detected within one 50ms tick of process exit, without relying on `NamedPipeServerStream.IsConnected` (which can lag several seconds). `$_clientPid` is read from the `viewerPid` field of the auth message; falls back to `GetNamedPipeClientProcessId` P/Invoke if absent. **Terminal allowlist for new viewer spawning:** when the tray Open action fires and no viewer is connected, `Start-WorkerLoop` walks the process tree from the previous viewer's PID to identify the host terminal. An explicit `$_terminalAllowList` (`windowsterminal`, `alacritty`, `wezterm`, `conemu`, `cmder`, `mintty`, etc.) determines which parent process is an acceptable terminal. If traversal reaches a process not in either the skip list or the allowlist, it stops and falls back to `Start-Process pwsh.exe` directly, preventing incorrect spawning (e.g. opening File Explorer) when the viewer was launched from an elevated or unusual parent.
@@ -66,14 +81,14 @@ By default, `Start-mJig` spawns a hidden background worker process that performs
 
 **Worker process spawning:** Uses `Invoke-CimMethod -ClassName Win32_Process -MethodName Create` (WMI) to spawn the worker outside the terminal's job object, ensuring the worker survives when the viewer terminal tab is closed. Falls back to `Start-Process` if WMI is unavailable. The executable path is determined dynamically via `[System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName` to match the running PowerShell version (pwsh.exe on PS 7, powershell.exe on 5.1). The worker command is passed via `-EncodedCommand` (Base64-encoded script block) instead of `-Command` to avoid shell escaping issues.
 
-**Worker input detection bootstrap:** `GetLastInputInfo` and mouse position tracking in the worker are guarded with `if ($null -ne $workerLastAutomatedMouseMovement)`. This skips input detection until the first automated movement completes, preventing a permanent "Skipped: user input detected" deadlock where the null filter timestamps cause every system tick to be classified as user input.
+**Worker input detection:** `GetLastInputInfo` and mouse position tracking run on every tick from the very first interval. `$workerLastAutomatedMouseMovement` is initialized to 5 minutes in the past so `recentAutoMove` is `false` from the start and no null-guard is needed. (`Get-TimeSinceMs` already returns `MaxValue` for `$null`, so the old null guards were never preventing a deadlock — they were only blocking legitimate input detection.)
 
 **Settings epoch guard (stale state message prevention):**
 After a viewer dialog closes, the viewer sends new settings to the worker and returns to the main loop. The pipe buffer may contain stale `state` messages (sent before the worker processed the new settings) that would overwrite the viewer's local variables with pre-change values. The epoch guard prevents this:
 - Viewer increments `$_settingsEpoch` before each settings/endtime/output send, and includes `epoch` in the message.
 - Worker captures `$_workerSettingsEpoch` from incoming commands and includes it in every outgoing `state` message.
 - Viewer state handlers check `if ($msg.epoch -lt $_settingsEpoch) { break }` to skip stale state messages. Log and stopped messages are always processed regardless of epoch.
-- The epoch is incremented at all 6 viewer send sites: `s` hotkey settings (3 messages), `m` hotkey movement settings, `t` hotkey endtime, `v`/`o` output toggle, incognito toggle, and the PendingReopenSettings path.
+- The epoch is incremented at all 6 viewer send sites: `s` hotkey settings (3 messages), `m` hotkey movement settings, `e` hotkey endtime, `v`/`o` output toggle, incognito toggle, and the PendingReopenSettings path.
 
 **Viewer main loop integration (`$_isViewerMode`):**
 When the viewer connects (via `Connect-WorkerPipe`), it sets `$_isViewerMode = $true` and falls through into the existing main loop. The main loop checks `$_isViewerMode` at key points:
@@ -137,6 +152,7 @@ Start-mJig/
 │       ├── Module Runspace Provisioner
 │       ├── Initialization Variables + box-drawing chars
 │       ├── . Private\Config\Initialize-Theme.ps1
+│       ├── . Private\Config\Set-ThemeProfile.ps1
 │       ├── . Private\Startup\Show-StartupScreen.ps1
 │       ├── . Private\Startup\Show-StartupComplete.ps1
 │       ├── . Private\Startup\Get-LatestVersionInfo.ps1
@@ -157,7 +173,7 @@ Start-mJig/
 │       ├── . Private\IPC\*.ps1                 (5 files)
 │       ├── . Private\Helpers\Get-Padding.ps1
 │       ├── . Private\Rendering\Write-Section*.ps1 + Write-SimpleField*.ps1
-│       ├── . Private\Dialogs\*.ps1             (remaining 4 dialogs)
+│       ├── . Private\Dialogs\*.ps1             (remaining 5 dialogs)
 │       ├── IPC Mode Branching
 │       ├── Main Loop (:process while)
 │       │   ├── Global Hotkey Polling (standalone only; worker handles in viewer mode)
@@ -171,7 +187,8 @@ Start-mJig/
 │
 ├── Private/
 │   ├── Config/
-│   │   ├── Initialize-Theme.ps1                Theme color variables (~230 lines)
+│   │   ├── Initialize-Theme.ps1                Theme color variables + ThemeProfiles array (~700 lines)
+│   │   ├── Set-ThemeProfile.ps1                Apply a named theme profile by name
 │   │   └── Initialize-PInvoke.ps1              C# P/Invoke types + Add-Type (~440 lines)
 │   ├── Startup/
 │   │   ├── Show-StartupScreen.ps1              Pre-VT100 "Initializing…" screen
@@ -196,7 +213,8 @@ Start-mJig/
 │   │   ├── Show-QuitConfirmationDialog.ps1     Quit confirmation (~460 lines)
 │   │   ├── Show-SettingsDialog.ps1             Settings slide-up (~490 lines)
 │   │   ├── Show-InfoDialog.ps1                 About & version (~300 lines)
-│   │   └── Show-OptionsDialog.ps1              Options sub-dialog
+│   │   ├── Show-OptionsDialog.ps1              Options sub-dialog
+│   │   └── Show-ThemeDialog.ps1                Theme selection popup (centered; cycles ThemeProfiles)
 │   ├── IPC/
 │   │   ├── Send-PipeMessage.ps1                Synchronous JSON-line write
 │   │   ├── Read-PipeMessage.ps1                Async ReadLineAsync reader
@@ -207,7 +225,7 @@ Start-mJig/
 │   │   └── Protect-PipeMessage.ps1             AES-256-CBC encrypt/decrypt helpers
 │   └── Helpers/
 │       ├── Get-SessionIdentifier.ps1           SHA256-based session identifier derivation
-│       ├── Get-SmoothMovementPath.ps1          Ease-in-out-cubic path generator
+│       ├── Get-SmoothMovementPath.ps1          Ease-in-out-cubic path generator; returns Points, TotalTimeMs, Distance, StartArcAmt/Sign, BodyCurveAmt/Sign/Type
 │       ├── Get-DirectionArrow.ps1              Movement direction arrow emoji
 │       ├── Get-CachedMethod.ps1                Reflection method cache
 │       ├── Get-MousePosition.ps1               Cursor position via GetCursorPos
@@ -291,14 +309,40 @@ These can be modified at runtime via the Modify Movement dialog. When accessing 
 - `$script:PointType` / `$script:LastInputType` / `$script:InputRecordType` / `$script:CSBIType` - String type names for `New-Object`
 - `$script:_ApiNamespace` - Randomized namespace string (e.g. `"ns_a3f7c019b2e84d01"`)
 - `$script:LogReplayBuffer` - `Queue[hashtable]` (capacity 30) in worker mode; replayed to viewer on connect
+- `$script:StatsMoveCount` — `[int]` cumulative successful moves
+- `$script:StatsSkipCount` — `[int]` cumulative skipped intervals
+- `$script:StatsCurrentStreak` — `[int]` positive = consecutive moves, negative = consecutive skips; sign resets on transition
+- `$script:StatsLongestStreak` — `[int]` highest `StatsCurrentStreak` ever reached
+- `$script:StatsTotalDistancePx` — `[double]` cumulative pixel distance across all moves
+- `$script:StatsLastMoveDist` — `[double]` distance of the most recent move
+- `$script:StatsMinMoveDist` — `[double]` smallest single-move distance seen (initialized to `[double]::MaxValue`)
+- `$script:StatsMaxMoveDist` — `[double]` largest single-move distance seen
+- `$script:StatsKbInterruptCount` — `[int]` intervals where keyboard input was detected (inline) or inferred (worker)
+- `$script:StatsMsInterruptCount` — `[int]` intervals where mouse input was detected
+- `$script:StatsScrollInterruptCount` — `[int]` intervals where scroll wheel input was detected (via `PeekConsoleInput` MOUSE_EVENT scroll flag; inline/viewer mode only; always 0 in worker mode since `GetLastInputInfo` cannot distinguish scroll from other input)
+- `$script:StatsClickInterruptCount` — `[int]` intervals where a mouse click was detected (via `PeekConsoleInput` left-button press; inline/viewer mode only; always 0 in worker mode)
+- `$script:StatsLongestCleanStreak` — `[int]` longest run of intervals with zero user input
+- `$script:StatsCleanStreak` — `[int]` current clean-interval streak (resets on any user input)
+- `$script:StatsAvgActualIntervalSecs` — `[double]` rolling average of real clock seconds between consecutive successful moves
+- `$script:StatsLastMoveTick` — `[datetime]` timestamp of the last successful move; used to compute actual intervals
+- `$script:StatsAvgDurationMs` — `[double]` rolling average of `$LastMovementDurationMs` across all moves
+- `$script:StatsMinDurationMs` — `[int]` shortest animation seen (initialized to `[int]::MaxValue`)
+- `$script:StatsMaxDurationMs` — `[int]` longest animation seen
+- `$script:StatsDirectionCounts` — `[hashtable]` keyed `N/NE/E/SE/S/SW/W/NW`, `[double]` cumulative px per direction bucket; bucketed from `Atan2(deltaY, deltaX)` angle at movement time
+- `$script:StatsLastCurveParams` — `[hashtable]` with `Distance`, `StartArcAmt`, `StartArcSign`, `BodyCurveAmt`, `BodyCurveSign`, `BodyCurveType` (0=U-curve, 1=S-curve, -1=none); populated after each `Get-SmoothMovementPath` call; used by `Write-MainFrame` to re-derive the rotated 2D path diagram at render time
 - `$_isViewerMode` - `$true` when running as a viewer connected to a background worker; controls main loop dual-mode behavior (local, not `$script:`)
 - `$_viewerPipeClient` / `$_viewerPipeReader` / `$_viewerPipeWriter` - Pipe objects for viewer IPC (local)
 - `$_viewerStopped` / `$_viewerStopReason` - Viewer stop state; reason is `'endtime'`, `'quit'`, `'disconnected'`, or `'pipe_error'`
 - `$_workerReadTask` / `$_viewerReadTask` - Pending `ReadLineAsync()` tasks for non-blocking pipe reads (local; passed as `[ref]` to `Read-PipeMessage`)
 - `$_pendingWriteFlush` - Pending `FlushAsync()` task for non-blocking state/log writes in worker (local; passed as `[ref]` to `Send-PipeMessageNonBlocking`). Reset on every viewer connect/disconnect.
+- `$workerLastSuccessMovementTime` / `$workerLastSuccessMoveDurationMs` — Worker-side variables tracking the time and planned animation duration of the most recent **successful** (non-aborted) movement. Distinct from `$workerLastMovementTime` / `$workerLastMovementDurationMs`, which are updated for all attempts including aborts and are used for interval timing. The success variables are used for `statsLastMoveSecondsAgo` / `statsLastMoveDurationMs` in the state message so the viewer's "Last Move" display only reflects completed moves.
 - `$_writeSkipCount` - Counter for consecutive state messages skipped due to pending flush (worker; used for diagnostic logging)
 - `$_settingsEpoch` - Incrementing counter on the viewer side; bumped before every settings/endtime/output send. State messages with `epoch < $_settingsEpoch` are discarded to prevent stale values from overwriting dialog changes.
 - `$_workerSettingsEpoch` - Worker-side mirror of the viewer's epoch; captured from incoming `settings`, `endtime`, and `output` commands and included in all outgoing `state` messages.
+- `$_viewerVisualState` - Worker-side hashtable tracking the last-known viewer visual state across sessions: `outputMode`, `previousView`, `windowTitle`, `titleEmoji`, `titlePresetIndex`, `activeDialog`, `activeSubDialog`. Initialized from `$script:` defaults at worker startup; updated on every `output`, `title`, and `viewerState` message; included (with `manualPause`) as `visualState` in every `welcome` message sent to a connecting viewer.
+- `$script:_PendingReopenQuit` - Viewer-side bool; set `$true` when `VisualState.activeDialog = 'quit'` on reconnect. Handled in the `$forceRedraw` block: flushes main frame, opens `Show-QuitConfirmationDialog`, processes result (quit → `break process`; cancel/NeedsRedraw → `Reset-PostDialogState`).
+- `$script:_PendingReopenInfo` - Viewer-side bool; set `$true` when `VisualState.activeDialog = 'info'` on reconnect. Handled in the `$forceRedraw` block: flushes main frame, opens `Show-InfoDialog`, sends `viewerState(activeDialog=$null)`, calls `Reset-PostDialogState`.
+- `$script:_PendingRestoreSubDialog` - Viewer-side string (`'time'|'movement'|'options'` or `$null`); set from `$pipeResult.VisualState.activeSubDialog` on connect. Consumed by the `PendingReopenSettings` path: passed as `-RestoreSubDialog` to `Show-SettingsDialog` and cleared to `$null` immediately after, so the sub-dialog only auto-opens once.
 
 ### 2. P/Invoke (Platform Invoke)
 
@@ -393,7 +437,7 @@ Each toast uses a unique AUMID (`svc_<PipeName>_<PID>_<seq>`) registered ephemer
 
 **Fallback chain in `Show-Notification`:**
 1. `$script:ToastAPI::ShowToast()` — native COM (instant, no process spawn), with ephemeral AUMID
-2. `powershell.exe` subprocess — delegates to Windows PowerShell 5.1's built-in WinRT support, same ephemeral AUMID (with 500ms delay before cleanup for async subprocess)
+2. `powershell.exe` subprocess — delegates to Windows PowerShell 5.1's built-in WinRT support, same ephemeral AUMID. The registry key is **not** deleted in a finally block; it is left alive so PS51 (which can take 800–1500ms to start on Windows 11) can read it regardless of startup time. `Remove-Notification` sweeps all `svc_<PipeName>_<PID>_1..N` keys on worker exit. No blocking sleep is used — `Start-Process` fires the subprocess and the function returns immediately (`$toastShown = $true` set optimistically; key cleaned up in catch only if `Start-Process` itself fails).
 3. `NotifyIcon.ShowBalloonTip()` — basic balloon notification (last resort)
 
 ### 3. Console TUI Rendering (VT100 Buffered)
@@ -532,9 +576,9 @@ $script:SettingsDialogBg           = "DarkBlue"
 $script:SettingsDialogBorder       = "White"
 $script:SettingsDialogTitle        = "Yellow"
 $script:SettingsDialogText         = "White"
-$script:SettingsDialogButtonBg     = "Blue"
+$script:SettingsDialogButtonBg     = "DarkCyan"
 $script:SettingsDialogButtonText   = "White"
-$script:SettingsDialogButtonHotkey = "Yellow"
+$script:SettingsDialogButtonHotkey = "Green"
 # Menu Bar: Settings Button
 $script:SettingsButtonBg                 = $script:MenuButtonBg
 $script:SettingsButtonText               = $script:MenuButtonText
@@ -575,16 +619,54 @@ $script:QuitDialogTitle = "Yellow"
 | `MenuRowBg` | Background applied **only** to the menu bar content row, with the same inset |
 | `BorderPadV` | Blank-row count above/below chrome (min 1); only innermost row gets `HeaderBg`/`FooterBg`, extras are transparent |
 | `BorderPadH` | Blank-column count left/right of every chrome row (min 1); only innermost column gets group bg |
-| `StatsBox*` | Right-side stats panel |
+| `StatsBox{Border,Title,Bg}` | Stats panel outer box (border, section title color, box background) |
+| `StatsSession{Title,Label,Value}` | Session section: title row, label text, value text |
+| `StatsMovement{Title,Label,Value}` | Movement section: title row, label text, value text |
+| `StatsPerformance{Title,Label,Value}` | Performance section: title row, label text, value text |
+| `StatsTravel{Title,Label,Value}` | Travel Distance section: title row, label text, value text |
+| `StatsSettings{Title,Label,Value}` | Settings section: title row, label text, value text |
+| `StatsInputs{Title,Label,Value}` | Detected Inputs sub-section: title, label, value |
+| `StatsCurve{Header,Line,Dots,Eq1,Eq2,Border}` | Ease curve diagram: header text, horizontal line chars, dot chars, equation line 1 & 2, box border |
+| `HeaderPauseButton` | Pause/play toggle emoji in the header right side |
+| `HeaderSeparator` | Full-width horizontal separator lines above/below the log area |
 | `QuitDialog*` / `QuitButton*` | Quit confirmation dialog and dedicated quit menu button colors |
 | `SettingsDialog*` | Settings mini-dialog (slide-up; time, movement, output toggle, debug toggle) |
+| `SettingsDialogOffFocus*` | Settings dialog colors while a sub-dialog is open |
 | `SettingsButton*` | Dedicated colors for the `(S)ettings` menu bar button; `OnClick*` defaults match `SettingsDialog*` |
+| `ThemeDialog*` | Theme selection popup dialog colors |
+| `ThemeButton*` | Dedicated colors for the `(t)heme` Settings dialog button; `OnClick*` defaults match `ThemeDialog*` |
 | `TimeDialog*` | Set end time dialog |
 | `MoveDialog*` | Modify movement dialog |
 | `Resize*` | Window resize splash screen |
 | `Text*` | General purpose colors |
 
-### 4a. Chrome Layout System (BorderPad, group bg, row bg)
+### 4a. Theme Profile System
+
+All theme variables are grouped into named profiles stored in `$script:ThemeProfiles`. Each entry is a hashtable with a `Name` string and an `Apply` scriptblock that directly assigns `$script:` theme variables via PowerShell's scope chain.
+
+**Key variables:**
+- `$script:ThemeProfiles` — array of `@{ Name = "..."; Apply = { ... } }` hashtables
+- `$script:CurrentThemeName` — name of the active theme (e.g. `"default"`, `"debug"`)
+- `$script:CurrentThemeIndex` — index of the active theme in `$script:ThemeProfiles`
+
+**`Set-ThemeProfile` function** (`Private/Config/Set-ThemeProfile.ps1`):
+- Looks up the profile by name, invokes its `Apply` scriptblock, and updates `$script:CurrentThemeName` / `$script:CurrentThemeIndex`.
+- Returns `$true` on success, `$false` if the name is not found.
+
+**Built-in profiles:**
+- `"default"` — Simple, readable design. All background colors are `$null` (transparent) except for on-click states, pop-up dialogs, and the Settings menu. `BorderPadV` and `BorderPadH` are both 1.
+- `"debug"` — Showcase theme with maximally distinct colors for all elements. Uses background colors on header, footer, menu bar, and stats box so every themed element is visually distinct. `BorderPadV = 2`, `BorderPadH = 2`.
+
+**Startup theme application order** (in `Start-mJig.psm1` after dot-sourcing `Initialize-Theme.ps1` and `Set-ThemeProfile.ps1`):
+1. `Set-ThemeProfile -Name "default"` — always applied first
+2. If `$script:DebugMode` is true: `Set-ThemeProfile -Name "debug"` overrides
+3. If the `-Theme` parameter is non-empty: `Set-ThemeProfile -Name $Theme` overrides both
+
+**Runtime theme switching:**
+- `Show-ThemeDialog` (`Private/Dialogs/Show-ThemeDialog.ps1`): centered popup accessible via the `t` hotkey or from the Settings dialog's `(t)heme` button. Displays the current theme name and cycles through profiles with `(n)ext theme`.
+- Debug toggle in `Show-OptionsDialog` auto-applies `"debug"` (enable) or `"default"` (disable) via `Set-ThemeProfile`.
+
+### 4b. Chrome Layout System (BorderPad, group bg, row bg)
 
 The chrome (header + footer strip) is rendered using a layered background model controlled by two variables:
 
@@ -619,7 +701,7 @@ The transparency is achieved by writing spaces with **no BG** (`$null` → ANSI 
 
 **`$_bpV = 1` footer blank**: Uses `Write-Buffer -NoWrap` on the last segment to prevent console scroll when writing to `Y = $HostHeight - 1`. When `$_bpH > 1`, the row is split into three segments (transparent left, group-bg centre, transparent right with NoWrap) to achieve both transparency and full background coverage.
 
-### 4b. Button Click System
+### 4c. Button Click System
 
 Menu buttons use a multi-phase click model:
 
@@ -795,6 +877,27 @@ Flush-Buffer -ClearFirst
 
 Extracted rendering function (~2953) that draws the complete main UI: header, separator, log rows, stats box, bottom separator, menu bar, and footer. Callable from any context.
 
+**Stats box middle rows** (rows 3 to `$Rows-6`, rendered when `$Output -eq "full"` and terminal is wide enough):
+
+A pre-computation block before the log loop builds `$_sbRows` (a `List[object]`) of row descriptors, with graceful degradation — lower sections are omitted if there are not enough rows. Priority order:
+
+Sections display in this priority order (each section omitted if insufficient rows remain):
+
+1. **Session:** (6 rows): "Session:" header, Running Time, Start Time, Moves/Skipped/%, Streak / Best Streak, blank.
+2. **Movement:** (5 rows, needs 13 rows remaining): "Movement:" header, Last Move dist/ms/ago, Total Dist / Avg, Range Min/Max, blank.
+3. **Travel Distance:** (3 rows, needs 10 remaining): "Travel Distance:" header, single row with `→ Npx  ← Npx  ↑ Npx  ↓ Npx  Total: Npx` (directional values aggregated from 8 direction buckets, cumulative total appended on same line), blank.
+4. **Performance:** (5 rows, needs 5 remaining): "Performance:" header, Interrupts row (`KB N  Mouse N  Click N  Scroll N`), Interval Set/Actual-avg, Animation Avg/Min/Max, blank.
+5. **Settings Snapshot** (4 rows, needs 7 remaining): "Settings:" header, Interval±/Dist±, Speed±/Resume, blank.
+6. **Last Movement's Curve** (dynamic, needs ≥8 rows remaining): header + inner bordered box with rotated 2D ASCII path diagram and 2-row mathematical equation. Diagram re-derives ~`4 × innerWidth` sample points from `$script:StatsLastCurveParams` at render time. Canvas is a `List[char[]]` pre-built in the pre-computation block; path points are `●` (U+25CF), center reference line is `─`.
+
+**Stats header:** The outer stats box header and all section title rows use a trailing colon (e.g., `Stats:`, `Session:`, `Movement:`, `Travel Distance:`, `Performance:`, `Settings:`). This was standardized for visual consistency with the `Detected Input:` section.
+
+**Interrupts display:** "Click" and "Scroll" interrupt counts are tracked separately from "Mouse" (general mouse input). In inline/viewer mode, `PeekConsoleInput` provides direct evidence for click (left-button press MOUSE_EVENT) and scroll (scroll-flag MOUSE_EVENT) events, tracked in `$script:StatsClickInterruptCount` and `$script:StatsScrollInterruptCount`. In worker mode, these counters remain 0 (worker uses `GetLastInputInfo` which cannot distinguish click from scroll). The worker sends `statsScrollInterruptCount = 0` and `statsClickInterruptCount = 0` in state messages; the viewer OR-merges with its own local counts.
+
+**Travel Distance total:** The `Total:` value is rendered on the same row as the directional distances (no separate row). The previous "Total" row has been removed.
+
+Row descriptor types: `'text'` (single padded string + fg color), `'blank'`, `'curve-header'`, `'curve-box-top'`, `'curve-diagram'` (with `rowIndex`), `'curve-eq1'`, `'curve-eq2'`, `'curve-box-bottom'`. The rendering switch emits the correct multi-segment `Write-Buffer` calls for each type, including inner curve box borders (`│`/`┌`/`└`/`┐`/`┘`) in `$script:StatsBoxBorder` color and equation text in `$script:TextMuted`/`$script:StatsBoxValue`.
+
 **Parameters:**
 - `-ClearFirst`: passes through to `Flush-Buffer -ClearFirst`
 - `-Force`: overrides `$skipConsoleUpdate` (always render)
@@ -876,23 +979,26 @@ Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minim
 
 `Show-SettingsDialog` is a slide-up mini-dialog that appears above the `(S)ettings` menu button. It is the consolidated entry point for time, movement, output mode, and debug mode configuration. Accepts `[switch]$DeferFlush` — when set, the initial draw uses `Flush-Buffer -ClearFirst` instead of `Flush-Buffer`, allowing the caller to pre-buffer the main frame so everything flushes atomically in one write.
 
-**Layout (15 rows, height = 14):**
+**Layout (13 rows, height = 12):**
 ```
 0: top border    1: title    2: divider    3: blank
-4: [⏳|(t)ime]   5: blank    6: [🛠|(m)ovement]    7: blank
+4: [⏳|(e)nd Time]   5: blank    6: [🛠|(m)ovement]    7: blank
 8: [⚙|(o)ptions]  (opens sub-dialog)   9: blank
-10: [🎨|(t)heme]   (placeholder, no-op) 11: blank
-12: [💻|output: Full/Min]  (inline toggle)   13: blank   14: bottom border
+10: [🎨|(t)heme]   (opens Show-ThemeDialog)   11: blank
+12: bottom border
 ```
 
 **Key behaviors:**
 - **Slide-up animation**: Animates from behind the separator/menu bar. Can be skipped via `[bool]$SkipAnimation = $false` parameter.
-- **Onfocus / offfocus**: While a sub-dialog (time or movement) is open, the dialog dims; returns to onfocus on sub-dialog close.
-- **Sub-dialog background cleanup**: When time or movement sub-dialog closes, `Show-SettingsDialog` breaks out with `ReopenSettings = $true`. The caller sets `$script:PendingReopenSettings = $true`. On the next `$forceRedraw`, the main loop buffers the main frame with `Write-MainFrame -Force -NoFlush`, then calls `Show-SettingsDialog -SkipAnimation -DeferFlush`. Settings adds its content to the existing buffer and calls `Flush-Buffer -ClearFirst` — one atomic write paints main frame + settings with no visible blank gap.
-- **Inline output toggle** (`o`): Cycles `$script:Output` between `"full"` and `"min"` immediately, redraws the row, stays in the settings loop. No sub-dialog or screen repaint needed.
-- **Inline debug toggle** (`d`): Toggles `$script:DebugMode`, redraws the row, stays in the settings loop.
+- **Onfocus / offfocus**: While a sub-dialog (time, movement, options, or theme) is open, the dialog dims; returns to onfocus on sub-dialog close.
+- **Sub-dialog background cleanup**: When any sub-dialog closes, `Show-SettingsDialog` breaks out with `ReopenSettings = $true`. The caller sets `$script:PendingReopenSettings = $true`. On the next `$forceRedraw`, the main loop buffers the main frame with `Write-MainFrame -Force -NoFlush`, then calls `Show-SettingsDialog -SkipAnimation -DeferFlush`. Settings adds its content to the existing buffer and calls `Flush-Buffer -ClearFirst` — one atomic write paints main frame + settings with no visible blank gap.
+- **Sub-dialog restore on reconnect** (`-RestoreSubDialog`, `-ViewerPipeWriter`): `Show-SettingsDialog` accepts a `-RestoreSubDialog [string]` parameter (`'time'|'movement'|'options'` or empty). When set, a `$_pendingSubDialogKey` is primed after initial render; the first input-loop iteration consumes it, triggering the sub-dialog as if the user pressed the key. Before each sub-dialog invocation, the `-ViewerPipeWriter [System.IO.StreamWriter]` parameter is used to send `viewerState(activeDialog='settings', activeSubDialog=...)` to the worker; after the sub-dialog returns, `viewerState(activeDialog='settings', activeSubDialog=$null)` clears it. The `$_stgRestoreSub` value is consumed from `$script:_PendingRestoreSubDialog` and cleared at the `PendingReopenSettings` call site so it only fires on the first reopen.
+- **`(e)nd Time`** (`e`): Opens `Show-TimeChangeDialog` as a sub-dialog. Settings goes offfocus while it is open.
+- **`(m)ovement`** (`m`): Opens `Show-MovementModifyDialog` as a sub-dialog.
+- **`(o)ptions`** (`o`): Opens `Show-OptionsDialog` as a sub-dialog (output mode, debug, notifications, window title).
+- **`(t)heme`** (`t`): Opens `Show-ThemeDialog` as a sub-dialog (theme cycling with Apply/Cancel).
 - **Re-click to close**: Clicking the `(S)ettings` menu button while settings is visible closes the dialog.
-- **Returns**: `@{ NeedsRedraw = $bool; ReopenSettings = $bool }`
+- **Returns**: `@{ NeedsRedraw = $bool; ReopenSettings = $bool; TitleChanged = $bool }`
 
 **Output / debug rows use full inner-row click detection** — `$outputButtonStartX/EndX` and `$debugButtonStartX/EndX` span the entire inner width (`$dialogX + 1` to `$dialogX + $dialogWidth - 2`). Pads are computed dynamically at render time based on current `$script:Output` / `$script:DebugMode`.
 
@@ -906,22 +1012,50 @@ Incognito mode (`$Output = "hidden"`) suppresses all UI rendering except a minim
 
 ### 8b. Options Dialog
 
-`Show-OptionsDialog` is a sub-dialog opened from the Settings dialog via the `(o)ptions` button. It provides advanced configuration options.
+`Show-OptionsDialog` is a sub-dialog opened from the Settings dialog via the `(o)ptions` button. It provides advanced configuration options. Width = 36, height = 14.
 
 **Layout:**
 ```
 0: top border    1: title ("Options")    2: divider    3: blank
-4: [🔍|(d)ebug: On/Off]       (inline checkbox)    5: blank
-6: [🔔|(n)otifications: On/Off]  (inline checkbox)  7: blank
-8: bottom border
+4: [💻|(o)utput: Full/Min]    (inline toggle)    5: blank
+6: [🔍|(d)ebug: On/Off]       (inline toggle)    7: blank
+8: [🔔|(n)otifications: On/Off]  (inline toggle)  9: blank
+10: [🏷|(w)indow: <title>]    (inline cycle)     11: blank
+12: [✅|(a)pply]  [❌|(c)ancel]                  13: blank
+14: bottom border
 ```
 
 **Key behaviors:**
 - **Opened from Settings**: When the user presses `o` in the Settings dialog, Settings enters offfocus mode and `Show-OptionsDialog` is invoked.
-- **Inline debug toggle** (`d`): Toggles `$script:DebugMode`, redraws the row, stays in the options loop.
-- **Inline notifications toggle** (`n`): Toggles `$script:NotificationsEnabled`, redraws the row, stays in the options loop.
-- **Close**: Escape or clicking outside closes the dialog and returns to Settings.
-- **Returns**: `@{ NeedsRedraw = $bool; ReopenSettings = $bool }`
+- **Inline output toggle** (`o`): Toggles `$script:Output` between `"full"` and `"min"`, adds a log entry, redraws the row.
+- **Inline debug toggle** (`d`): Toggles `$script:DebugMode` (also calls `Set-ThemeProfile`), adds a log entry, redraws the row.
+- **Inline notifications toggle** (`n`): Toggles `$script:NotificationsEnabled`, adds a log entry, redraws the row.
+- **Window title cycle** (`w`): Cycles `$script:TitlePresetIndex` / `$script:WindowTitle` / `$script:TitleEmoji` through `$script:TitlePresets`, adds a log entry, redraws the row.
+- **Apply** (`a` or Enter): Closes the dialog and keeps all changes made during the session.
+- **Cancel** (`c`, Escape, or click outside): Reverts all changes made during the session back to pre-dialog values (including calling `Set-ThemeProfile` to restore the original debug-mode theme if changed). Sets `$needsRedraw = $true` if any variable was actually reverted. Does not add revert log entries.
+- **Initial state**: All four toggleable values (`$script:Output`, `$script:DebugMode`, `$script:NotificationsEnabled`, `$script:TitlePresetIndex` / `$script:WindowTitle` / `$script:TitleEmoji`) are captured at dialog open for Cancel revert.
+- **Returns**: `@{ NeedsRedraw = $bool; TitleChanged = $bool }`
+
+### 8c. Theme Dialog
+
+`Show-ThemeDialog` is a sub-dialog opened from the Settings dialog via the `(t)heme` button. It provides live theme cycling with Apply/Cancel confirmation. Width = 32, height = 9.
+
+**Layout:**
+```
+0: top border    1: title ("Theme")    2: divider    3: blank
+4: <current theme name, centered>                   5: blank
+6: [🎨|(n)ext theme]                                7: blank
+8: [✅|(a)pply]  [❌|(c)ancel]
+9: bottom border
+```
+
+**Key behaviors:**
+- **Opened from Settings**: When the user presses `t` in the Settings dialog, Settings enters offfocus mode and `Show-ThemeDialog` is invoked. The current theme name is saved (`$initialThemeName`, `$initialThemeIndex`) at dialog open for Cancel revert.
+- **Next theme** (`n` or clicking the next-theme button): Cycles `$script:CurrentThemeIndex` forward, calls `Set-ThemeProfile` with the new name, and redraws only row 4 (the theme name). All changes take effect immediately for live preview.
+- **Apply** (`a`, Enter, or clicking the Apply button): Closes the dialog and keeps the current theme.
+- **Cancel** (`c`, Escape, clicking outside, or clicking the Cancel button): If the theme changed during the session, calls `Set-ThemeProfile -Name $initialThemeName` to revert to the original theme, sets `$needsRedraw = $true`. If no change occurred, closes cleanly with no redraw.
+- **`$script:DialogButtonBounds`**: Set to `updateStartX/EndX` = apply button, `cancelStartX/EndX` = cancel button, `buttonRowY` = row 8. Cleared in `Invoke-DialogCleanup` after dialog closes.
+- **Returns**: `@{ NeedsRedraw = $bool }`
 
 ### 9. Menu Item Bounds Tracking & Click Detection
 
@@ -1116,7 +1250,7 @@ for ($i = 1; $i -lt $movementPoints.Count; $i++) {
 - **Viewer mode**: does NOT poll hotkeys — the worker's 50ms tick loop provides much faster detection than the viewer's multi-second main loop. The viewer receives hotkey state changes from the worker via pipe messages (`'togglePause'` and `'stopped'`).
 
 **Windows toast notifications** (`Show-Notification` / `Remove-Notification` in `Private/Helpers/Show-Notification.ps1`):
-- Primary path uses the native `$script:ToastAPI::ShowToast()` COM interop with an ephemeral custom AUMID (see section 2b). A 50ms sleep after `ShowToast` keeps the registry key alive long enough for the toast system to read it.
+- Primary path uses the native `$script:ToastAPI::ShowToast()` COM interop with an ephemeral custom AUMID (see section 2b). A 50ms sleep after `ShowToast` keeps the registry key alive long enough for the toast system to read it. **Tier 1 crash guard:** `$script:_Tier1NotifyFailed` is set to `$true` immediately before `ShowToast` and cleared to `$false` on success. If any uncatchable exception (e.g. `AccessViolationException` from a COM vtable mismatch) escapes the inner try/catch, the flag stays set and all subsequent Show-Notification calls skip Tier 1 for the session, falling through to Tier 2. The outer catch and the toggle handler's catch also set the flag as backstops.
 - **Parameters:** `-Body` (mandatory string — short action description, e.g. `"Paused"`) and `-Action` (mandatory ValidateSet — selects the action icon image). The `-Title` parameter was removed; app identity is carried entirely by the AUMID `DisplayName` so there is no redundant title line in the notification.
 - **Per-action icons:** The `-Action` parameter (mandatory, ValidateSet) selects an action-specific emoji for the toast `appLogoOverride` image. Action icons are rendered once and cached in `$script:_ActionIconCache` as `mjig_notify_<action>.png` in temp.
 - Action-to-emoji mapping: `started` = U+1F680 (rocket), `paused` = U+23F8 (pause), `resumed` = U+25B6 (play), `quit` = U+1F6D1 (stop sign), `disconnected` = U+1F50C (plug), `endtime` = U+23F0 (alarm clock).
@@ -1161,6 +1295,7 @@ for ($i = 1; $i -lt $movementPoints.Count; $i++) {
 - `$script:_TrayIconPath` — `[string]` path to the last-rendered title emoji PNG (also used as AUMID `IconUri`)
 - `$script:_ActionIconCache` — hashtable mapping action name to cached PNG path (per-action toast icons)
 - `$script:_NotifyAumidSeq` — incrementing counter for unique per-toast AUMID strings
+- `$script:_Tier1NotifyFailed` — `$true` if the native COM `ShowToast` call (Tier 1) has ever thrown an uncaught exception; causes all subsequent calls to skip Tier 1 and go directly to Tier 2. Set as a pre-call guard before `ShowToast`, cleared to `$false` on success, and set as a backstop in both the Show-Notification outer catch and the tray toggle handler's catch.
 - `$script:PauseEmoji` / `$script:PlayEmoji` — cached ⏸/▶ characters (avoid recomputation)
 - `$script:ModeLabelBounds` — click region for "Full"/"Min" label
 
@@ -1577,10 +1712,10 @@ Windows Terminal has a setting "Automatically adjust lightness of indistinguisha
 |------|---------|
 | `Start-mJig/Start-mJig.psm1` | Module skeleton — `Start-mJig` function, provisioner, init, main loop (~3,000 lines) |
 | `Start-mJig/Start-mJig.psd1` | Module manifest — version, GUID, exports, `RequiredAssemblies` |
-| `Start-mJig/Private/Config/` | Theme colors (`Initialize-Theme.ps1`) and P/Invoke types (`Initialize-PInvoke.ps1`) |
+| `Start-mJig/Private/Config/` | Theme colors + ThemeProfiles (`Initialize-Theme.ps1`), theme applicator (`Set-ThemeProfile.ps1`), and P/Invoke types (`Initialize-PInvoke.ps1`) |
 | `Start-mJig/Private/Startup/` | `Show-StartupScreen.ps1`, `Show-StartupComplete.ps1`, `Get-LatestVersionInfo.ps1` |
 | `Start-mJig/Private/Rendering/` | Buffered rendering functions (11 files: `Write-Buffer`, `Flush-Buffer`, `Write-MainFrame`, etc.) |
-| `Start-mJig/Private/Dialogs/` | All 5 dialog functions (`Show-TimeChangeDialog`, `Show-MovementModifyDialog`, etc.) |
+| `Start-mJig/Private/Dialogs/` | All 6 dialog functions (`Show-TimeChangeDialog`, `Show-MovementModifyDialog`, `Show-SettingsDialog`, `Show-OptionsDialog`, `Show-InfoDialog`, `Show-ThemeDialog`) |
 | `Start-mJig/Private/IPC/` | IPC helpers + worker loop (5 files: `Send-PipeMessage`, `Start-WorkerLoop`, etc.) |
 | `Start-mJig/Private/Helpers/` | Utility functions (19 files: `Get-MousePosition`, `Invoke-ResizeHandler`, `Show-DiagnosticFiles`, `Add-DebugLogEntry`, `Get-DialogButtonLayout`, `Get-DialogMouseClick`, `Read-DialogKeyInput`, `Invoke-DialogCleanup`, `Reset-PostDialogState`, etc.) |
 | `Start-mJig/Build/Build-Module.ps1` | Build script — combines skeleton + Private/ files into single `.psm1` in `dist/` |
@@ -1680,7 +1815,8 @@ Functions are in individual `.ps1` files under `Start-mJig/Private/`. The skelet
 | Parameters | `Start-mJig.psm1` (top of function) |
 | Module Runspace Provisioner | `Start-mJig.psm1` |
 | Initialization Variables | `Start-mJig.psm1` |
-| Theme Colors | `Private/Config/Initialize-Theme.ps1` |
+| Theme Colors + ThemeProfiles | `Private/Config/Initialize-Theme.ps1` |
+| Set-ThemeProfile | `Private/Config/Set-ThemeProfile.ps1` |
 | P/Invoke Types (mJiggAPI) | `Private/Config/Initialize-PInvoke.ps1` |
 | Show-StartupScreen | `Private/Startup/Show-StartupScreen.ps1` |
 | Show-StartupComplete | `Private/Startup/Show-StartupComplete.ps1` |
@@ -1721,10 +1857,11 @@ Functions are in individual `.ps1` files under `Start-mJig/Private/`. The skelet
 | Show-SettingsDialog | `Private/Dialogs/Show-SettingsDialog.ps1` |
 | Show-OptionsDialog | `Private/Dialogs/Show-OptionsDialog.ps1` |
 | Show-InfoDialog | `Private/Dialogs/Show-InfoDialog.ps1` |
+| Show-ThemeDialog | `Private/Dialogs/Show-ThemeDialog.ps1` |
 | Mutex check / Console setup | `Start-mJig.psm1` |
 | End Time Calculation | `Start-mJig.psm1` |
 | IPC Mode Branching | `Start-mJig.psm1` |
 | Main Loop (:process while) | `Start-mJig.psm1` |
 | Build Script | `Build/Build-Module.ps1` |
 
-*Note: All paths are relative to `Start-mJig/`. Last verified: 2026-03-15.*
+*Note: All paths are relative to `Start-mJig/`. Last verified: 2026-03-15. Stats box content, `$script:Stats*` tracking variables, curve diagram, theme profile system, and Show-ThemeDialog added 2026-03-15.*

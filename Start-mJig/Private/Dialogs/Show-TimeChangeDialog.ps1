@@ -107,7 +107,7 @@ $bottomLinePadding = $dialogWidth - (19 + 2 * $dialogParenOffset + 2 * $dialogIc
 		$closingParen = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
 		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
 	Write-Buffer -Text "a" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-	Write-Buffer -Text "$closingParenpply" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+	Write-Buffer -Text "$($closingParen)pply" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 		if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 		Write-Buffer -Text "  " -BG $script:TimeDialogBg
 		if ($script:DialogButtonShowBrackets) {
@@ -122,7 +122,7 @@ $bottomLinePadding = $dialogWidth - (19 + 2 * $dialogParenOffset + 2 * $dialogIc
 		}
 		if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
 		Write-Buffer -Text "c" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-		Write-Buffer -Text "$closingParenancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+		Write-Buffer -Text "$($closingParen)ancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 		if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 		Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:TimeDialogBg
 		Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg
@@ -255,7 +255,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dialogBracketWidth + $dialogIconWid
 				$closingParen = if ($script:DialogButtonShowHotkeyParens) { ")" } else { "" }
 				if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
 	Write-Buffer -Text "a" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-	Write-Buffer -Text "$closingParenpply" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+	Write-Buffer -Text "$($closingParen)pply" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 				if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 				Write-Buffer -Text "  " -BG $script:TimeDialogBg
 				if ($script:DialogButtonShowBrackets) {
@@ -270,7 +270,7 @@ $cancelButtonEndX   = $cancelButtonStartX + $dialogBracketWidth + $dialogIconWid
 				}
 				if ($script:DialogButtonShowHotkeyParens) { Write-Buffer -Text "(" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg }
 				Write-Buffer -Text "c" -FG $script:TimeDialogButtonHotkey -BG $script:TimeDialogButtonBg
-				Write-Buffer -Text "$closingParenancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
+				Write-Buffer -Text "$($closingParen)ancel" -FG $script:TimeDialogButtonText -BG $script:TimeDialogButtonBg
 				if ($script:DialogButtonShowBrackets) { Write-Buffer -Text "]" -FG $script:DialogButtonBracketFg -BG $script:DialogButtonBracketBg }
 				Write-Buffer -Text (" " * $bottomLinePadding) -BG $script:TimeDialogBg
 				Write-Buffer -Text "$($script:BoxVertical)" -FG $script:TimeDialogBorder -BG $script:TimeDialogBg

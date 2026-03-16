@@ -3,7 +3,8 @@
 		[switch]$ClearFirst,
 		[switch]$Force,
 		[switch]$NoFlush,
-		$Date = $null
+		$Date = $null,
+		[double]$CurveRevealFraction = -1.0
 	)
 
 		# Compute UI dimensions fresh (allows calling from any context)
@@ -125,9 +126,9 @@
 		# Render pause/resume symbol (clickable) then separator + mode label (clickable)
 	$pauseBtnStartX = $curX
 	if ($script:ManualPause) {
-		Write-Buffer -X $pauseBtnStartX -Y $Outputline -Text $script:PlayEmoji -FG 'White' -BG $_hrBg -Wide
+		Write-Buffer -X $pauseBtnStartX -Y $Outputline -Text $script:PlayEmoji -FG $script:HeaderPauseButton -BG $_hrBg -Wide
 	} else {
-		Write-Buffer -X $pauseBtnStartX -Y $Outputline -Text $script:PauseEmoji -FG 'White' -BG $_hrBg
+		Write-Buffer -X $pauseBtnStartX -Y $Outputline -Text $script:PauseEmoji -FG $script:HeaderPauseButton -BG $_hrBg
 	}
 	Write-Buffer -X ($pauseBtnStartX + 2) -Y $Outputline -Text " $($script:MenuButtonSeparator) " -FG $script:MenuButtonSeparatorFg -BG $_hrBg
 	$modeLabelStartX = $pauseBtnStartX + 2 + 1 + $script:MenuButtonSeparator.Length + 1
@@ -170,7 +171,7 @@
 			if (-not $skipConsoleUpdate) {
 			# Calculate view-dependent variables INSIDE the skip check to ensure they use current $Output value
 			# This prevents stale view calculations when console updates resume after mouse movement
-			$boxWidth = 50  # Width for stats box
+			$boxWidth = 60  # Width for stats box
 			$boxPadding = 2  # Padding around box (1 space on each side)
 			$verticalSeparatorWidth = 3  # " $($script:BoxVertical) " = 3 characters
 		$showStatsBox = ($Output -eq "full" -and $HostWidth -ge ($boxWidth + $boxPadding + $verticalSeparatorWidth + 50 + 2 * $_bpH))  # Need at least 50 chars for logs + padding
@@ -207,8 +208,302 @@
 					}
 				}
 				
-				for ($i = 0; $i -lt $Rows; $i++) {
-				$rowY = $Outputline + $i
+			# ---- Pre-compute stats box middle rows (rows 3 to $Rows-6) ------------------
+			$_sbRows    = $null   # List[object] of row descriptors
+			$_sbCurveCanvas    = $null   # List[char[]] — pre-rendered curve diagram rows
+			$_sbCurveCenterRow = -1      # center row index inside the canvas
+			$_sbCurveInnerW    = $boxWidth - 7   # 43 for boxWidth=50 (1 space + border + content + border + 2 spaces)
+			$_sbCurveEq1       = ""
+			$_sbCurveEq2       = ""
+			$_sbDiagramRows    = 0
+
+			if ($showStatsBox) {
+				$_sbMiddleStart = 3
+				$_sbMiddleEnd   = $Rows - 6
+				$_sbAvail       = $_sbMiddleEnd - $_sbMiddleStart + 1
+
+				if ($_sbAvail -gt 0) {
+					$_sbRows = [System.Collections.Generic.List[object]]::new()
+
+				# Section 1 — Session (6 rows, always shown first)
+			if ($_sbAvail -ge 6) {
+				$null = $_sbRows.Add(@{ type='text'; text=" Session"; fg=$script:StatsSessionTitle })
+				if ($script:StatsRunningTimeStr -ne "") {
+					$_rtStr = $script:StatsRunningTimeStr
+				} else {
+					$_rt = (Get-Date) - $ScriptStartTime
+					$_rtStr = "$([int][math]::Floor($_rt.TotalHours))h $($_rt.Minutes.ToString('D2'))m $($_rt.Seconds.ToString('D2'))s"
+				}
+				$null = $_sbRows.Add(@{ type='segments'; segments=@(
+					@{ text=" Running Time:"; fg=$script:StatsSessionLabel },
+					@{ text=" $_rtStr";       fg=$script:StatsSessionValue }
+				)})
+				$null = $_sbRows.Add(@{ type='segments'; segments=@(
+					@{ text=" Start Time:"; fg=$script:StatsSessionLabel },
+					@{ text=" $($ScriptStartTime.ToString('HH:mm:ss'))"; fg=$script:StatsSessionValue }
+				)})
+				$_sbTotal = $script:StatsMoveCount + $script:StatsSkipCount
+				$_sbPct   = if ($_sbTotal -gt 0) { [int]($script:StatsMoveCount * 100 / $_sbTotal) } else { 0 }
+				$null = $_sbRows.Add(@{ type='segments'; segments=@(
+					@{ text=" Moves:";    fg=$script:StatsSessionLabel },
+					@{ text=" $($script:StatsMoveCount)"; fg=$script:StatsSessionValue },
+					@{ text="  Skipped:"; fg=$script:StatsSessionLabel },
+					@{ text=" $($script:StatsSkipCount)"; fg=$script:StatsSessionValue },
+					@{ text="  (${_sbPct}%)"; fg=$script:StatsSessionValue }
+				)})
+				$_sbStrSign = if ($script:StatsCurrentStreak -ge 0) { "+" } else { "" }
+				$null = $_sbRows.Add(@{ type='segments'; segments=@(
+					@{ text=" Streak:"; fg=$script:StatsSessionLabel },
+					@{ text=" ${_sbStrSign}$($script:StatsCurrentStreak)"; fg=$script:StatsSessionValue },
+					@{ text="  Best:"; fg=$script:StatsSessionLabel },
+					@{ text=" +$($script:StatsLongestStreak)"; fg=$script:StatsSessionValue }
+				)})
+				$null = $_sbRows.Add(@{ type='blank' })
+			}
+
+		# Section 2 — Movement (5 rows)
+		if (($_sbAvail - $_sbRows.Count) -ge 5) {
+				$null = $_sbRows.Add(@{ type='text'; text=" Movement"; fg=$script:StatsMovementTitle })
+				if ($null -ne $LastMovementTime -and $script:StatsMoveCount -gt 0) {
+					$_sbSince = [int]((Get-Date) - $LastMovementTime).TotalSeconds
+					$_sbSinceStr = if ($_sbSince -lt 60) { "${_sbSince}s ago" } elseif ($_sbSince -lt 3600) { "$([int]($_sbSince/60))m ago" } else { "$([int]($_sbSince/3600))h ago" }
+					$_sbAvgDist = if ($script:StatsMoveCount -gt 0) { [int]($script:StatsTotalDistancePx / $script:StatsMoveCount) } else { 0 }
+					$null = $_sbRows.Add(@{ type='segments'; segments=@(
+						@{ text=" Last Move:"; fg=$script:StatsMovementLabel },
+						@{ text=" $([int]$script:StatsLastMoveDist)px"; fg=$script:StatsMovementValue },
+						@{ text="  $([int]$LastMovementDurationMs)ms"; fg=$script:StatsMovementValue },
+						@{ text="  $_sbSinceStr"; fg=$script:StatsMovementValue }
+					)})
+					$null = $_sbRows.Add(@{ type='segments'; segments=@(
+						@{ text=" Total Dist:"; fg=$script:StatsMovementLabel },
+						@{ text=" $([int]$script:StatsTotalDistancePx)px"; fg=$script:StatsMovementValue },
+						@{ text="  Avg:"; fg=$script:StatsMovementLabel },
+						@{ text=" ${_sbAvgDist}px"; fg=$script:StatsMovementValue }
+					)})
+					$_sbMinD = if ($script:StatsMinMoveDist -lt [double]::MaxValue) { [int]$script:StatsMinMoveDist } else { 0 }
+					$null = $_sbRows.Add(@{ type='segments'; segments=@(
+						@{ text=" Range: Min"; fg=$script:StatsMovementLabel },
+						@{ text=" ${_sbMinD}px"; fg=$script:StatsMovementValue },
+						@{ text="  Max"; fg=$script:StatsMovementLabel },
+						@{ text=" $([int]$script:StatsMaxMoveDist)px"; fg=$script:StatsMovementValue }
+					)})
+				} else {
+					$null = $_sbRows.Add(@{ type='segments'; segments=@(
+						@{ text=" Last Move:"; fg=$script:StatsMovementLabel },
+						@{ text=" $([char]0x2014)"; fg=$script:TextMuted }
+					)})
+					$null = $_sbRows.Add(@{ type='segments'; segments=@(
+						@{ text=" Total Dist:"; fg=$script:StatsMovementLabel },
+						@{ text=" 0px"; fg=$script:StatsMovementValue },
+						@{ text="  Avg:"; fg=$script:StatsMovementLabel },
+						@{ text=" 0px"; fg=$script:StatsMovementValue }
+					)})
+					$null = $_sbRows.Add(@{ type='segments'; segments=@(
+						@{ text=" Range:"; fg=$script:StatsMovementLabel },
+						@{ text=" $([char]0x2014)"; fg=$script:TextMuted }
+					)})
+				}
+				$null = $_sbRows.Add(@{ type='blank' })
+			}
+
+		# Section 3 — Performance (5 rows)
+		if (($_sbAvail - $_sbRows.Count) -ge 5) {
+				$null = $_sbRows.Add(@{ type='text'; text=" Performance"; fg=$script:StatsPerformanceTitle })
+				$_sbAvgInt = if ($script:StatsAvgActualIntervalSecs -gt 0) { "$([math]::Round($script:StatsAvgActualIntervalSecs,1))s" } else { "$([char]0x2014)" }
+			$null = $_sbRows.Add(@{ type='segments'; segments=@(
+				@{ text=" Interrupts: KB"; fg=$script:StatsPerformanceLabel },
+				@{ text=" $($script:StatsKbInterruptCount)"; fg=$script:StatsPerformanceValue },
+				@{ text="  Mouse"; fg=$script:StatsPerformanceLabel },
+				@{ text=" $($script:StatsMsInterruptCount)"; fg=$script:StatsPerformanceValue },
+				@{ text="  Clean best"; fg=$script:StatsPerformanceLabel },
+				@{ text=" $($script:StatsLongestCleanStreak)"; fg=$script:StatsPerformanceValue }
+			)})
+			$null = $_sbRows.Add(@{ type='segments'; segments=@(
+				@{ text=" Interval: Set"; fg=$script:StatsPerformanceLabel },
+				@{ text=" $([math]::Round($script:IntervalSeconds,1))s"; fg=$script:StatsPerformanceValue },
+				@{ text="  Actual avg"; fg=$script:StatsPerformanceLabel },
+				@{ text=" $_sbAvgInt"; fg=$script:StatsPerformanceValue }
+			)})
+			$_sbAvgDur = if ($script:StatsAvgDurationMs -gt 0) { "$([int]$script:StatsAvgDurationMs)ms" } else { "$([char]0x2014)" }
+			$_sbMinDur = if ($script:StatsMinDurationMs -lt [int]::MaxValue) { "$($script:StatsMinDurationMs)ms" } else { "$([char]0x2014)" }
+			$null = $_sbRows.Add(@{ type='segments'; segments=@(
+				@{ text=" Animation: Avg"; fg=$script:StatsPerformanceLabel },
+				@{ text=" $_sbAvgDur"; fg=$script:StatsPerformanceValue },
+				@{ text="  Min"; fg=$script:StatsPerformanceLabel },
+				@{ text=" $_sbMinDur"; fg=$script:StatsPerformanceValue },
+				@{ text="  Max"; fg=$script:StatsPerformanceLabel },
+				@{ text=" $($script:StatsMaxDurationMs)ms"; fg=$script:StatsPerformanceValue }
+			)})
+			$null = $_sbRows.Add(@{ type='blank' })
+			}
+
+		# Section 4 — Travel Distance (4 rows)
+		if (($_sbAvail - $_sbRows.Count) -ge 4) {
+				$_dc = $script:StatsDirectionCounts
+				$_dcRight = [int]($_dc.E + $_dc.NE + $_dc.SE)
+				$_dcLeft  = [int]($_dc.W + $_dc.NW + $_dc.SW)
+				$_dcUp    = [int]($_dc.N + $_dc.NE + $_dc.NW)
+				$_dcDown  = [int]($_dc.S + $_dc.SE + $_dc.SW)
+				$null = $_sbRows.Add(@{ type='text'; text=" Travel Distance"; fg=$script:StatsTravelTitle })
+				$null = $_sbRows.Add(@{ type='segments'; segments=@(
+					@{ text=" $([char]0x2192)"; fg=$script:StatsTravelLabel },
+					@{ text=" ${_dcRight}px"; fg=$script:StatsTravelValue },
+					@{ text="  $([char]0x2190)"; fg=$script:StatsTravelLabel },
+					@{ text=" ${_dcLeft}px"; fg=$script:StatsTravelValue },
+					@{ text="  $([char]0x2191)"; fg=$script:StatsTravelLabel },
+					@{ text=" ${_dcUp}px"; fg=$script:StatsTravelValue },
+					@{ text="  $([char]0x2193)"; fg=$script:StatsTravelLabel },
+					@{ text=" ${_dcDown}px"; fg=$script:StatsTravelValue }
+				)})
+				$null = $_sbRows.Add(@{ type='segments'; segments=@(
+					@{ text=" Total:"; fg=$script:StatsTravelLabel },
+					@{ text=" $([int]$script:StatsTotalDistancePx)px"; fg=$script:StatsTravelValue }
+				)})
+				$null = $_sbRows.Add(@{ type='blank' })
+			}
+
+			# Section 5 — Settings Snapshot (4 rows)
+			if (($_sbAvail - $_sbRows.Count) -ge 4) {
+					$_sbResumeStr = if ($script:AutoResumeDelaySeconds -gt 0) { "$([math]::Round($script:AutoResumeDelaySeconds,1))s" } else { "No resume" }
+					$null = $_sbRows.Add(@{ type='text'; text=" Settings"; fg=$script:StatsSettingsTitle })
+					$null = $_sbRows.Add(@{ type='segments'; segments=@(
+						@{ text=" Interval:"; fg=$script:StatsSettingsLabel },
+						@{ text=" $([math]::Round($script:IntervalSeconds,1)) $([char]0x00B1)$([math]::Round($script:IntervalVariance,1))s"; fg=$script:StatsSettingsValue },
+						@{ text="  Dist:"; fg=$script:StatsSettingsLabel },
+						@{ text=" $([int]$script:TravelDistance) $([char]0x00B1)$([int]$script:TravelVariance)px"; fg=$script:StatsSettingsValue }
+					)})
+					$null = $_sbRows.Add(@{ type='segments'; segments=@(
+						@{ text=" Speed:"; fg=$script:StatsSettingsLabel },
+						@{ text=" $([math]::Round($script:MoveSpeed,1)) $([char]0x00B1)$([math]::Round($script:MoveVariance,2))s"; fg=$script:StatsSettingsValue },
+						@{ text="  Resume:"; fg=$script:StatsSettingsLabel },
+						@{ text=" $_sbResumeStr"; fg=$script:StatsSettingsValue }
+					)})
+					$null = $_sbRows.Add(@{ type='blank' })
+				}
+
+				# Curve section — fixed height (1 header + 1 top + 10 diagram + 2 eq + 1 bottom = 15); first section removed when space is tight
+				$_sbCurveFixedHeight = 15
+				if (($_sbAvail - $_sbRows.Count) -ge $_sbCurveFixedHeight) {
+						# Build equation strings
+						$_sbCurveEq1 = " ease(t) = 4t$([char]0x00B3)  /  1$([char]0x2212)(2$([char]0x2212)2t)$([char]0x00B3)/2"
+						if ($null -ne $script:StatsLastCurveParams -and $script:StatsLastCurveParams.Distance -gt 0) {
+							$_sbCp = $script:StatsLastCurveParams
+							$_sbEqParts = @()
+							if ($_sbCp.StartArcAmt -gt 0) {
+								$_sbArcPct  = [int]($_sbCp.StartArcAmt / $_sbCp.Distance * 100)
+								$_sbArcSign = if ($_sbCp.StartArcSign -eq 1) { "" } else { "$([char]0x2212)" }
+								$_sbEqParts += "${_sbArcSign}D$([char]0x00B7)${_sbArcPct}%$([char]0x00B7)sin($([char]0x03C0)t/0.3)"
+							}
+							if ($_sbCp.BodyCurveAmt -gt 0) {
+								$_sbBdyPct  = [int]($_sbCp.BodyCurveAmt / $_sbCp.Distance * 100)
+								$_sbBdySign = if ($_sbCp.BodyCurveSign -eq 1) { "" } else { "$([char]0x2212)" }
+							$_sbBdyType = if ($_sbCp.BodyCurveType -eq 0) {
+								"sin$([char]0x00B2)($([char]0x03C0)t)"
+							} else {
+								"sin(2$([char]0x03C0)t)$([char]0x00B7)sin($([char]0x03C0)t)"
+							}
+								$_sbEqParts += "${_sbBdySign}D$([char]0x00B7)${_sbBdyPct}%$([char]0x00B7)${_sbBdyType}"
+							}
+							$_sbCurveEq2 = if ($_sbEqParts.Count -gt 0) { " L(t) = $($_sbEqParts -join '  ')" } else { " L(t) = 0" }
+						} else {
+							$_sbCurveEq2 = " L(t) = $([char]0x2014)"
+						}
+
+					# Canvas dimensions: fixed total height; 10 diagram rows (header + top + 10 + eq1 + eq2 + bottom = 15)
+					$_sbDiagramRows = $_sbCurveFixedHeight - 5
+						$_sbCurveCenterRow = [int]($_sbDiagramRows / 2)
+
+						# Build curve canvas (List of char[])
+						$_sbCurveCanvas = [System.Collections.Generic.List[char[]]]::new()
+						for ($_sbR = 0; $_sbR -lt $_sbDiagramRows; $_sbR++) {
+							$_sbRow = [char[]](' ' * $_sbCurveInnerW)
+							if ($_sbR -eq $_sbCurveCenterRow) {
+								for ($_sbC = 0; $_sbC -lt $_sbCurveInnerW; $_sbC++) { $_sbRow[$_sbC] = $script:BoxHorizontal }
+							}
+							$null = $_sbCurveCanvas.Add($_sbRow)
+						}
+
+						# Plot path points onto canvas
+						if ($null -ne $script:StatsLastCurveParams -and $script:StatsLastCurveParams.Distance -gt 0) {
+							$_sbCp = $script:StatsLastCurveParams
+							$_sbNS = [math]::Max(200, $_sbCurveInnerW * 4)
+							$_sbMaxLat = 0.0
+							$_sbPtA = [double[]]::new($_sbNS + 1)
+							$_sbPtL = [double[]]::new($_sbNS + 1)
+							for ($_sbSi = 0; $_sbSi -le $_sbNS; $_sbSi++) {
+								$_sbt = $_sbSi / $_sbNS
+								$_sbet = if ($_sbt -lt 0.5) { 4*$_sbt*$_sbt*$_sbt } else { 1 - [Math]::Pow(-2*$_sbt+2,3)/2 }
+								$_sblat = 0.0
+								if ($_sbCp.StartArcAmt -gt 0 -and $_sbt -le 0.3) {
+									$_sblat += $_sbCp.StartArcSign * $_sbCp.StartArcAmt * [Math]::Sin([Math]::PI * $_sbt / 0.3)
+								}
+								if ($_sbCp.BodyCurveAmt -gt 0 -and $_sbt -ge 0.3) {
+									$_sbbt = ($_sbt - 0.3) / 0.7
+									$_sbsb = [Math]::Sin([Math]::PI * $_sbbt)
+									$_sblat += if ($_sbCp.BodyCurveType -eq 0) {
+										$_sbCp.BodyCurveSign * $_sbCp.BodyCurveAmt * $_sbsb * $_sbsb
+									} else {
+										$_sbCp.BodyCurveSign * $_sbCp.BodyCurveAmt * [Math]::Sin(2*[Math]::PI*$_sbbt) * $_sbsb
+									}
+								}
+								$_sbPtA[$_sbSi] = $_sbet
+								$_sbPtL[$_sbSi] = $_sblat
+								$_sbAbsLat = [Math]::Abs($_sblat)
+								if ($_sbAbsLat -gt $_sbMaxLat) { $_sbMaxLat = $_sbAbsLat }
+							}
+						if ($_sbMaxLat -lt 1) { $_sbMaxLat = 1 }
+
+						# Cache path data for fast partial re-renders during animation
+						if ($CurveRevealFraction -ge 0) {
+							$script:_CurveAnimPtA       = $_sbPtA
+							$script:_CurveAnimPtL       = $_sbPtL
+							$script:_CurveAnimMaxLat    = $_sbMaxLat
+							$script:_CurveAnimNS        = $_sbNS
+							$script:_CurveAnimInnerW    = $_sbCurveInnerW
+							$script:_CurveAnimCenterRow = $_sbCurveCenterRow
+							$script:_CurveAnimDiagRows  = $_sbDiagramRows
+							$script:_CurveAnimBoxInnerX = $_bpH + $logWidth + 7
+							$script:_CurveAnimHostWidth = $HostWidth
+							$script:_CurveAnimHostHeight = $HostHeight
+						}
+
+					for ($_sbSi = 0; $_sbSi -le $_sbNS; $_sbSi++) {
+						if ($CurveRevealFraction -ge 0 -and $_sbPtA[$_sbSi] -gt $CurveRevealFraction) { continue }
+						$_sbCol = [int]($_sbPtA[$_sbSi] * ($_sbCurveInnerW - 1))
+						$_sbCol = [math]::Max(0, [math]::Min($_sbCurveInnerW - 1, $_sbCol))
+						$_sbRO  = [int]($_sbPtL[$_sbSi] / $_sbMaxLat * $_sbCurveCenterRow)
+						$_sbPR  = $_sbCurveCenterRow - $_sbRO
+						$_sbPR  = [math]::Max(0, [math]::Min($_sbDiagramRows - 1, $_sbPR))
+						$_sbCurveCanvas[$_sbPR][$_sbCol] = [char]0x25CF  # ●
+					}
+					}
+
+				# Push curve to bottom of stats section by padding with blank rows
+				$_sbFillerRows = $_sbAvail - $_sbRows.Count - $_sbCurveFixedHeight
+					for ($_sbFr = 0; $_sbFr -lt $_sbFillerRows; $_sbFr++) { $null = $_sbRows.Add(@{ type='blank' }) }
+
+				# Add row descriptors
+				$null = $_sbRows.Add(@{ type='curve-header' })
+					$null = $_sbRows.Add(@{ type='curve-box-top' })
+					for ($_sbDr = 0; $_sbDr -lt $_sbDiagramRows; $_sbDr++) {
+						$null = $_sbRows.Add(@{ type='curve-diagram'; rowIndex=$_sbDr })
+					}
+					$null = $_sbRows.Add(@{ type='curve-eq1' })
+					$null = $_sbRows.Add(@{ type='curve-eq2' })
+					$null = $_sbRows.Add(@{ type='curve-box-bottom' })
+
+					# Store the diagram start Y for partial-render animation frames
+					if ($CurveRevealFraction -ge 0) {
+						$_sbFirstDiagIdx = $_sbRows.Count - $_sbCurveFixedHeight + 2
+						$script:_CurveAnimDiagramStartY = $Outputline + 3 + $_sbFirstDiagIdx
+					}
+					}
+				}
+			}
+			# ---- End stats pre-computation ----------------------------------------------
+
+			for ($i = 0; $i -lt $Rows; $i++) {
+			$rowY = $Outputline + $i
 		$logStartX      = [math]::Max(0, $_bpH - 2)
 		$availableWidth = [math]::Min($logWidth + 2, $HostWidth - $logStartX)
 					
@@ -291,7 +586,7 @@
 									Write-Buffer -Text "$($script:BoxTopRight)" -FG $script:StatsBoxBorder
 								} elseif ($i -eq 1) {
 									# Header row
-									$boxHeader = "Stats"
+									$boxHeader = "Stats:"
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									Write-Buffer -Text $boxHeader.PadRight($boxWidth - 2) -FG $script:StatsBoxTitle
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
@@ -304,106 +599,224 @@
 									Write-Buffer -Text "$($script:BoxVerticalRight)" -FG $script:StatsBoxBorder
 									Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
 									Write-Buffer -Text "$($script:BoxVerticalLeft)" -FG $script:StatsBoxBorder
-								} elseif ($i -eq $Rows - 4) {
+							} elseif ($i -eq $Rows - 4) {
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+								Write-Buffer -Text "Detected Inputs:".PadRight($boxWidth - 2) -FG $script:StatsInputsTitle
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+							} elseif ($i -eq $Rows - 3) {
+								if ($PreviousIntervalKeys.Count -gt 0) {
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									Write-Buffer -Text "Detected Inputs:".PadRight($boxWidth - 2) -FG $script:StatsBoxTitle
+									Write-Buffer -Text $keysFirstLine.PadRight($boxWidth - 2) -FG $script:StatsInputsValue
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-								} elseif ($i -eq $Rows - 3) {
-									if ($PreviousIntervalKeys.Count -gt 0) {
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text $keysFirstLine.PadRight($boxWidth - 2) -FG $script:StatsBoxValue
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									} else {
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text "$([char]0x2014)".PadRight($boxWidth - 2) -FG $script:TextMuted
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									}
-								} elseif ($i -eq $Rows - 2) {
-									if ($PreviousIntervalKeys.Count -gt 0 -and $keysSecondLine -ne "") {
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text $keysSecondLine.PadRight($boxWidth - 2) -FG $script:StatsBoxValue
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									} else {
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text (" " * ($boxWidth - 2))
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									}
-								} elseif ($i -eq $Rows - 1) {
-									Write-Buffer -Text "$($script:BoxBottomLeft)" -FG $script:StatsBoxBorder
-									Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
-									Write-Buffer -Text "$($script:BoxBottomRight)" -FG $script:StatsBoxBorder
+								} else {
+									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+									Write-Buffer -Text "$([char]0x2014)".PadRight($boxWidth - 2) -FG $script:TextMuted
+									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+								}
+							} elseif ($i -eq $Rows - 2) {
+								if ($PreviousIntervalKeys.Count -gt 0 -and $keysSecondLine -ne "") {
+									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+									Write-Buffer -Text $keysSecondLine.PadRight($boxWidth - 2) -FG $script:StatsInputsValue
+									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 								} else {
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									Write-Buffer -Text (" " * ($boxWidth - 2))
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 								}
-								
-								Write-Buffer -Text " "
+							} elseif ($i -eq $Rows - 1) {
+								Write-Buffer -Text "$($script:BoxBottomLeft)" -FG $script:StatsBoxBorder
+								Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
+								Write-Buffer -Text "$($script:BoxBottomRight)" -FG $script:StatsBoxBorder
+							} else {
+								# Stats content rows (rows 3 to $Rows-6)
+								$_sbIdx = $i - 3
+								if ($null -ne $_sbRows -and $_sbIdx -ge 0 -and $_sbIdx -lt $_sbRows.Count) {
+									$_sbSr = $_sbRows[$_sbIdx]
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+								switch ($_sbSr.type) {
+									'text'  { Write-Buffer -Text $_sbSr.text.PadRight($boxWidth - 2) -FG $_sbSr.fg }
+									'blank' { Write-Buffer -Text (" " * ($boxWidth - 2)) }
+									'segments' {
+										$_segRemain = $boxWidth - 2
+										for ($_ssi = 0; $_ssi -lt $_sbSr.segments.Count; $_ssi++) {
+											$_seg = $_sbSr.segments[$_ssi]
+											if ($_ssi -eq $_sbSr.segments.Count - 1) {
+												Write-Buffer -Text $_seg.text.PadRight($_segRemain) -FG $_seg.fg
+											} else {
+												Write-Buffer -Text $_seg.text -FG $_seg.fg
+												$_segRemain -= $_seg.text.Length
+											}
+										}
+									}
+									'curve-header' { Write-Buffer -Text " Last Movement's Curve".PadRight($boxWidth - 2) -FG $script:StatsCurveHeader }
+									'curve-box-top' {
+										Write-Buffer -Text " $($script:BoxTopLeft)" -FG $script:StatsCurveBorder
+										Write-Buffer -Text ("$($script:BoxHorizontal)" * $_sbCurveInnerW) -FG $script:StatsCurveBorder
+										Write-Buffer -Text "$($script:BoxTopRight)  " -FG $script:StatsCurveBorder
+									}
+									'curve-diagram' {
+										Write-Buffer -Text " $($script:BoxVertical)" -FG $script:StatsCurveBorder
+										if ($null -ne $_sbCurveCanvas -and $_sbSr.rowIndex -lt $_sbCurveCanvas.Count) {
+											foreach ($_sbCh in $_sbCurveCanvas[$_sbSr.rowIndex]) {
+												if    ($_sbCh -eq [char]0x25CF)           { Write-Buffer -Text $_sbCh -FG $script:StatsCurveDots }
+												elseif($_sbCh -eq $script:BoxHorizontal)  { Write-Buffer -Text $_sbCh -FG $script:StatsCurveLine }
+												else                                       { Write-Buffer -Text " " }
+											}
+										} else {
+											Write-Buffer -Text (" " * $_sbCurveInnerW)
+										}
+										Write-Buffer -Text "$($script:BoxVertical)  " -FG $script:StatsCurveBorder
+									}
+									'curve-eq1' {
+										Write-Buffer -Text " $($script:BoxVertical)" -FG $script:StatsCurveBorder
+										Write-Buffer -Text $_sbCurveEq1.PadRight($_sbCurveInnerW) -FG $script:StatsCurveEq1
+										Write-Buffer -Text "$($script:BoxVertical)  " -FG $script:StatsCurveBorder
+									}
+									'curve-eq2' {
+										Write-Buffer -Text " $($script:BoxVertical)" -FG $script:StatsCurveBorder
+										Write-Buffer -Text $_sbCurveEq2.PadRight($_sbCurveInnerW) -FG $script:StatsCurveEq2
+										Write-Buffer -Text "$($script:BoxVertical)  " -FG $script:StatsCurveBorder
+									}
+									'curve-box-bottom' {
+										Write-Buffer -Text " $($script:BoxBottomLeft)" -FG $script:StatsCurveBorder
+										Write-Buffer -Text ("$($script:BoxHorizontal)" * $_sbCurveInnerW) -FG $script:StatsCurveBorder
+										Write-Buffer -Text "$($script:BoxBottomRight)  " -FG $script:StatsCurveBorder
+									}
+									default { Write-Buffer -Text (" " * ($boxWidth - 2)) }
+								}
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+							} else {
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+								Write-Buffer -Text (" " * ($boxWidth - 2))
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 							}
-					} else {
-					$emptyLine = "".PadRight($availableWidth)
-					Write-Buffer -X $logStartX -Y $rowY -Text $emptyLine
+						}
+						
+						Write-Buffer -Text " "
+					}
+			} else {
+			$emptyLine = "".PadRight($availableWidth)
+				Write-Buffer -X $logStartX -Y $rowY -Text $emptyLine
+					
+					if ($showStatsBox) {
+						Write-Buffer -X ($_bpH + $logWidth) -Y $rowY -Text " $($script:BoxVertical) " -FG $script:StatsBoxBorder
+					}
 						
 						if ($showStatsBox) {
-							Write-Buffer -X ($_bpH + $logWidth) -Y $rowY -Text " $($script:BoxVertical) " -FG $script:StatsBoxBorder
-						}
-							
-							if ($showStatsBox) {
-								Write-Buffer -Text " "
-								if ($i -eq 0) {
-									Write-Buffer -Text "$($script:BoxTopLeft)" -FG $script:StatsBoxBorder
-									Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
-									Write-Buffer -Text "$($script:BoxTopRight)" -FG $script:StatsBoxBorder
-								} elseif ($i -eq 1) {
+							Write-Buffer -Text " "
+							if ($i -eq 0) {
+								Write-Buffer -Text "$($script:BoxTopLeft)" -FG $script:StatsBoxBorder
+								Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
+								Write-Buffer -Text "$($script:BoxTopRight)" -FG $script:StatsBoxBorder
+							} elseif ($i -eq 1) {
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+								Write-Buffer -Text "Stats:".PadRight($boxWidth - 2) -FG $script:StatsBoxTitle
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+							} elseif ($i -eq 2) {
+								Write-Buffer -Text "$($script:BoxVerticalRight)" -FG $script:StatsBoxBorder
+								Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
+								Write-Buffer -Text "$($script:BoxVerticalLeft)" -FG $script:StatsBoxBorder
+							} elseif ($i -eq $Rows - 5) {
+								Write-Buffer -Text "$($script:BoxVerticalRight)" -FG $script:StatsBoxBorder
+								Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
+								Write-Buffer -Text "$($script:BoxVerticalLeft)" -FG $script:StatsBoxBorder
+							} elseif ($i -eq $Rows - 4) {
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+								Write-Buffer -Text "Detected Inputs:".PadRight($boxWidth - 2) -FG $script:StatsInputsTitle
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+							} elseif ($i -eq $Rows - 3) {
+								if ($PreviousIntervalKeys.Count -gt 0) {
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									Write-Buffer -Text "Stats".PadRight($boxWidth - 2) -FG $script:StatsBoxTitle
+									Write-Buffer -Text $keysFirstLine.PadRight($boxWidth - 2) -FG $script:StatsInputsValue
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-								} elseif ($i -eq 2) {
-									Write-Buffer -Text "$($script:BoxVerticalRight)" -FG $script:StatsBoxBorder
-									Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
-									Write-Buffer -Text "$($script:BoxVerticalLeft)" -FG $script:StatsBoxBorder
-								} elseif ($i -eq $Rows - 5) {
-									Write-Buffer -Text "$($script:BoxVerticalRight)" -FG $script:StatsBoxBorder
-									Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
-									Write-Buffer -Text "$($script:BoxVerticalLeft)" -FG $script:StatsBoxBorder
-								} elseif ($i -eq $Rows - 4) {
+								} else {
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									Write-Buffer -Text "Detected Inputs:".PadRight($boxWidth - 2) -FG $script:StatsBoxTitle
+									Write-Buffer -Text "$([char]0x2014)".PadRight($boxWidth - 2) -FG $script:TextMuted
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-								} elseif ($i -eq $Rows - 3) {
-									if ($PreviousIntervalKeys.Count -gt 0) {
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text $keysFirstLine.PadRight($boxWidth - 2) -FG $script:StatsBoxValue
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									} else {
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text "$([char]0x2014)".PadRight($boxWidth - 2) -FG $script:TextMuted
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									}
-								} elseif ($i -eq $Rows - 2) {
-									if ($PreviousIntervalKeys.Count -gt 0 -and $keysSecondLine -ne "") {
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text $keysSecondLine.PadRight($boxWidth - 2) -FG $script:StatsBoxValue
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									} else {
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-										Write-Buffer -Text (" " * ($boxWidth - 2))
-										Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
-									}
-								} elseif ($i -eq $Rows - 1) {
-									Write-Buffer -Text "$($script:BoxBottomLeft)" -FG $script:StatsBoxBorder
-									Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
-									Write-Buffer -Text "$($script:BoxBottomRight)" -FG $script:StatsBoxBorder
+								}
+							} elseif ($i -eq $Rows - 2) {
+								if ($PreviousIntervalKeys.Count -gt 0 -and $keysSecondLine -ne "") {
+									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+									Write-Buffer -Text $keysSecondLine.PadRight($boxWidth - 2) -FG $script:StatsInputsValue
+									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 								} else {
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 									Write-Buffer -Text (" " * ($boxWidth - 2))
 									Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 								}
-								Write-Buffer -Text " "
+						} elseif ($i -eq $Rows - 1) {
+							Write-Buffer -Text "$($script:BoxBottomLeft)" -FG $script:StatsBoxBorder
+							Write-Buffer -Text ("$($script:BoxHorizontal)" * ($boxWidth - 2)) -FG $script:StatsBoxBorder
+							Write-Buffer -Text "$($script:BoxBottomRight)" -FG $script:StatsBoxBorder
+						} else {
+							# Stats content rows (rows 3 to $Rows-6)
+							$_sbIdx = $i - 3
+							if ($null -ne $_sbRows -and $_sbIdx -ge 0 -and $_sbIdx -lt $_sbRows.Count) {
+								$_sbSr = $_sbRows[$_sbIdx]
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+								switch ($_sbSr.type) {
+									'text'  { Write-Buffer -Text $_sbSr.text.PadRight($boxWidth - 2) -FG $_sbSr.fg }
+									'blank' { Write-Buffer -Text (" " * ($boxWidth - 2)) }
+									'segments' {
+										$_segRemain = $boxWidth - 2
+										for ($_ssi = 0; $_ssi -lt $_sbSr.segments.Count; $_ssi++) {
+											$_seg = $_sbSr.segments[$_ssi]
+											if ($_ssi -eq $_sbSr.segments.Count - 1) {
+												Write-Buffer -Text $_seg.text.PadRight($_segRemain) -FG $_seg.fg
+											} else {
+												Write-Buffer -Text $_seg.text -FG $_seg.fg
+												$_segRemain -= $_seg.text.Length
+											}
+										}
+									}
+									'curve-header' { Write-Buffer -Text " Last Movement's Curve".PadRight($boxWidth - 2) -FG $script:StatsCurveHeader }
+									'curve-box-top' {
+										Write-Buffer -Text " $($script:BoxTopLeft)" -FG $script:StatsCurveBorder
+										Write-Buffer -Text ("$($script:BoxHorizontal)" * $_sbCurveInnerW) -FG $script:StatsCurveBorder
+										Write-Buffer -Text "$($script:BoxTopRight)  " -FG $script:StatsCurveBorder
+									}
+									'curve-diagram' {
+										Write-Buffer -Text " $($script:BoxVertical)" -FG $script:StatsCurveBorder
+										if ($null -ne $_sbCurveCanvas -and $_sbSr.rowIndex -lt $_sbCurveCanvas.Count) {
+											foreach ($_sbCh in $_sbCurveCanvas[$_sbSr.rowIndex]) {
+												if    ($_sbCh -eq [char]0x25CF)           { Write-Buffer -Text $_sbCh -FG $script:StatsCurveDots }
+												elseif($_sbCh -eq $script:BoxHorizontal)  { Write-Buffer -Text $_sbCh -FG $script:StatsCurveLine }
+												else                                       { Write-Buffer -Text " " }
+											}
+										} else {
+											Write-Buffer -Text (" " * $_sbCurveInnerW)
+										}
+										Write-Buffer -Text "$($script:BoxVertical)  " -FG $script:StatsCurveBorder
+									}
+									'curve-eq1' {
+										Write-Buffer -Text " $($script:BoxVertical)" -FG $script:StatsCurveBorder
+										Write-Buffer -Text $_sbCurveEq1.PadRight($_sbCurveInnerW) -FG $script:StatsCurveEq1
+										Write-Buffer -Text "$($script:BoxVertical)  " -FG $script:StatsCurveBorder
+									}
+									'curve-eq2' {
+										Write-Buffer -Text " $($script:BoxVertical)" -FG $script:StatsCurveBorder
+										Write-Buffer -Text $_sbCurveEq2.PadRight($_sbCurveInnerW) -FG $script:StatsCurveEq2
+										Write-Buffer -Text "$($script:BoxVertical)  " -FG $script:StatsCurveBorder
+									}
+									'curve-box-bottom' {
+										Write-Buffer -Text " $($script:BoxBottomLeft)" -FG $script:StatsCurveBorder
+										Write-Buffer -Text ("$($script:BoxHorizontal)" * $_sbCurveInnerW) -FG $script:StatsCurveBorder
+										Write-Buffer -Text "$($script:BoxBottomRight)  " -FG $script:StatsCurveBorder
+									}
+									default { Write-Buffer -Text (" " * ($boxWidth - 2)) }
+								}
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+							} else {
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
+								Write-Buffer -Text (" " * ($boxWidth - 2))
+								Write-Buffer -Text "$($script:BoxVertical)" -FG $script:StatsBoxBorder
 							}
 						}
+						Write-Buffer -Text " "
+					}
 				}
-				$outputLine += $Rows
+		}
+			$outputLine += $Rows
 			}
 			}  # End of skipConsoleUpdate check
 
@@ -419,23 +832,23 @@
 			$outputLine++
 
 			## Menu Options ##
-		$emojiLock = $script:LockEmoji
-		$emojiGear = $script:GearEmoji
-			$emojiRedX = $script:RedXEmoji
-				
-		$menuItemsList = @(
-			@{
-				full            = "$emojiGear|(S)ettings"
-				noIcons         = "(S)ettings"
-				short           = "(S)et"
-				isSettingsButton = $true
-			},
+	$emojiLock    = $script:LockEmoji
+	$emojiGear    = $script:GearEmoji
+	$emojiRedX    = $script:RedXEmoji
+			
+	$menuItemsList = @(
+		@{
+			full             = "$emojiGear|(S)ettings"
+			noIcons          = "(S)ettings"
+			short            = "(S)et"
+			isSettingsButton = $true
+		},
 		@{
 			full    = "$emojiLock|(I)ncognito"
 			noIcons = "(I)ncognito"
 			short   = "(I)nc"
 		}
-		)
+	)
 
 		$menuItemsList += @{
 			full    = "$emojiRedX|(Q)uit"
@@ -543,7 +956,7 @@
 			$btnPipeFg    = if ($isPressed) { $script:SettingsButtonOnClickSeparatorFg } else { $script:SettingsButtonSeparatorFg }
 			$btnBracketFg = if ($isPressed) { $script:SettingsButtonOnClickBracketFg }   else { $script:SettingsButtonBracketFg }
 			$btnBracketBg = if ($isPressed) { $script:SettingsButtonOnClickBracketBg }   else { $script:SettingsButtonBracketBg }
-		} else {
+	} else {
 			$btnFg        = if ($isPressed) { $script:MenuButtonOnClickFg }         else { $script:MenuButtonText }
 			$btnBg        = if ($isPressed) { $script:MenuButtonOnClickBg }         else { $script:MenuButtonBg }
 			$btnHkFg      = if ($isPressed) { $script:MenuButtonOnClickHotkey }     else { $script:MenuButtonHotkey }

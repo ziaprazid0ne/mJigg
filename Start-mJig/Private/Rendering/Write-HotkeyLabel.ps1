@@ -1,11 +1,11 @@
 function Write-HotkeyLabel {
-	param(
-		[string]$Text,
-		[string]$FG,
-		[string]$HotkeyFg,
-		[string]$BG,
-		[bool]$ShowParens = $script:MenuButtonShowHotkeyParens
-	)
+param(
+	[string]$Text,
+	$FG,
+	$HotkeyFg,
+	$BG,
+	[bool]$ShowParens = $script:MenuButtonShowHotkeyParens
+)
 	$textParts = $Text -split "([()])"
 	for ($j = 0; $j -lt $textParts.Count; $j++) {
 		$part = $textParts[$j]

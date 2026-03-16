@@ -71,10 +71,11 @@
 				return $null
 			}
 			
-			return @{
-				Client        = $pipeClient
-				Reader        = $pipeReader
-				Writer        = $pipeWriter
-				BackgroundPid = $welcome.pid
-			}
+		return @{
+			Client        = $pipeClient
+			Reader        = $pipeReader
+			Writer        = $pipeWriter
+			BackgroundPid = $welcome.pid
+			VisualState   = $welcome.visualState
+		}
 		}

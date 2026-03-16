@@ -40,3 +40,25 @@ Scriptblock callbacks run in the caller's scope, not the definer's. Save values 
 ## Click Detection
 
 Uses `PeekConsoleInput` MOUSE_EVENT records with exact character cell coordinates. Hit-testing uses exact character cell matching — no tolerance, no pixel math.
+
+## Available Dialogs
+
+| Dialog | File | Trigger | Returns |
+|--------|------|---------|---------|
+| `Show-TimeChangeDialog` | `Private/Dialogs/Show-TimeChangeDialog.ps1` | `e` hotkey in Settings | `@{ Result; NeedsRedraw }` |
+| `Show-MovementModifyDialog` | `Private/Dialogs/Show-MovementModifyDialog.ps1` | `m` hotkey in Settings | `@{ Result; NeedsRedraw }` |
+| `Show-QuitConfirmationDialog` | `Private/Dialogs/Show-QuitConfirmationDialog.ps1` | `q` hotkey / menu | `@{ Result; NeedsRedraw }` |
+| `Show-SettingsDialog` | `Private/Dialogs/Show-SettingsDialog.ps1` | `s` hotkey / menu | `@{ NeedsRedraw; ReopenSettings; TitleChanged }` |
+| `Show-OptionsDialog` | `Private/Dialogs/Show-OptionsDialog.ps1` | `o` hotkey in Settings | `@{ NeedsRedraw; TitleChanged }` |
+| `Show-InfoDialog` | `Private/Dialogs/Show-InfoDialog.ps1` | `?` hotkey | `@{ NeedsRedraw }` |
+| `Show-ThemeDialog` | `Private/Dialogs/Show-ThemeDialog.ps1` | `t` hotkey in Settings | `@{ NeedsRedraw }` |
+
+## Apply / Cancel Pattern (Options and Theme Dialogs)
+
+Dialogs that support live preview (Options, Theme) capture initial state at open and offer explicit Apply/Cancel buttons:
+- **Apply** (`a` or Enter): close keeping all changes made during the session
+- **Cancel** (`c`, Escape, or click outside): revert all changes to pre-dialog values and close
+- Initial state is captured in local variables at the top of the dialog function (before the input loop)
+- Cancel calls `Set-ThemeProfile` if the debug-mode theme was reverted, and only sets `$needsRedraw = $true` if something actually changed
+- The Apply button uses `✅` (U+2705) emoji; Cancel uses `❌` (U+274C)
+- Button position formula: `$applyBtnChars = $dialogBracketWidth + $dialogIconWidth + 7 + $dialogParenOffset`; cancel button starts at `$applyX + $applyBtnChars + 2` (2-char gap between buttons)

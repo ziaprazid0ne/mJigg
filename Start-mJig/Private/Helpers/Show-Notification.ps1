@@ -179,62 +179,62 @@
 			            "<image placement=`"appLogoOverride`" src=`"file:///$imgSrc`"/>" +
 			            "</binding></visual></toast>"
 
-				$toastShown = $false
-				if ($null -ne $script:ToastAPI) {
+			$toastShown = $false
+			if ($null -ne $script:ToastAPI -and $script:_Tier1NotifyFailed -ne $true) {
+				try {
+					$null = New-Item -Path $regKey -Force
+					$null = New-ItemProperty -Path $regKey -Name 'DisplayName' -Value $script:WindowTitle -PropertyType ExpandString -Force
+					$null = New-ItemProperty -Path $regKey -Name 'IconUri' -Value $aumidIconPath -PropertyType ExpandString -Force
 					try {
-						$null = New-Item -Path $regKey -Force
-						$null = New-ItemProperty -Path $regKey -Name 'DisplayName' -Value $script:WindowTitle -PropertyType ExpandString -Force
-						$null = New-ItemProperty -Path $regKey -Name 'IconUri' -Value $aumidIconPath -PropertyType ExpandString -Force
-						try {
-							$script:ToastAPI::ShowToast($toastXml, $aumid)
-							$toastShown = $true
-							if ($script:DiagEnabled -and $script:NotifyDiagFile) {
-								"$(Get-Date -Format 'HH:mm:ss.fff') [TIER1-OK] action=$Action aumid=$aumid" | Out-File $script:NotifyDiagFile -Append
-							}
-							Start-Sleep -Milliseconds 50
-						} finally {
-							Remove-Item -Path $regKey -Force -ErrorAction SilentlyContinue
-						}
-					} catch {
-						if ($script:DiagEnabled -and $script:NotifyDiagFile) {
-							"$(Get-Date -Format 'HH:mm:ss.fff') [TIER1-COM] $($_.Exception.GetType().Name): $($_.Exception.Message)" | Out-File $script:NotifyDiagFile -Append
-						}
-					}
-				} elseif ($script:DiagEnabled -and $script:NotifyDiagFile) {
-					"$(Get-Date -Format 'HH:mm:ss.fff') [TIER1-SKIP] ToastAPI is null" | Out-File $script:NotifyDiagFile -Append
-				}
-
-				if (-not $toastShown) {
-					try {
-						$null = New-Item -Path $regKey -Force
-						$null = New-ItemProperty -Path $regKey -Name 'DisplayName' -Value $script:WindowTitle -PropertyType ExpandString -Force
-						$null = New-ItemProperty -Path $regKey -Name 'IconUri' -Value $aumidIconPath -PropertyType ExpandString -Force
-					$safeBody  = $Body.Replace("'", "''")
-					$safeImg   = $imgSrc.Replace("'", "''")
-					$safeAumid = $aumid.Replace("'", "''")
-					$toastCmd  = '[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];' +
-					             '[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime];' +
-					             '$x=New-Object Windows.Data.Xml.Dom.XmlDocument;' +
-					             '$x.LoadXml(''<toast duration="short"><visual><binding template="ToastGeneric">' +
-					             "<text>$safeBody</text>" +
-					             "<image placement=""appLogoOverride"" src=""file:///$safeImg""/>" +
-					             '</binding></visual></toast>'');' +
-					             '$t=[Windows.UI.Notifications.ToastNotification]::new($x);' +
-					             "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('$safeAumid').Show(" + '$t)'
-						Start-Process powershell.exe -ArgumentList '-NoProfile','-WindowStyle','Hidden','-Command',$toastCmd -WindowStyle Hidden
-						Start-Sleep -Milliseconds 500
+						$script:_Tier1NotifyFailed = $true
+						$script:ToastAPI::ShowToast($toastXml, $aumid)
 						$toastShown = $true
+						$script:_Tier1NotifyFailed = $false
 						if ($script:DiagEnabled -and $script:NotifyDiagFile) {
-							"$(Get-Date -Format 'HH:mm:ss.fff') [TIER2-OK] action=$Action aumid=$safeAumid" | Out-File $script:NotifyDiagFile -Append
+							"$(Get-Date -Format 'HH:mm:ss.fff') [TIER1-OK] action=$Action aumid=$aumid" | Out-File $script:NotifyDiagFile -Append
 						}
-					} catch {
-						if ($script:DiagEnabled -and $script:NotifyDiagFile) {
-							"$(Get-Date -Format 'HH:mm:ss.fff') [TIER2-PS51] $($_.Exception.GetType().Name): $($_.Exception.Message)" | Out-File $script:NotifyDiagFile -Append
-						}
+						Start-Sleep -Milliseconds 50
 					} finally {
 						Remove-Item -Path $regKey -Force -ErrorAction SilentlyContinue
 					}
+				} catch {
+					if ($script:DiagEnabled -and $script:NotifyDiagFile) {
+						"$(Get-Date -Format 'HH:mm:ss.fff') [TIER1-COM] $($_.Exception.GetType().Name): $($_.Exception.Message)" | Out-File $script:NotifyDiagFile -Append
+					}
 				}
+			} elseif ($script:DiagEnabled -and $script:NotifyDiagFile) {
+				"$(Get-Date -Format 'HH:mm:ss.fff') [TIER1-SKIP] ToastAPI=$($null -ne $script:ToastAPI) Tier1Failed=$($script:_Tier1NotifyFailed)" | Out-File $script:NotifyDiagFile -Append
+			}
+
+			if (-not $toastShown) {
+				$safeBody  = $Body.Replace("'", "''")
+				$safeImg   = $imgSrc.Replace("'", "''")
+				$safeAumid = $aumid.Replace("'", "''")
+				$toastCmd  = '[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];' +
+				             '[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime];' +
+				             '$x=New-Object Windows.Data.Xml.Dom.XmlDocument;' +
+				             '$x.LoadXml(''<toast duration="short"><visual><binding template="ToastGeneric">' +
+				             "<text>$safeBody</text>" +
+				             "<image placement=""appLogoOverride"" src=""file:///$safeImg""/>" +
+				             '</binding></visual></toast>'');' +
+				             '$t=[Windows.UI.Notifications.ToastNotification]::new($x);' +
+				             "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('$safeAumid').Show(" + '$t)'
+				try {
+					$null = New-Item -Path $regKey -Force
+					$null = New-ItemProperty -Path $regKey -Name 'DisplayName' -Value $script:WindowTitle -PropertyType ExpandString -Force
+					$null = New-ItemProperty -Path $regKey -Name 'IconUri' -Value $aumidIconPath -PropertyType ExpandString -Force
+					Start-Process powershell.exe -ArgumentList '-NoProfile','-WindowStyle','Hidden','-Command',$toastCmd -WindowStyle Hidden
+					$toastShown = $true
+					if ($script:DiagEnabled -and $script:NotifyDiagFile) {
+						"$(Get-Date -Format 'HH:mm:ss.fff') [TIER2-OK] action=$Action aumid=$safeAumid" | Out-File $script:NotifyDiagFile -Append
+					}
+				} catch {
+					if ($script:DiagEnabled -and $script:NotifyDiagFile) {
+						"$(Get-Date -Format 'HH:mm:ss.fff') [TIER2-PS51] $($_.Exception.GetType().Name): $($_.Exception.Message)" | Out-File $script:NotifyDiagFile -Append
+					}
+					Remove-Item -Path $regKey -Force -ErrorAction SilentlyContinue
+				}
+			}
 
 			if (-not $toastShown) {
 				$tipIcon = [System.Windows.Forms.ToolTipIcon]::$Icon
@@ -243,11 +243,12 @@
 						"$(Get-Date -Format 'HH:mm:ss.fff') [TIER3-BALLOON] action=$Action" | Out-File $script:NotifyDiagFile -Append
 					}
 				}
-			} catch {
-				if ($script:DiagEnabled -and $script:NotifyDiagFile) {
-					"$(Get-Date -Format 'HH:mm:ss.fff') [ERROR] $($_.Exception.GetType().Name): $($_.Exception.Message)`n$($_.ScriptStackTrace)" | Out-File $script:NotifyDiagFile -Append
-				}
+		} catch {
+			$script:_Tier1NotifyFailed = $true
+			if ($script:DiagEnabled -and $script:NotifyDiagFile) {
+				"$(Get-Date -Format 'HH:mm:ss.fff') [ERROR] $($_.Exception.GetType().Name): $($_.Exception.Message)`n$($_.ScriptStackTrace)" | Out-File $script:NotifyDiagFile -Append
 			}
+		}
 		}
 
 		function Remove-Notification {

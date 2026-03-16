@@ -12,7 +12,29 @@ alwaysApply: false
 - Pipe name is SHA256-derived hex (no 'mJig' string)
 - All pipe messages are AES-256-CBC encrypted (per-message random IV)
 - Worker sends: `welcome`, `state` (every 500ms), `log`, `stopped`, `togglePause`, `focus`
-- Viewer sends: `settings`, `endtime`, `output`, `title`, `quit`
+- Viewer sends: `settings`, `endtime`, `output`, `title`, `viewerState`, `quit`
+
+## Viewer Visual State Persistence
+
+The worker maintains `$_viewerVisualState` (outputMode, previousView, windowTitle, titleEmoji, titlePresetIndex, **activeDialog**, **activeSubDialog**). Updated on every `output`, `title`, and `viewerState` message. Sent as `visualState` in every `welcome` message (plus `manualPause`).
+
+New viewer applies it immediately after connect: restores `$Output`, `$PreviousView`, `$script:WindowTitle`, `$script:TitleEmoji`, `$script:TitlePresetIndex`, `$script:ManualPause`, and sets one of `$script:PendingReopenSettings` / `$script:_PendingReopenQuit` / `$script:_PendingReopenInfo` based on `activeDialog`, plus `$script:_PendingRestoreSubDialog`.
+
+**`viewerState` message** (viewer → worker): `{ type='viewerState'; activeDialog=$string|$null; activeSubDialog=$string|$null }`. `activeDialog` values:
+- `'settings'` — Settings panel is open (may also carry `activeSubDialog`)
+- `'quit'` — Quit confirmation dialog is open (Escape or `q` key)
+- `'info'` — Info/About dialog is open
+- `$null` — no dialog open (sent after any dialog closes, cancels, or NeedsRedraw)
+
+Worker uses `PSObject.Properties.Name -contains 'field'` to distinguish explicit `$null` from absent field. Settings close sync sends `output` with `activeDialog=$null`, which also clears `activeDialog` on the worker. All 4 `output` sends carry `activeDialog=$null`.
+
+**Sub-dialog restore:** On `PendingReopenSettings` reopen, `$script:_PendingRestoreSubDialog` is consumed and passed as `-RestoreSubDialog` to `Show-SettingsDialog`. The dialog primes `$_pendingSubDialogKey` after render; first input-loop iteration consumes it. `-ViewerPipeWriter` is passed so Settings can send `viewerState` updates (`activeDialog='settings'; activeSubDialog=...`) without routing through the main loop.
+
+**Quit/Info restore:** `$script:_PendingReopenQuit` / `$script:_PendingReopenInfo` are checked in the `$forceRedraw` block as `elseif` branches after `PendingReopenSettings`. Each: flush main frame → send `viewerState(activeDialog=...)` → call dialog → send `viewerState(activeDialog=$null)` → handle result. Quit confirmed → `break process`. Quit cancelled or NeedsRedraw → `Reset-PostDialogState` (+ inline repaint for NeedsRedraw).
+
+**`output` message** now carries: `mode`, `epoch`, `previousView` (null if not in incognito), `settingsOpen` (always false on normal sends).
+
+**`title` message** now carries: `windowTitle`, `titleEmoji`, `titlePresetIndex`.
 
 ## Settings Epoch Guard (Stale State Prevention)
 
